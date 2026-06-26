@@ -215,13 +215,22 @@ RUN npm config set registry https://registry.npmmirror.com && \
     npm config set fetch-retries 5 && \
     npm config set fetch-retry-mintimeout 15000
 # Install only production deps
-# 由于已安装 vips 和 libvips-dev，sharp 会自动使用系统 libvips，避免下载二进制文件
-# 使用 npm install --legacy-peer-deps 替代 npm ci，解决 @langchain/core 版本冲突
-RUN npm install --omit=dev --legacy-peer-deps
+# 注意：base-min 阶段设了 SHARP_FORCE_GLOBAL_LIBVIPS=1，会让 sharp 在 QEMU 下尝试源码编译（经常静默失败）。
+# 使用 env -u 在进程级真正移除该变量，让 npm 安装 @img/sharp-linux-x64 预构建包。
+RUN env -u SHARP_FORCE_GLOBAL_LIBVIPS npm install --omit=dev --legacy-peer-deps
 # Certain build artifacts need mongodb runtime deps (may not be prod deps)
 RUN npm install mongodb --omit=dev --legacy-peer-deps
+# sharp 0.33.x 跨平台修复：显式安装 linux-x64-glibc 预构建包，无论上面是否安装成功。
+# env -u 保证 SHARP_FORCE_GLOBAL_LIBVIPS 不干扰 npm 的 optionalDependencies 解析。
+RUN env -u SHARP_FORCE_GLOBAL_LIBVIPS \
+    npm install @img/sharp-linux-x64 --save-optional --legacy-peer-deps && \
+    echo "✓ @img/sharp-linux-x64 installed" || \
+    echo "⚠ @img/sharp-linux-x64 install failed (image processing may not work)"
 # Fix case-sensitive imports: @Because/* -> @because/*
 RUN ln -s /app/node_modules/@because /app/node_modules/@Because || true
+# 清除运行时 SHARP_FORCE_GLOBAL_LIBVIPS，让 sharp 使用上面安装的 @img/sharp-linux-x64 预构建包。
+# 若保留 =1，sharp 运行时会去找从源码编译的 .node 文件（不存在），导致启动崩溃。
+ENV SHARP_FORCE_GLOBAL_LIBVIPS=
 # 验证关键依赖是否正确安装（特别是 @xenova/transformers）
 # Debian 自带 glibc，无需设置 LD_LIBRARY_PATH，onnxruntime-node 可以直接工作
 RUN node -e "try { const path = require.resolve('@xenova/transformers'); console.log('✓ @xenova/transformers found at:', path); require('@xenova/transformers'); console.log('✓ @xenova/transformers loaded successfully'); } catch(e) { console.error('✗ @xenova/transformers error:', e.message, e.stack); process.exit(1); }"
@@ -234,6 +243,16 @@ COPY --from=data-provider-build /app/packages/data-provider/dist ./packages/data
 COPY --from=data-schemas-build /app/packages/data-schemas/dist ./packages/data-schemas/dist
 COPY --from=api-package-build /app/packages/api/dist ./packages/api/dist
 COPY --from=client-build /app/client/dist ./client/dist
+# 安装 OpenJDK（用于 GaussDB JDBC 桥）并编译 Java 查询类
+# JAR 已随 COPY Because-2.0 一起打包进镜像，无需外部挂载
+RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::https::Timeout=120 \
+      update && \
+    apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::https::Timeout=120 \
+      install -y --no-install-recommends default-jdk-headless && \
+    rm -rf /var/lib/apt/lists/* && \
+    javac -encoding UTF-8 -cp /app/Because-2.0/drivers/lib/gsjdbc4-1.0.jar \
+          /app/Because-2.0/drivers/gaussdb-jdbc/GaussJdbcQuery.java && \
+    java -version
 # 确保 specs、BeCauseSkills、Because-2.0 目录有正确的权限（可读）
 RUN chmod -R 755 /app/specs && find /app/specs -type f -exec chmod 644 {} \; && \
     chmod -R 755 /app/BeCauseSkills && find /app/BeCauseSkills -type f -exec chmod 644 {} \; && \
