@@ -27,8 +27,10 @@ class BeCauseSkillsTool2 extends Tool {
 
   description =
     'BeCause问数工具2.0 - 智能问数（自然语言转SQL）的完整能力集，新增波动归因能力。' +
-    'Commands: intent-classification (意图分类), rag-retrieval (RAG知识检索), ' +
-    'database-schema (数据库Schema获取), reranker (结果重排序), ' +
+    'Commands: knowledge-discovery (结构化知识行检索，优先用于查询指标编码/定义/口径), ' +
+    'light-schema (从预生成缓存按需检索表结构，生成SQL前首选，0 DB开销), ' +
+    'rag-retrieval (RAG知识检索), ' +
+    'database-schema (数据库Schema实时获取，light-schema无结果时才用), reranker (结果重排序), ' +
     'sql-validation (SQL校验，支持7类关键字分类+双盲对比), ' +
     'result-analysis (结果分析，支持Adtributor归因+异常检测+趋势分析), ' +
     'sql-executor (SQL执行), chart-generation (图表生成), ' +
@@ -36,7 +38,8 @@ class BeCauseSkillsTool2 extends Tool {
 
   schema = z.object({
     command: z.enum([
-      'intent-classification',
+      'knowledge-discovery',
+      'light-schema',
       'rag-retrieval',
       'database-schema',
       'reranker',
@@ -68,9 +71,14 @@ class BeCauseSkillsTool2 extends Tool {
       });
     }
 
-    // 初始化各个子工具实例
+    // 初始化各个子工具实例（intent-classification 暂时关闭）
     this.tools = {
-      'intent-classification': new BeCauseSkills2.IntentClassificationTool({
+      'knowledge-discovery': new BeCauseSkills2.KnowledgeDiscoveryTool({
+        userId: this.userId,
+        req: this.req,
+        conversation: this.conversation,
+      }),
+      'light-schema': new BeCauseSkills2.LightSchemaTool({
         userId: this.userId,
         req: this.req,
         conversation: this.conversation,

@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const path = require('path');
 const mongoose = require('mongoose');
 const { logger } = require('@because/data-schemas');
 const { SystemRoles } = require('@because/data-provider');
@@ -10,6 +11,11 @@ const {
   updateDataSource,
   deleteDataSource,
 } = require('~/models/DataSource');
+
+// GaussDB Java JDBC 桥（企业定制安全协议，无法用标准 pg 包连接）
+const { gaussdbJdbcQuery, gaussdbTestConnection } = require(
+  path.join(__dirname, '../../../Because-2.0/utils/gaussdbJdbcBridge'),
+);
 
 // 使用项目统一的加密/解密函数（基于 CREDS_KEY 环境变量）
 // 为了兼容旧数据，先尝试新方法，如果失败再尝试旧方法
@@ -167,6 +173,10 @@ async function testDatabaseConnection(config) {
       await client.end();
 
       return { success: true };
+    } else if (type === 'gaussdb') {
+      // GaussDB 使用 Java JDBC 桥（企业定制安全协议）
+      await gaussdbTestConnection({ host, port, database, username, ssl }, password);
+      return { success: true };
     } else {
       return {
         success: false,
@@ -188,7 +198,20 @@ async function testDatabaseConnection(config) {
  * @returns {Promise<{success: boolean, schema?: Object, error?: string}>}
  */
 async function getDatabaseSchema(config) {
-  const { type, host, port, database, username, password, ssl } = config;
+  const {
+    type,
+    host,
+    port,
+    database,
+    username,
+    password,
+    ssl,
+    schemaName = 'public',
+    tableNames = null,
+  } = config;
+  const selectedTableNames = Array.isArray(tableNames) && tableNames.length > 0
+    ? tableNames.map((t) => String(t)).filter(Boolean)
+    : null;
 
   try {
     if (type === 'mysql') {
@@ -231,14 +254,21 @@ async function getDatabaseSchema(config) {
       const connection = await mysql.createConnection(connectionConfig);
 
       try {
-        // 获取所有表
+        // 获取表列表；如果传入 tableNames，只查选中的表
+        const tableParams = [database];
+        let tableFilter = '';
+        if (selectedTableNames) {
+          tableFilter = ` AND TABLE_NAME IN (${selectedTableNames.map(() => '?').join(',')})`;
+          tableParams.push(...selectedTableNames);
+        }
         const [tables] = await connection.query(`
           SELECT TABLE_NAME as table_name
           FROM INFORMATION_SCHEMA.TABLES
           WHERE TABLE_SCHEMA = ?
           AND TABLE_TYPE = 'BASE TABLE'
+          ${tableFilter}
           ORDER BY TABLE_NAME
-        `, [database]);
+        `, tableParams);
 
         const schema = {};
 
@@ -342,14 +372,21 @@ async function getDatabaseSchema(config) {
       await client.connect();
 
       try {
-        // 获取所有表
+        // 获取表列表；如果传入 tableNames，只查选中的表
+        const tableParams = [schemaName];
+        let tableFilter = '';
+        if (selectedTableNames) {
+          tableFilter = ` AND table_name = ANY($2::text[])`;
+          tableParams.push(selectedTableNames);
+        }
         const tablesResult = await client.query(`
           SELECT table_name
           FROM information_schema.tables
-          WHERE table_schema = 'public'
+          WHERE table_schema = $1
           AND table_type = 'BASE TABLE'
+          ${tableFilter}
           ORDER BY table_name
-        `);
+        `, tableParams);
 
         const schema = {};
 
@@ -365,9 +402,9 @@ async function getDatabaseSchema(config) {
               is_nullable,
               column_default
             FROM information_schema.columns
-            WHERE table_schema = 'public' AND table_name = $1
+            WHERE table_schema = $1 AND table_name = $2
             ORDER BY ordinal_position
-          `, [tableName]);
+          `, [schemaName, tableName]);
 
           // 获取主键信息
           const pkResult = await client.query(`
@@ -376,7 +413,7 @@ async function getDatabaseSchema(config) {
             JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
             WHERE i.indrelid = $1::regclass
             AND i.indisprimary
-          `, [`public.${tableName}`]);
+          `, [`${schemaName}.${tableName}`]);
 
           const primaryKeys = new Set(pkResult.rows.map(r => r.column_name));
 
@@ -423,6 +460,112 @@ async function getDatabaseSchema(config) {
         await client.end();
         throw error;
       }
+    } else if (type === 'gaussdb') {
+      // GaussDB 使用 Java JDBC 桥查询。
+      // 支持按 schema / selected tables 分层加载，避免一次性扫描全库全列。
+      const dataSourceConfig = { host, port, database, username, ssl };
+      const tablePlaceholders = selectedTableNames
+        ? selectedTableNames.map(() => '?').join(',')
+        : '';
+      const tableFilter = selectedTableNames
+        ? `AND c.relname IN (${tablePlaceholders})`
+        : '';
+      const queryParams = selectedTableNames
+        ? [schemaName, ...selectedTableNames]
+        : [schemaName];
+
+      // 1. 获取表列表：直接查 pg_class，避免 pg_catalog.pg_tables 视图额外开销
+      const tables = await gaussdbJdbcQuery(
+        `SELECT c.oid AS table_oid, c.relname AS table_name
+         FROM pg_catalog.pg_class c
+         JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = ?
+           AND c.relkind IN ('r', 'p')
+           ${tableFilter}
+         ORDER BY c.relname`,
+        queryParams,
+        dataSourceConfig,
+        password,
+      );
+
+      if (!tables || tables.length === 0) {
+        return { success: true, database, schema: {} };
+      }
+
+      // 2. 一次性获取所有表的列信息。
+      // 避免 information_schema、format_type、pg_get_expr 这类在 GaussDB 上可能很慢的视图/函数。
+      const allColumns = await gaussdbJdbcQuery(
+        `SELECT
+           c.relname                                        AS table_name,
+           a.attname                                       AS column_name,
+           t.typname                                       AS data_type,
+           CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END AS is_nullable,
+           NULL::text                                      AS column_default
+         FROM pg_catalog.pg_class c
+         JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+         JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid
+         JOIN pg_catalog.pg_type t ON t.oid = a.atttypid
+         WHERE n.nspname = ?
+           AND c.relkind IN ('r', 'p')
+           AND a.attnum > 0
+           AND NOT a.attisdropped
+           ${tableFilter}
+         ORDER BY c.relname, a.attnum`,
+        queryParams,
+        dataSourceConfig,
+        password,
+      );
+
+      // 3. 一次性获取所有表的主键
+      const allPkRows = await gaussdbJdbcQuery(
+        `SELECT c.relname AS table_name, a.attname AS column_name
+         FROM pg_index i
+         JOIN pg_class c ON c.oid = i.indrelid
+         JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE i.indisprimary
+           AND n.nspname = ?
+           AND c.relkind IN ('r', 'p')
+           ${tableFilter}`,
+        queryParams,
+        dataSourceConfig,
+        password,
+      );
+
+      // 按表名分组列信息
+      const columnsByTable = {};
+      for (const col of allColumns) {
+        if (!columnsByTable[col.table_name]) columnsByTable[col.table_name] = [];
+        columnsByTable[col.table_name].push(col);
+      }
+
+      // 按表名分组主键
+      const pkByTable = {};
+      for (const pk of allPkRows) {
+        if (!pkByTable[pk.table_name]) pkByTable[pk.table_name] = new Set();
+        pkByTable[pk.table_name].add(pk.column_name);
+      }
+
+      // 组装 schema
+      const schema = {};
+      for (const row of tables) {
+        const tableName = row.table_name;
+        const cols = columnsByTable[tableName] || [];
+        const pks = pkByTable[tableName] || new Set();
+        schema[tableName] = {
+          columns: cols.map((col) => ({
+            column_name: col.column_name,
+            data_type: col.data_type,
+            is_nullable: col.is_nullable === 'YES',
+            column_key: pks.has(col.column_name) ? 'PRI' : '',
+            column_comment: '',
+            column_default: col.column_default,
+          })),
+          indexes: [],
+        };
+      }
+
+      return { success: true, database, schema };
     } else {
       return {
         success: false,
@@ -445,6 +588,149 @@ async function getDatabaseSchema(config) {
       error: error.message || '获取数据库结构失败',
     };
   }
+}
+
+async function listDatabaseSchemas(config) {
+  const { type, host, port, database, username, password, ssl } = config;
+  if (type === 'mysql') {
+    return {
+      success: true,
+      database,
+      schemas: [{ schemaName: database, tableCount: null }],
+    };
+  }
+
+  if (type === 'postgresql') {
+    const { Client } = require('pg');
+    const client = new Client({
+      host,
+      port,
+      database,
+      user: username,
+      password,
+      connectionTimeoutMillis: 10000,
+      ssl: ssl?.enabled ? { rejectUnauthorized: ssl.rejectUnauthorized !== false } : undefined,
+    });
+    await client.connect();
+    try {
+      const { rows } = await client.query(`
+        SELECT n.nspname AS schema_name, COUNT(c.oid)::int AS table_count
+        FROM pg_catalog.pg_namespace n
+        LEFT JOIN pg_catalog.pg_class c
+          ON c.relnamespace = n.oid AND c.relkind IN ('r', 'p')
+        WHERE n.nspname NOT LIKE 'pg_%'
+          AND n.nspname <> 'information_schema'
+        GROUP BY n.nspname
+        ORDER BY CASE WHEN n.nspname = 'public' THEN 0 ELSE 1 END, n.nspname
+      `);
+      return {
+        success: true,
+        database,
+        schemas: rows.map((r) => ({ schemaName: r.schema_name, tableCount: r.table_count })),
+      };
+    } finally {
+      await client.end();
+    }
+  }
+
+  if (type === 'gaussdb') {
+    const rows = await gaussdbJdbcQuery(
+      `SELECT n.nspname AS schema_name, COUNT(c.oid) AS table_count
+       FROM pg_catalog.pg_namespace n
+       LEFT JOIN pg_catalog.pg_class c
+         ON c.relnamespace = n.oid AND c.relkind IN ('r', 'p')
+       WHERE n.nspname NOT LIKE 'pg_%'
+         AND n.nspname <> 'information_schema'
+       GROUP BY n.nspname
+       ORDER BY CASE WHEN n.nspname = 'public' THEN 0 ELSE 1 END, n.nspname`,
+      [],
+      { host, port, database, username, ssl },
+      password,
+    );
+    return {
+      success: true,
+      database,
+      schemas: rows.map((r) => ({
+        schemaName: r.schema_name,
+        tableCount: Number(r.table_count || 0),
+      })),
+    };
+  }
+
+  return { success: false, error: `不支持的数据库类型: ${type}` };
+}
+
+async function listDatabaseTables(config) {
+  const { type, host, port, database, username, password, ssl, schemaName = 'public' } = config;
+
+  if (type === 'mysql') {
+    const mysql = require('mysql2/promise');
+    const connection = await mysql.createConnection({
+      host,
+      port,
+      user: username,
+      password,
+      database,
+      connectTimeout: 10000,
+    });
+    try {
+      const [rows] = await connection.query(
+        `SELECT TABLE_NAME AS table_name
+         FROM INFORMATION_SCHEMA.TABLES
+         WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE'
+         ORDER BY TABLE_NAME`,
+        [database],
+      );
+      return { success: true, database, schemaName: database, tables: rows.map((r) => r.table_name) };
+    } finally {
+      await connection.end();
+    }
+  }
+
+  if (type === 'postgresql') {
+    const { Client } = require('pg');
+    const client = new Client({
+      host,
+      port,
+      database,
+      user: username,
+      password,
+      connectionTimeoutMillis: 10000,
+      ssl: ssl?.enabled ? { rejectUnauthorized: ssl.rejectUnauthorized !== false } : undefined,
+    });
+    await client.connect();
+    try {
+      const { rows } = await client.query(
+        `SELECT c.relname AS table_name
+         FROM pg_catalog.pg_class c
+         JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = $1
+           AND c.relkind IN ('r', 'p')
+         ORDER BY c.relname`,
+        [schemaName],
+      );
+      return { success: true, database, schemaName, tables: rows.map((r) => r.table_name) };
+    } finally {
+      await client.end();
+    }
+  }
+
+  if (type === 'gaussdb') {
+    const rows = await gaussdbJdbcQuery(
+      `SELECT c.relname AS table_name
+       FROM pg_catalog.pg_class c
+       JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = ?
+         AND c.relkind IN ('r', 'p')
+       ORDER BY c.relname`,
+      [schemaName],
+      { host, port, database, username, ssl },
+      password,
+    );
+    return { success: true, database, schemaName, tables: rows.map((r) => r.table_name) };
+  }
+
+  return { success: false, error: `不支持的数据库类型: ${type}` };
 }
 
 /**
@@ -561,10 +847,10 @@ async function createDataSourceHandler(req, res) {
     }
 
     // 验证类型
-    if (!['mysql', 'postgresql'].includes(type)) {
+    if (!['mysql', 'postgresql', 'gaussdb'].includes(type)) {
       return res.status(400).json({
         success: false,
-        error: '不支持的数据库类型，仅支持 mysql 和 postgresql',
+        error: '不支持的数据库类型，仅支持 mysql、postgresql 和 gaussdb',
       });
     }
 
@@ -951,12 +1237,50 @@ async function testConnectionHandler(req, res) {
 }
 
 /**
+ * 校验数据源访问权限并返回数据源与明文密码
+ */
+async function resolveDataSourceWithPassword(req, id, logPrefix) {
+  const { id: userId } = req.user;
+  const isAdmin = req.user?.role === SystemRoles.ADMIN;
+
+  const dataSource = await getDataSourceById(id);
+  if (!dataSource) {
+    const err = new Error('数据源不存在');
+    err.statusCode = 404;
+    throw err;
+  }
+
+  const isPublic = dataSource.isPublic !== undefined ? Boolean(dataSource.isPublic) : false;
+  const isOwner = dataSource.createdBy.toString() === userId;
+  if (!isAdmin && !isOwner && !isPublic) {
+    logger.warn(`[${logPrefix}] 无权访问此数据源`, { id, userId, createdBy: dataSource.createdBy, isPublic });
+    const err = new Error('无权访问此数据源');
+    err.statusCode = 403;
+    throw err;
+  }
+
+  try {
+    const password = await decryptPassword(dataSource.password);
+    return { dataSource, password };
+  } catch (decryptError) {
+    if (decryptError.code === 'LEGACY_ENCRYPTION_FORMAT') {
+      decryptError.statusCode = 400;
+    }
+    throw decryptError;
+  }
+}
+
+/**
  * 获取数据源的数据库结构
  * @route GET /api/config/data-sources/:id/schema
  */
 async function getDataSourceSchemaHandler(req, res) {
   try {
     const { id } = req.params;
+    const schemaName = String(req.query.schemaName || req.query.schema || 'public');
+    const tableNames = req.query.tables
+      ? String(req.query.tables).split(',').map((t) => t.trim()).filter(Boolean)
+      : null;
     const { id: userId } = req.user;
     const isAdmin = req.user?.role === SystemRoles.ADMIN;
 
@@ -1022,6 +1346,8 @@ async function getDataSourceSchemaHandler(req, res) {
       username: dataSource.username,
       password,
       ssl: dataSource.ssl,
+      schemaName,
+      tableNames,
     });
 
     if (!result.success) {
@@ -1056,6 +1382,602 @@ async function getDataSourceSchemaHandler(req, res) {
   }
 }
 
+/**
+ * 获取数据源下的 schema 列表（轻量）
+ * @route GET /api/config/data-sources/:id/schemas
+ */
+async function listDataSourceSchemasHandler(req, res) {
+  const { id } = req.params;
+  try {
+    const { dataSource, password } = await resolveDataSourceWithPassword(req, id, 'listDataSourceSchemasHandler');
+    const result = await listDatabaseSchemas({
+      type: dataSource.type,
+      host: dataSource.host,
+      port: dataSource.port,
+      database: dataSource.database,
+      username: dataSource.username,
+      password,
+      ssl: dataSource.ssl,
+    });
+    if (!result.success) {
+      return res.status(500).json({ success: false, error: result.error || '获取 schema 列表失败' });
+    }
+    return res.json({ success: true, data: result });
+  } catch (error) {
+    logger.error('[listDataSourceSchemasHandler] Error:', error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      error: error.message || '获取 schema 列表失败',
+      code: error.code,
+    });
+  }
+}
+
+/**
+ * 获取指定 schema 下的表名列表（轻量）
+ * @route GET /api/config/data-sources/:id/schemas/:schemaName/tables
+ */
+async function listDataSourceSchemaTablesHandler(req, res) {
+  const { id, schemaName } = req.params;
+  try {
+    const { dataSource, password } = await resolveDataSourceWithPassword(req, id, 'listDataSourceSchemaTablesHandler');
+    const result = await listDatabaseTables({
+      type: dataSource.type,
+      host: dataSource.host,
+      port: dataSource.port,
+      database: dataSource.database,
+      username: dataSource.username,
+      password,
+      ssl: dataSource.ssl,
+      schemaName,
+    });
+    if (!result.success) {
+      return res.status(500).json({ success: false, error: result.error || '获取表列表失败' });
+    }
+    return res.json({ success: true, data: result });
+  } catch (error) {
+    logger.error('[listDataSourceSchemaTablesHandler] Error:', error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      error: error.message || '获取表列表失败',
+      code: error.code,
+    });
+  }
+}
+
+// ─────────────────────────────── Light Schema ────────────────────────────────
+
+const LightSchemaService = require('~/server/services/LightSchemaService');
+const CellVectorizationService = require('~/server/services/CellVectorizationService');
+const VectorDBService = require('~/server/services/RAG/VectorDBService');
+const EmbeddingService = require('~/server/services/RAG/EmbeddingService');
+
+let _vectorDB = null;
+let _embeddingService = null;
+
+async function getSharedServices() {
+  if (!_vectorDB) {
+    _vectorDB = new VectorDBService();
+    await _vectorDB.initialize();
+  }
+  if (!_embeddingService) {
+    // EmbeddingService 无需显式 initialize()，内部会延迟加载 ONNX 模型
+    _embeddingService = new EmbeddingService();
+  }
+  return { vectorDB: _vectorDB, embeddingService: _embeddingService };
+}
+
+/**
+ * POST /data-sources/:id/light-schema/generate
+ * 生成并存储指定数据源的 Light Schema
+ */
+async function generateLightSchemaHandler(req, res) {
+  const { id } = req.params;
+  const { tableNames, sampleLimit = 5, schemaName } = req.body || {};
+
+  try {
+    const dataSource = await getDataSourceById(id);
+    if (!dataSource) {
+      return res.status(404).json({ success: false, error: '数据源不存在' });
+    }
+
+    let password;
+    try {
+      password = await decryptPassword(dataSource.password);
+    } catch (err) {
+      return res.status(400).json({ success: false, error: err.message, code: err.code });
+    }
+
+    const { vectorDB, embeddingService } = await getSharedServices();
+    const service = new LightSchemaService();
+
+    const schemas = await service.generateForDataSource(dataSource, password, {
+      sampleLimit: Number(sampleLimit),
+      selectedTables: Array.isArray(tableNames) && tableNames.length > 0 ? tableNames : null,
+      schemaName: schemaName || undefined,
+    });
+    const count = await service.storeToVectorDB(String(dataSource._id), schemas, vectorDB, embeddingService);
+
+    logger.info(`[generateLightSchemaHandler] Generated ${count} light schemas for datasource: ${id}`);
+    return res.json({ success: true, count, tables: schemas.map((s) => s.tableName) });
+  } catch (error) {
+    logger.error('[generateLightSchemaHandler] Error:', error.message);
+    logger.error('[generateLightSchemaHandler] Stack:', error.stack);
+    return res.status(500).json({ success: false, error: error.message || 'Light Schema 生成失败' });
+  }
+}
+
+/**
+ * POST /data-sources/:id/cells/vectorize
+ * 对数据源的文本列进行单元格向量化
+ */
+async function vectorizeCellsHandler(req, res) {
+  const { id } = req.params;
+  const { tableNames, rowLimit = 100, schemaName } = req.body || {};
+
+  try {
+    const dataSource = await getDataSourceById(id);
+    if (!dataSource) {
+      return res.status(404).json({ success: false, error: '数据源不存在' });
+    }
+
+    let password;
+    try {
+      password = await decryptPassword(dataSource.password);
+    } catch (err) {
+      return res.status(400).json({ success: false, error: err.message, code: err.code });
+    }
+
+    const { vectorDB, embeddingService } = await getSharedServices();
+    const service = new CellVectorizationService();
+
+    const count = await service.vectorizeDataSource(dataSource, password, vectorDB, embeddingService, {
+      rowLimit: Number(rowLimit),
+      selectedTables: Array.isArray(tableNames) && tableNames.length > 0 ? tableNames : null,
+      schemaName: schemaName || undefined,
+    });
+
+    logger.info(`[vectorizeCellsHandler] Vectorized ${count} cells for datasource: ${id}`);
+    return res.json({ success: true, count });
+  } catch (error) {
+    logger.error('[vectorizeCellsHandler] Error:', error.message);
+    logger.error('[vectorizeCellsHandler] Stack:', error.stack);
+    return res.status(500).json({ success: false, error: error.message || '单元格向量化失败' });
+  }
+}
+
+/**
+ * GET /data-sources/:id/light-schema
+ * 查询已存储的 Light Schema 列表
+ */
+async function getLightSchemasHandler(req, res) {
+  const { id } = req.params;
+  try {
+    const dataSource = await getDataSourceById(id);
+    if (!dataSource) {
+      return res.status(404).json({ success: false, error: '数据源不存在' });
+    }
+
+    const { vectorDB } = await getSharedServices();
+    const schemas = await vectorDB.getLightSchemas(String(dataSource._id));
+    return res.json({ success: true, data: schemas });
+  } catch (error) {
+    logger.error('[getLightSchemasHandler] Error:', error);
+    return res.status(500).json({ success: false, error: error.message || '查询 Light Schema 失败' });
+  }
+}
+
+/**
+ * GET /data-sources/:id/cells
+ * 查询已存储的 Cell 向量列表
+ */
+async function getCellsHandler(req, res) {
+  const { id } = req.params;
+  const { tableName, columnName, limit } = req.query || {};
+  try {
+    const dataSource = await getDataSourceById(id);
+    if (!dataSource) {
+      return res.status(404).json({ success: false, error: '数据源不存在' });
+    }
+
+    const { vectorDB } = await getSharedServices();
+    const cells = await vectorDB.getCells(String(dataSource._id), {
+      tableName: tableName ? String(tableName) : undefined,
+      columnName: columnName ? String(columnName) : undefined,
+      limit: limit ? Number(limit) : undefined,
+    });
+    return res.json({ success: true, data: cells });
+  } catch (error) {
+    logger.error('[getCellsHandler] Error:', error);
+    return res.status(500).json({ success: false, error: error.message || '查询 Cell 向量失败' });
+  }
+}
+
+/**
+ * DELETE /data-sources/:id/light-schema/:tableName
+ * 删除指定表的 Light Schema
+ */
+async function deleteLightSchemaHandler(req, res) {
+  const { id, tableName } = req.params;
+  try {
+    const dataSource = await getDataSourceById(id);
+    if (!dataSource) {
+      return res.status(404).json({ success: false, error: '数据源不存在' });
+    }
+    if (!tableName) {
+      return res.status(400).json({ success: false, error: '缺少表名' });
+    }
+
+    const { vectorDB } = await getSharedServices();
+    await vectorDB.deleteLightSchemas(String(dataSource._id), [tableName]);
+    logger.info(`[deleteLightSchemaHandler] Deleted light schema for table: ${tableName}, datasource: ${id}`);
+    return res.json({ success: true, tableName });
+  } catch (error) {
+    logger.error('[deleteLightSchemaHandler] Error:', error.message);
+    return res.status(500).json({ success: false, error: error.message || '删除 Light Schema 失败' });
+  }
+}
+
+/**
+ * PUT /data-sources/:id/light-schema/:tableName
+ * 更新指定表的 Light Schema 内容（列增删改），重新 embed 后 upsert
+ * body: { columns: [...], primaryKeys: [...] }
+ */
+async function updateLightSchemaHandler(req, res) {
+  const { id, tableName } = req.params;
+  const { columns, primaryKeys } = req.body || {};
+
+  if (!Array.isArray(columns)) {
+    return res.status(400).json({ success: false, error: 'columns 必须为数组' });
+  }
+
+  try {
+    const dataSource = await getDataSourceById(id);
+    if (!dataSource) {
+      return res.status(404).json({ success: false, error: '数据源不存在' });
+    }
+
+    const { vectorDB, embeddingService } = await getSharedServices();
+
+    // 组装新的 LightSchema 对象
+    const newSchema = {
+      tableName,
+      columns: columns.map((c) => ({
+        name: String(c.name || '').trim(),
+        type: String(c.type || '').trim(),
+        nullable: Boolean(c.nullable),
+        description: String(c.description || '').trim(),
+        sampleValues: Array.isArray(c.sampleValues) ? c.sampleValues.map(String) : [],
+      })).filter((c) => c.name),
+      primaryKeys: Array.isArray(primaryKeys) ? primaryKeys.map(String) : [],
+    };
+
+    // 生成 DDL 文本
+    const cols = newSchema.columns
+      .map((c) => {
+        let line = `  ${c.name} ${c.type}`;
+        if (!c.nullable) line += ' NOT NULL';
+        if (c.description) line += ` -- ${c.description}`;
+        return line;
+      })
+      .join(',\n');
+    const pkLine = newSchema.primaryKeys.length > 0
+      ? `,\n  PRIMARY KEY (${newSchema.primaryKeys.join(', ')})`
+      : '';
+    const samples = newSchema.columns
+      .filter((c) => c.sampleValues?.length > 0)
+      .map((c) => `-- ${c.name} examples: ${c.sampleValues.slice(0, 5).join(', ')}`)
+      .join('\n');
+    const ddlText = `CREATE TABLE ${tableName} (\n${cols}${pkLine}\n);\n${samples}`.trim();
+
+    // 生成 embedding（用 DDL 文本）
+    let embedding = null;
+    try {
+      embedding = await embeddingService.embedText(ddlText);
+    } catch (e) {
+      logger.warn('[updateLightSchemaHandler] embed 失败，使用 null embedding:', e.message);
+    }
+
+    await vectorDB.upsertLightSchemas(String(dataSource._id), [{
+      tableName,
+      content: JSON.stringify(newSchema),
+      ddlText,
+      embedding,
+    }]);
+
+    logger.info(`[updateLightSchemaHandler] 更新 light schema: ${tableName}, datasource: ${id}`);
+    return res.json({
+      success: true,
+      tableName,
+      columnCount: newSchema.columns.length,
+    });
+  } catch (error) {
+    logger.error('[updateLightSchemaHandler] Error:', error.message);
+    return res.status(500).json({ success: false, error: error.message || '更新 Light Schema 失败' });
+  }
+}
+
+/**
+ * POST /data-sources/:id/cells
+ * 新增单条 Cell 向量记录
+ */
+async function createCellHandler(req, res) {
+  const { id } = req.params;
+  const { tableName, columnName, cellValue } = req.body || {};
+
+  if (!String(tableName || '').trim() || !String(columnName || '').trim() || !String(cellValue || '').trim()) {
+    return res.status(400).json({ success: false, error: 'tableName、columnName、cellValue 不能为空' });
+  }
+
+  try {
+    const dataSource = await getDataSourceById(id);
+    if (!dataSource) {
+      return res.status(404).json({ success: false, error: '数据源不存在' });
+    }
+
+    const { vectorDB, embeddingService } = await getSharedServices();
+
+    let embedding = null;
+    try {
+      embedding = await embeddingService.embedText(String(cellValue).trim());
+    } catch (e) {
+      logger.warn('[createCellHandler] embed 失败，使用 null embedding:', e.message);
+    }
+
+    const created = await vectorDB.createCell(String(dataSource._id), {
+      tableName: String(tableName).trim(),
+      columnName: String(columnName).trim(),
+      cellValue: String(cellValue).trim(),
+      embedding,
+    });
+
+    return res.json({ success: true, data: created });
+  } catch (error) {
+    logger.error('[createCellHandler] Error:', error.message);
+    return res.status(500).json({ success: false, error: error.message || '新增 Cell 向量失败' });
+  }
+}
+
+/**
+ * PUT /data-sources/:id/cells/:cellId
+ * 更新单条 Cell 向量记录
+ */
+async function updateCellHandler(req, res) {
+  const { id, cellId } = req.params;
+  const { tableName, columnName, cellValue } = req.body || {};
+
+  if (!String(tableName || '').trim() || !String(columnName || '').trim() || !String(cellValue || '').trim()) {
+    return res.status(400).json({ success: false, error: 'tableName、columnName、cellValue 不能为空' });
+  }
+
+  const cellIdNum = Number(cellId);
+  if (!Number.isInteger(cellIdNum) || cellIdNum <= 0) {
+    return res.status(400).json({ success: false, error: '无效的 cellId' });
+  }
+
+  try {
+    const dataSource = await getDataSourceById(id);
+    if (!dataSource) {
+      return res.status(404).json({ success: false, error: '数据源不存在' });
+    }
+
+    const { vectorDB, embeddingService } = await getSharedServices();
+
+    let embedding = null;
+    try {
+      embedding = await embeddingService.embedText(String(cellValue).trim());
+    } catch (e) {
+      logger.warn('[updateCellHandler] embed 失败，使用 null embedding:', e.message);
+    }
+
+    const updated = await vectorDB.updateCell(String(dataSource._id), cellIdNum, {
+      tableName: String(tableName).trim(),
+      columnName: String(columnName).trim(),
+      cellValue: String(cellValue).trim(),
+      embedding,
+    });
+
+    if (!updated) {
+      return res.status(404).json({ success: false, error: 'Cell 向量记录不存在' });
+    }
+
+    return res.json({ success: true, data: updated });
+  } catch (error) {
+    logger.error('[updateCellHandler] Error:', error.message);
+    return res.status(500).json({ success: false, error: error.message || '更新 Cell 向量失败' });
+  }
+}
+
+/**
+ * DELETE /data-sources/:id/cells/:cellId
+ * 删除单条 Cell 向量记录
+ */
+async function deleteCellHandler(req, res) {
+  const { id, cellId } = req.params;
+  const cellIdNum = Number(cellId);
+  if (!Number.isInteger(cellIdNum) || cellIdNum <= 0) {
+    return res.status(400).json({ success: false, error: '无效的 cellId' });
+  }
+
+  try {
+    const dataSource = await getDataSourceById(id);
+    if (!dataSource) {
+      return res.status(404).json({ success: false, error: '数据源不存在' });
+    }
+
+    const { vectorDB } = await getSharedServices();
+    const deleted = await vectorDB.deleteCellById(String(dataSource._id), cellIdNum);
+    if (!deleted) {
+      return res.status(404).json({ success: false, error: 'Cell 向量记录不存在' });
+    }
+
+    return res.json({ success: true, cellId: cellIdNum });
+  } catch (error) {
+    logger.error('[deleteCellHandler] Error:', error.message);
+    return res.status(500).json({ success: false, error: error.message || '删除 Cell 向量失败' });
+  }
+}
+
+// ─────────────────────── Excel 文件单元格向量化 ───────────────────────────────
+
+const multer = require('multer');
+const excelUpload = multer({ storage: multer.memoryStorage() }).single('file');
+
+/**
+ * POST /data-sources/:id/excel-files
+ * 上传 xlsx 文件并向量化所有单元格
+ */
+async function uploadExcelFileHandler(req, res) {
+  excelUpload(req, res, async (uploadErr) => {
+    if (uploadErr) {
+      return res.status(400).json({ success: false, error: uploadErr.message || '文件上传失败' });
+    }
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: '未收到文件，请上传 .xlsx 或 .xls 文件' });
+    }
+
+    const { id } = req.params;
+    // multer 默认以 Latin-1 解码 multipart 文件名，中文会乱码，需要重新按 UTF-8 解码
+    const rawName = req.file.originalname || 'unknown.xlsx';
+    const filename = Buffer.from(rawName, 'latin1').toString('utf8');
+
+    try {
+      const dataSource = await getDataSourceById(id);
+      if (!dataSource) {
+        return res.status(404).json({ success: false, error: '数据源不存在' });
+      }
+
+      const ExcelCellVectorizationService = require('~/server/services/Files/ExcelCellVectorizationService');
+      const svc = new ExcelCellVectorizationService();
+
+      // primary_columns: 逗号分隔的主检索列名，如 "指标名称,指标代码"（支持中英文逗号）
+      const primaryColumns = req.body.primary_columns
+        ? req.body.primary_columns.split(/[,，]/).map((c) => c.trim()).filter(Boolean)
+        : [];
+
+      const result = await svc.vectorize({
+        fileBufferOrPath: req.file.buffer,
+        entityId: String(dataSource._id),
+        userId: req.user?.id || null,
+        filename,
+        sheetName: req.body.sheet_name || undefined,
+        primaryColumns,
+      });
+
+      logger.info(
+        `[uploadExcelFileHandler] 向量化完成：fileId=${result.fileId}, cells=${result.cellCount}, rows=${result.rowCount}`,
+      );
+      return res.json({ success: true, ...result });
+    } catch (error) {
+      logger.error('[uploadExcelFileHandler] Error:', error.message, error.stack);
+      return res.status(500).json({ success: false, error: error.message || 'Excel 向量化失败' });
+    }
+  });
+}
+
+/**
+ * GET /data-sources/:id/excel-files
+ * 列出该数据源下已向量化的 Excel 文件
+ */
+async function listExcelFilesHandler(req, res) {
+  const { id } = req.params;
+  try {
+    const dataSource = await getDataSourceById(id);
+    if (!dataSource) {
+      return res.status(404).json({ success: false, error: '数据源不存在' });
+    }
+
+    const ExcelCellVectorizationService = require('~/server/services/Files/ExcelCellVectorizationService');
+    const svc = new ExcelCellVectorizationService();
+    const files = await svc.listByEntityId(String(dataSource._id));
+    return res.json({ success: true, data: files });
+  } catch (error) {
+    logger.error('[listExcelFilesHandler] Error:', error.message);
+    return res.status(500).json({ success: false, error: error.message || '查询 Excel 文件列表失败' });
+  }
+}
+
+/**
+ * DELETE /data-sources/:id/excel-files/:fileId
+ * 删除指定 Excel 文件的所有向量记录
+ */
+async function deleteExcelFileHandler(req, res) {
+  const { id, fileId } = req.params;
+  try {
+    const dataSource = await getDataSourceById(id);
+    if (!dataSource) {
+      return res.status(404).json({ success: false, error: '数据源不存在' });
+    }
+
+    const ExcelCellVectorizationService = require('~/server/services/Files/ExcelCellVectorizationService');
+    const svc = new ExcelCellVectorizationService();
+    const deletedCount = await svc.deleteByFileId(fileId);
+    return res.json({ success: true, deletedCount });
+  } catch (error) {
+    logger.error('[deleteExcelFileHandler] Error:', error.message);
+    return res.status(500).json({ success: false, error: error.message || '删除 Excel 文件失败' });
+  }
+}
+
+/**
+ * GET /data-sources/:id/excel-files/:fileId/rows
+ * 返回指定 Excel 文件的原始行数据（用于预览）
+ */
+async function getExcelFileRowsHandler(req, res) {
+  const { id, fileId } = req.params;
+  const limit = Math.min(Number(req.query.limit) || 200, 500);
+  try {
+    const dataSource = await getDataSourceById(id);
+    if (!dataSource) {
+      return res.status(404).json({ success: false, error: '数据源不存在' });
+    }
+
+    const ExcelCellVectorizationService = require('~/server/services/Files/ExcelCellVectorizationService');
+    const svc = new ExcelCellVectorizationService();
+    const rows = await svc.getFileRows(fileId, limit);
+    return res.json({ success: true, data: rows });
+  } catch (error) {
+    logger.error('[getExcelFileRowsHandler] Error:', error.message);
+    return res.status(500).json({ success: false, error: error.message || '获取 Excel 预览失败' });
+  }
+}
+
+/**
+ * POST /data-sources/:id/excel-files/search
+ * 语义检索 Excel 单元格，返回命中行
+ */
+async function searchExcelCellsHandler(req, res) {
+  const { id } = req.params;
+  const { query, top_k = 10, min_score = 0.5 } = req.body;
+
+  if (!query) {
+    return res.status(400).json({ success: false, error: '请提供查询文本 query' });
+  }
+
+  try {
+    const dataSource = await getDataSourceById(id);
+    if (!dataSource) {
+      return res.status(404).json({ success: false, error: '数据源不存在' });
+    }
+
+    const ExcelCellVectorizationService = require('~/server/services/Files/ExcelCellVectorizationService');
+    const svc = new ExcelCellVectorizationService();
+    const results = await svc.search({
+      entityId: String(dataSource._id),
+      query,
+      topK: Number(top_k),
+      minScore: Number(min_score),
+    });
+
+    return res.json({ success: true, data: results });
+  } catch (error) {
+    logger.error('[searchExcelCellsHandler] Error:', error.message);
+    return res.status(500).json({ success: false, error: error.message || 'Excel 检索失败' });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 module.exports = {
   createDataSourceHandler,
   getDataSourcesHandler,
@@ -1065,6 +1987,22 @@ module.exports = {
   testDataSourceConnectionHandler,
   testConnectionHandler,
   getDataSourceSchemaHandler,
+  listDataSourceSchemasHandler,
+  listDataSourceSchemaTablesHandler,
+  generateLightSchemaHandler,
+  vectorizeCellsHandler,
+  getLightSchemasHandler,
+  getCellsHandler,
+  deleteLightSchemaHandler,
+  updateLightSchemaHandler,
+  createCellHandler,
+  updateCellHandler,
+  deleteCellHandler,
+  uploadExcelFileHandler,
+  listExcelFilesHandler,
+  deleteExcelFileHandler,
+  getExcelFileRowsHandler,
+  searchExcelCellsHandler,
   getDatabaseSchema,
   decryptPassword,
   encryptPassword,
