@@ -1,5 +1,5 @@
-import React, { useState, useRef, useMemo } from 'react';
-import { Database, MessageSquare, BookOpen, FileText, Plus, Trash2, Eye, Upload, X, ChevronRight, ChevronDown, Folder, FolderOpen, Server, Pencil, Sparkles, Bot, FileUp, TestTube } from 'lucide-react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { Database, MessageSquare, BookOpen, FileText, Plus, Trash2, Eye, Upload, X, ChevronRight, ChevronDown, Folder, FolderOpen, Server, Pencil, Sparkles, Bot, FileUp, TestTube, FileSpreadsheet, RefreshCw, Search, Loader2 } from 'lucide-react';
 import * as yaml from 'js-yaml';
 import { Button, useToastContext, Spinner, Dropdown } from '@because/client';
 import {
@@ -42,7 +42,7 @@ type AddKnowledgeRequest = {
   data: Record<string, any>;
 };
 
-type KnowledgeType = 'semantic_model' | 'qa_pair' | 'synonym' | 'business_knowledge';
+type KnowledgeType = 'semantic_model' | 'qa_pair' | 'synonym' | 'business_knowledge' | 'excel_file';
 
 interface TabConfig {
   id: KnowledgeType;
@@ -55,6 +55,7 @@ const tabs: TabConfig[] = [
   { id: 'qa_pair', label: 'QA对', icon: <MessageSquare className="h-4 w-4" /> },
   { id: 'synonym', label: '同义词', icon: <BookOpen className="h-4 w-4" /> },
   { id: 'business_knowledge', label: '业务知识', icon: <FileText className="h-4 w-4" /> },
+  { id: 'excel_file', label: 'Excel 文件', icon: <FileSpreadsheet className="h-4 w-4" /> },
 ];
 
 export default function KnowledgeBaseManagement() {
@@ -86,12 +87,135 @@ export default function KnowledgeBaseManagement() {
 
   // 语义模型需要包含子项以支持层级展示，但默认只显示父级
   // 根据选中的数据源过滤知识库（使用 entityId）
-  const { data: knowledgeData, refetch } = useListKnowledgeQuery({
-    type: activeTab,
-    entityId: selectedDataSourceId || undefined, // 使用数据源 ID 作为 entityId
-    includeChildren: activeTab === 'semantic_model', // 语义模型需要包含子项数据，但前端只显示父级
-    limit: 100,
-  });
+  // Excel 文件 Tab 不走知识库查询，直接用独立接口
+  const { data: knowledgeData, refetch } = useListKnowledgeQuery(
+    {
+      type: activeTab as Exclude<KnowledgeType, 'excel_file'>,
+      entityId: selectedDataSourceId || undefined,
+      includeChildren: activeTab === 'semantic_model',
+      limit: 100,
+    },
+    { enabled: activeTab !== 'excel_file' },
+  );
+
+  // ── Excel 文件向量化 state ──────────────────────────────────────────────────
+  interface ExcelFile { fileId: string; filename: string; cellCount: number; rowCount: number; createdAt: string; primaryColumns?: string[]; }
+  interface ExcelSearchResult { score: number; cellValue: string; columnName: string; fullRow: string; filename: string; rowIndex: number; sheetName: string; isPrimaryColumn?: boolean; }
+  interface ExcelFileRow { rowIndex: number; fullRow: string; sheetName: string; }
+  const excelInputRef = useRef<HTMLInputElement>(null);
+  const [excelFiles, setExcelFiles] = useState<ExcelFile[]>([]);
+  const [loadingExcelFiles, setLoadingExcelFiles] = useState(false);
+  const [uploadingExcel, setUploadingExcel] = useState(false);
+  const [excelSearchQuery, setExcelSearchQuery] = useState('');
+  const [excelSearching, setExcelSearching] = useState(false);
+  const [excelSearchResults, setExcelSearchResults] = useState<ExcelSearchResult[]>([]);
+  const [previewFile, setPreviewFile] = useState<{ file: ExcelFile; rows: ExcelFileRow[] } | null>(null);
+  const [loadingPreview, setLoadingPreview] = useState(false);
+  // 上传主列配置弹窗
+  const [pendingUploadFile, setPendingUploadFile] = useState<File | null>(null);
+  const [showUploadConfigModal, setShowUploadConfigModal] = useState(false);
+  const [primaryColumnsInput, setPrimaryColumnsInput] = useState('');
+
+  const fetchExcelFiles = async (dsId?: string) => {
+    const id = dsId ?? selectedDataSourceId;
+    if (!id) return;
+    setLoadingExcelFiles(true);
+    try {
+      const res = await (dataService as any).listExcelFiles(id);
+      if (res?.success) setExcelFiles(res.data || []);
+    } catch (_) { /* 静默 */ } finally { setLoadingExcelFiles(false); }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'excel_file' && selectedDataSourceId) fetchExcelFiles();
+  }, [activeTab, selectedDataSourceId]);
+
+  // 文件选中后先弹配置弹窗
+  const handleFileSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !selectedDataSourceId) return;
+    e.target.value = '';
+    setPendingUploadFile(file);
+    setPrimaryColumnsInput('');
+    setShowUploadConfigModal(true);
+  };
+
+  // 确认后真正上传
+  const handleExcelUpload = async () => {
+    if (!pendingUploadFile || !selectedDataSourceId) return;
+    setShowUploadConfigModal(false);
+    setUploadingExcel(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', pendingUploadFile);
+      if (primaryColumnsInput.trim()) {
+        formData.append('primary_columns', primaryColumnsInput.trim());
+      }
+      const res = await (dataService as any).uploadExcelFile(selectedDataSourceId, formData);
+      if (res?.success) {
+        showToast({ message: `上传成功：${res.rowCount} 行，${res.cellCount} 个单元格已向量化`, status: 'success' });
+        await fetchExcelFiles();
+      } else {
+        showToast({ message: `上传失败: ${res?.error || '未知错误'}`, status: 'error' });
+      }
+    } catch (err: any) {
+      showToast({ message: `上传失败: ${err?.message || err}`, status: 'error' });
+    } finally {
+      setUploadingExcel(false);
+      setPendingUploadFile(null);
+    }
+  };
+
+  const handleDeleteExcelFile = async (fileId: string, filename: string) => {
+    if (!selectedDataSourceId) return;
+    if (!window.confirm(`确定删除「${filename}」的所有向量数据吗？`)) return;
+    try {
+      const res = await (dataService as any).deleteExcelFile(selectedDataSourceId, fileId);
+      if (res?.success) {
+        showToast({ message: `已删除 ${res.deletedCount} 条向量记录`, status: 'success' });
+        await fetchExcelFiles();
+        setExcelSearchResults([]);
+      } else {
+        showToast({ message: `删除失败: ${res?.error}`, status: 'error' });
+      }
+    } catch (err: any) {
+      showToast({ message: `删除失败: ${err?.message || err}`, status: 'error' });
+    }
+  };
+
+  const handleExcelSearch = async () => {
+    if (!excelSearchQuery.trim() || !selectedDataSourceId) return;
+    setExcelSearching(true);
+    setExcelSearchResults([]);
+    try {
+      const res = await (dataService as any).searchExcelCells(selectedDataSourceId, { query: excelSearchQuery.trim(), top_k: 10 });
+      if (res?.success) {
+        setExcelSearchResults(res.data || []);
+        if ((res.data || []).length === 0) showToast({ message: '未找到匹配结果', status: 'warning' });
+      } else {
+        showToast({ message: `检索失败: ${res?.error}`, status: 'error' });
+      }
+    } catch (err: any) {
+      showToast({ message: `检索失败: ${err?.message || err}`, status: 'error' });
+    } finally { setExcelSearching(false); }
+  };
+
+  const handlePreviewExcelFile = async (file: ExcelFile) => {
+    if (!selectedDataSourceId) return;
+    setLoadingPreview(true);
+    setPreviewFile(null);
+    try {
+      const res = await (dataService as any).getExcelFileRows(selectedDataSourceId, file.fileId, 200);
+      if (res?.success) {
+        setPreviewFile({ file, rows: res.data || [] });
+      } else {
+        showToast({ message: `预览失败: ${res?.error}`, status: 'error' });
+      }
+    } catch (err: any) {
+      showToast({ message: `预览失败: ${err?.message || err}`, status: 'error' });
+    } finally { setLoadingPreview(false); }
+  };
+  // ────────────────────────────────────────────────────────────────────────────
 
   const knowledgeEntries = knowledgeData?.data || [];
 
@@ -225,16 +349,41 @@ export default function KnowledgeBaseManagement() {
             <TestTube className="h-4 w-4" />
             RAG测试
           </Button>
-          <Button
-            type="button"
-            onClick={() => setShowAddModal(true)}
-            className="btn btn-primary relative flex items-center gap-2 rounded-lg px-3 py-2"
-            disabled={!selectedDataSourceId}
-            title={!selectedDataSourceId ? '请先选择数据源' : ''}
-          >
-            <Plus className="h-4 w-4" />
-            添加{activeTabConfig?.label}
-          </Button>
+          {activeTab !== 'excel_file' && (
+            <Button
+              type="button"
+              onClick={() => setShowAddModal(true)}
+              className="btn btn-primary relative flex items-center gap-2 rounded-lg px-3 py-2"
+              disabled={!selectedDataSourceId}
+              title={!selectedDataSourceId ? '请先选择数据源' : ''}
+            >
+              <Plus className="h-4 w-4" />
+              添加{activeTabConfig?.label}
+            </Button>
+          )}
+          {activeTab === 'excel_file' && (
+            <>
+              <Button
+                type="button"
+                onClick={() => excelInputRef.current?.click()}
+                disabled={!selectedDataSourceId || uploadingExcel}
+                className="btn btn-primary relative flex items-center gap-2 rounded-lg px-3 py-2"
+                title={!selectedDataSourceId ? '请先选择数据源' : ''}
+              >
+                {uploadingExcel ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                {uploadingExcel ? '向量化中…' : '上传 Excel'}
+              </Button>
+              <input
+                ref={excelInputRef}
+                type="file"
+                accept=".xlsx,.xls"
+                aria-label="上传 Excel 文件"
+                title="上传 Excel 文件"
+                className="hidden"
+                onChange={handleFileSelected}
+              />
+            </>
+          )}
         </div>
       </div>
 
@@ -247,6 +396,128 @@ export default function KnowledgeBaseManagement() {
               <p className="text-sm">请先选择数据源</p>
               <p className="mt-2 text-xs text-text-tertiary">
                 在上方选择数据源后，可以管理该数据源绑定的知识库
+              </p>
+            </div>
+          </div>
+        ) : activeTab === 'excel_file' ? (
+          /* ── Excel 文件向量化面板 ── */
+          <div className="flex flex-col gap-4">
+            {/* 文件列表 */}
+            <div className="rounded-xl border border-border-light bg-surface-primary p-4">
+              <div className="mb-3 flex items-center justify-between">
+                <span className="text-sm font-medium text-text-primary">
+                  {loadingExcelFiles ? '加载中…' : `${excelFiles.length} 个文件`}
+                </span>
+                <button
+                  onClick={() => fetchExcelFiles()}
+                  disabled={loadingExcelFiles}
+                  className="flex items-center gap-1 text-xs text-text-secondary hover:text-green-400 disabled:opacity-50 transition-colors"
+                >
+                  <RefreshCw className={`h-3 w-3 ${loadingExcelFiles ? 'animate-spin' : ''}`} />
+                  刷新
+                </button>
+              </div>
+
+              {excelFiles.length === 0 ? (
+                <div className="flex h-32 items-center justify-center">
+                  <div className="text-center">
+                    <FileSpreadsheet className="mx-auto mb-2 h-8 w-8 text-text-secondary/40" />
+                    <p className="text-sm text-text-secondary">暂无文件</p>
+                    <p className="mt-1 text-xs text-text-tertiary">点击右上角「上传 Excel」添加文件</p>
+                  </div>
+                </div>
+              ) : (
+                <ul className="flex flex-col gap-2">
+                  {excelFiles.map((f) => (
+                    <li key={f.fileId} className="flex items-center justify-between rounded-lg border border-border-light bg-surface-secondary px-3 py-2.5">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <FileSpreadsheet className="h-4 w-4 text-green-400 shrink-0" />
+                        <span className="text-sm text-text-primary truncate" title={f.filename}>{f.filename}</span>
+                        <span className="text-xs text-text-secondary whitespace-nowrap">
+                          {f.rowCount} 行 · {f.cellCount} 个单元格
+                        </span>
+                        {f.primaryColumns && f.primaryColumns.length > 0 && (
+                          <span className="text-[10px] rounded bg-amber-700/30 px-1.5 py-0.5 text-amber-300 whitespace-nowrap" title={`主列: ${f.primaryColumns.join(', ')}`}>
+                            主列: {f.primaryColumns.join(', ')}
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0 ml-2">
+                        <span className="text-xs text-text-secondary">{new Date(f.createdAt).toLocaleDateString()}</span>
+                        <button
+                          onClick={() => handlePreviewExcelFile(f)}
+                          title="预览内容"
+                          disabled={loadingPreview}
+                          className="rounded p-1 text-text-secondary hover:text-blue-400 hover:bg-blue-400/10 transition-colors disabled:opacity-50"
+                        >
+                          <Eye className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          onClick={() => handleDeleteExcelFile(f.fileId, f.filename)}
+                          title="删除"
+                          className="rounded p-1 text-text-secondary hover:text-red-400 hover:bg-red-400/10 transition-colors"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            {/* 测试检索 */}
+            <div className="rounded-xl border border-border-light bg-surface-primary p-4 flex flex-col gap-3">
+              <p className="text-sm font-medium text-text-primary">测试检索</p>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={excelSearchQuery}
+                  onChange={(e) => setExcelSearchQuery(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleExcelSearch()}
+                  placeholder="输入关键词，如：存款余额"
+                  className="flex-1 rounded-md border border-border-light bg-surface-secondary px-3 py-1.5 text-sm text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:ring-1 focus:ring-green-500"
+                />
+                <button
+                  onClick={handleExcelSearch}
+                  disabled={excelSearching || !excelSearchQuery.trim() || excelFiles.length === 0}
+                  className="flex items-center gap-1.5 rounded-md bg-green-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-green-500 disabled:opacity-50 transition-colors"
+                >
+                  {excelSearching ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}
+                  检索
+                </button>
+              </div>
+
+              {excelSearchResults.length > 0 && (
+                <ul className="flex flex-col gap-2">
+                  {excelSearchResults.map((r, i) => (
+                    <li key={i} className="rounded-lg border border-border-light bg-surface-secondary p-3 flex flex-col gap-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="text-xs font-medium text-green-400">{r.columnName}</span>
+                          {r.isPrimaryColumn && (
+                            <span className="rounded bg-amber-700/40 px-1 py-0.5 text-[10px] font-semibold text-amber-300">主列</span>
+                          )}
+                          <span className="text-xs text-text-secondary">=</span>
+                          <span className="rounded bg-green-900/30 px-1.5 py-0.5 text-xs font-semibold text-green-300">{r.cellValue}</span>
+                        </div>
+                        <div className="flex items-center gap-2 text-xs text-text-secondary whitespace-nowrap shrink-0">
+                          <span className="text-[10px] text-text-secondary/60 truncate max-w-[80px]" title={r.filename}>{r.filename}</span>
+                          <span className="rounded bg-green-700/30 px-1.5 py-0.5 text-green-400">
+                            {(r.score * 100).toFixed(0)}%
+                          </span>
+                        </div>
+                      </div>
+                      <p className="text-xs text-text-secondary leading-relaxed line-clamp-3" title={r.fullRow}>
+                        {r.fullRow}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              <p className="text-xs text-text-secondary">
+                仅搜索当前数据源的 Excel 文件向量，用于验证文件是否被正确向量化。右上角「RAG测试」会综合检索全部知识库（QA对、同义词、语义模型、业务知识 + Excel），模拟 Agent 实际调用效果。
               </p>
             </div>
           </div>
@@ -316,6 +587,104 @@ export default function KnowledgeBaseManagement() {
       {/* 查看模态框 */}
       {showViewModal && (
         <ViewKnowledgeModal entry={showViewModal} onClose={() => setShowViewModal(null)} />
+      )}
+
+      {/* Excel 上传主列配置弹窗 */}
+      {showUploadConfigModal && pendingUploadFile && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-xl border border-border-light bg-surface-primary p-6 shadow-xl flex flex-col gap-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-semibold text-text-primary">上传 Excel 文件</h3>
+              <button
+                onClick={() => { setShowUploadConfigModal(false); setPendingUploadFile(null); }}
+                title="取消"
+                aria-label="取消上传"
+                className="rounded p-1 text-text-secondary hover:text-text-primary hover:bg-surface-secondary transition-colors"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="rounded-lg bg-surface-secondary px-3 py-2 flex items-center gap-2">
+              <FileSpreadsheet className="h-4 w-4 text-green-400 shrink-0" />
+              <span className="text-sm text-text-primary truncate">{pendingUploadFile.name}</span>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <label className="text-sm font-medium text-text-primary">
+                主检索列名 <span className="text-text-secondary font-normal">（可选）</span>
+              </label>
+              <input
+                type="text"
+                value={primaryColumnsInput}
+                onChange={(e) => setPrimaryColumnsInput(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleExcelUpload()}
+                placeholder="如：指标名称，多列用逗号分隔（中英文均可）"
+                className="rounded-md border border-border-light bg-surface-secondary px-3 py-1.5 text-sm text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:ring-1 focus:ring-green-500"
+                autoFocus
+              />
+              <p className="text-xs text-text-tertiary">
+                指定后，该列的单元格命中时会优先排在检索结果前面。适合指标名称、产品名等核心标识列。
+              </p>
+            </div>
+
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => { setShowUploadConfigModal(false); setPendingUploadFile(null); }}
+                className="rounded-md border border-border-light px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary hover:bg-surface-secondary transition-colors"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleExcelUpload}
+                className="rounded-md bg-green-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-green-500 transition-colors"
+              >
+                开始向量化
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Excel 文件预览模态框 */}
+      {previewFile && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="flex max-h-[80vh] w-full max-w-3xl flex-col rounded-xl border border-border-light bg-surface-primary shadow-2xl">
+            <div className="flex items-center justify-between border-b border-border-light px-5 py-4">
+              <div className="flex items-center gap-2 min-w-0">
+                <FileSpreadsheet className="h-5 w-5 text-green-400 shrink-0" />
+                <h3 className="text-base font-semibold text-text-primary truncate">{previewFile.file.filename}</h3>
+                <span className="text-xs text-text-secondary whitespace-nowrap">
+                  {previewFile.rows.length} 行
+                </span>
+              </div>
+              <button onClick={() => setPreviewFile(null)} title="关闭预览" aria-label="关闭预览" className="rounded p-1 text-text-secondary hover:text-text-primary transition-colors">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto p-4">
+              {previewFile.rows.length === 0 ? (
+                <p className="text-sm text-text-secondary">暂无数据</p>
+              ) : (
+                <ul className="flex flex-col gap-1.5">
+                  {previewFile.rows.map((row) => (
+                    <li key={`${row.sheetName}-${row.rowIndex}`} className="flex items-start gap-2 rounded-md border border-border-light bg-surface-secondary px-3 py-2">
+                      <span className="shrink-0 rounded bg-surface-primary px-1.5 py-0.5 font-mono text-[10px] text-text-secondary">
+                        {row.rowIndex + 1}
+                      </span>
+                      <span className="text-xs text-text-primary leading-relaxed break-all">{row.fullRow}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div className="border-t border-border-light px-5 py-3 flex justify-end">
+              <button onClick={() => setPreviewFile(null)} className="rounded-lg bg-surface-secondary px-4 py-1.5 text-sm text-text-secondary hover:text-text-primary transition-colors">
+                关闭
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* RAG测试模态框 */}

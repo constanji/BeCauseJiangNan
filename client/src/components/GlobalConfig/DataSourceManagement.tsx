@@ -10,9 +10,10 @@ import {
   useTestDataSourceConnectionMutation,
 } from '~/data-provider/DataSources';
 import type { DataSource, DataSourceCreateParams } from '@because/data-provider';
-import { Plus, Edit, Trash2, TestTube, CheckCircle2, XCircle, Clock, Database, Eye, EyeOff } from 'lucide-react';
+import { Plus, Edit, Trash2, TestTube, CheckCircle2, XCircle, Clock, Database, Eye, EyeOff, Sparkles } from 'lucide-react';
 import DataSourceEditor from './DataSourceEditor';
 import SemanticModelConfig from './SemanticModelConfig';
+import DataSourcePreprocessing from './DataSourcePreprocessing';
 
 export default function DataSourceManagement() {
   const localize = useLocalize();
@@ -21,6 +22,7 @@ export default function DataSourceManagement() {
   const [editingDataSource, setEditingDataSource] = useState<DataSource | undefined>(undefined);
   const [testingIds, setTestingIds] = useState<Set<string>>(new Set());
   const [semanticModelDataSourceId, setSemanticModelDataSourceId] = useState<string | null>(null);
+  const [preprocessingDataSource, setPreprocessingDataSource] = useState<DataSource | null>(null);
 
   const { data: dataSourcesResponse, isLoading, refetch } = useListDataSourcesQuery();
   const dataSources = dataSourcesResponse?.data || [];
@@ -167,6 +169,16 @@ export default function DataSourceManagement() {
     );
   }
 
+  if (preprocessingDataSource) {
+    return (
+      <DataSourcePreprocessing
+        dataSourceId={preprocessingDataSource._id}
+        dataSourceName={preprocessingDataSource.name}
+        onBack={() => setPreprocessingDataSource(null)}
+      />
+    );
+  }
+
   if (showEditor) {
     return (
       <DataSourceEditor
@@ -183,7 +195,7 @@ export default function DataSourceManagement() {
         <div>
           <h2 className="text-xl font-semibold text-text-primary">数据源管理</h2>
           <p className="mt-1 text-sm text-text-secondary">
-            管理数据库连接配置，支持 MySQL 和 PostgreSQL
+            管理数据库连接配置，支持 MySQL、PostgreSQL 和 GaussDB
           </p>
         </div>
         <Button
@@ -303,6 +315,14 @@ export default function DataSourceManagement() {
                     >
                       <Database className="h-4 w-4" />
                       数据库结构
+                    </Button>
+                    <Button
+                      onClick={() => setPreprocessingDataSource(dataSource)}
+                      className="btn btn-neutral border-token-border-light relative flex items-center gap-2 rounded-lg px-3 py-2"
+                      title="数据预处理（Light Schema + 单元格向量化）"
+                    >
+                      <Sparkles className="h-4 w-4" />
+                      数据预处理
                     </Button>
                     <Button
                       onClick={() => handleTestConnection(dataSource._id)}

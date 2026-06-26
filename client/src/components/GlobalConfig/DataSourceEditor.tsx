@@ -73,6 +73,15 @@ const DB_TYPES = [
     activeBorder: 'border-green-500',
     logo: '🐘',
   },
+  {
+    value: 'gaussdb',
+    label: 'GaussDB',
+    defaultPort: 8000,
+    color: 'text-orange-400',
+    bg: 'bg-orange-500/10',
+    activeBorder: 'border-orange-500',
+    logo: '🔴',
+  },
 ];
 
 const defaultSSL = {
