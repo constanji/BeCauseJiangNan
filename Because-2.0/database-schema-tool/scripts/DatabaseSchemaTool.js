@@ -6,6 +6,10 @@ const { logger } = require('@because/data-schemas');
 const { decryptV2 } = require('@because/api');
 const path = require('path');
 const { gaussdbJdbcQuery } = require(path.join(__dirname, '../../utils/gaussdbJdbcBridge'));
+const {
+  retrieveLightSchemaBundle,
+  DEFAULT_CELL_TOP_K,
+} = require(path.join(__dirname, '../../utils/lightSchemaRetrieval'));
 
 // 延迟加载模型函数，避免路径别名问题
 let getDataSourceById = null;
@@ -583,78 +587,74 @@ class DatabaseSchemaTool extends Tool {
    * @param {number} cellTopK       Cell 匹配条数，默认 10
    * @returns {Promise<{schemas: Array|null, cellMatchStr: string}>}
    */
-  async fetchSchemasByQuestion(datasourceId, question, tableTopK = 15, cellTopK = 10) {
+  async fetchSchemasByQuestion(datasourceId, question, tableTopK = 15, cellTopK = DEFAULT_CELL_TOP_K) {
     try {
       const VectorDBService = require(path.resolve(__dirname, '../../../api/server/services/RAG/VectorDBService'));
       const EmbeddingService = require(path.resolve(__dirname, '../../../api/server/services/RAG/EmbeddingService'));
       const vectorDB = new VectorDBService();
-      const embedding = new EmbeddingService();
+      const embeddingService = new EmbeddingService();
       await vectorDB.initialize();
 
-      // 只做一次 embedding，复用于 schema 检索 + cell 检索
-      const queryEmbedding = await embedding.embedText(question);
-      if (!queryEmbedding) {
-        // embedding 失败时降级为全量 schema + 无 cell 匹配
+      const bundle = await retrieveLightSchemaBundle({
+        datasourceId,
+        queryText: question,
+        tables: [],
+        schemaTopK: tableTopK,
+        cellTopK,
+        vectorDB,
+        embeddingService,
+      });
+
+      if (bundle.rows.length === 0 && question) {
         const allSchemas = await vectorDB.getLightSchemas(datasourceId);
-        return { schemas: allSchemas?.length ? allSchemas : null, cellMatchStr: '' };
+        return {
+          schemas: allSchemas?.length ? allSchemas : null,
+          cellMatchStr: '',
+          cellMatches: [],
+          cellTableBoost: [],
+        };
       }
 
-      // 并行：语义检索相关表 + Cell 字面量匹配
-      const [schemaResults, cellMatches] = await Promise.all([
-        vectorDB.searchLightSchema(datasourceId, queryEmbedding, tableTopK),
-        vectorDB.searchCells(datasourceId, queryEmbedding, cellTopK, 0.5),
-      ]);
-
-      const schemas = schemaResults?.length ? schemaResults : null;
-      const cellMatchStr = cellMatches?.length
-        ? cellMatches.map((m) => `${m.tableName}.${m.columnName} = "${m.cellValue}"`).join(', ')
-        : '';
-
-      logger.info(
-        `[DatabaseSchemaTool] 语义检索完成：` +
-        `命中 ${schemas?.length ?? 0} 张表（top ${tableTopK}），` +
-        `Cell 匹配 ${cellMatches?.length ?? 0} 条`,
-      );
-      return { schemas, cellMatchStr };
+      return {
+        schemas: bundle.rows.length ? bundle.rows : null,
+        cellMatchStr: bundle.cellMatchStr,
+        cellMatches: bundle.cellMatches,
+        cellTableBoost: bundle.cellTableBoost,
+      };
     } catch (err) {
       logger.warn('[DatabaseSchemaTool] 语义检索失败，降级为全量:', err?.message || String(err));
-      // 降级：全量 schema，无 cell 匹配
       try {
         const VectorDBService = require(path.resolve(__dirname, '../../../api/server/services/RAG/VectorDBService'));
         const vectorDB = new VectorDBService();
         await vectorDB.initialize();
         const allSchemas = await vectorDB.getLightSchemas(datasourceId);
-        return { schemas: allSchemas?.length ? allSchemas : null, cellMatchStr: '' };
+        return {
+          schemas: allSchemas?.length ? allSchemas : null,
+          cellMatchStr: '',
+          cellMatches: [],
+          cellTableBoost: [],
+        };
       } catch (_) {
-        return { schemas: null, cellMatchStr: '' };
+        return {
+          schemas: null,
+          cellMatchStr: '',
+          cellMatches: [],
+          cellTableBoost: [],
+        };
       }
     }
   }
 
   /**
    * 用问题文本做 Cell 向量检索，返回字面量匹配提示字符串。
-   * 仅在没有用户问题、无法调用 fetchSchemasByQuestion 时单独使用。
    * @param {string} datasourceId
    * @param {string} question  用户原始问题
    * @returns {Promise<string>}  空字符串表示无命中或检索失败
    */
   async searchCellMatches(datasourceId, question) {
     try {
-      const VectorDBService = require(path.resolve(__dirname, '../../../api/server/services/RAG/VectorDBService'));
-      const EmbeddingService = require(path.resolve(__dirname, '../../../api/server/services/RAG/EmbeddingService'));
-      const vectorDB = new VectorDBService();
-      const embedding = new EmbeddingService();
-      await vectorDB.initialize();
-
-      const queryEmbedding = await embedding.embedText(question);
-      if (!queryEmbedding) return '';
-
-      const matches = await vectorDB.searchCells(datasourceId, queryEmbedding, 10, 0.5);
-      if (!matches || matches.length === 0) return '';
-
-      return matches
-        .map((m) => `${m.tableName}.${m.columnName} = "${m.cellValue}"`)
-        .join(', ');
+      const result = await this.fetchSchemasByQuestion(datasourceId, question, 0, DEFAULT_CELL_TOP_K);
+      return result.cellMatchStr || '';
     } catch (err) {
       logger.warn('[DatabaseSchemaTool] Cell 向量检索失败（不影响主流程）:', err?.message || String(err));
       return '';

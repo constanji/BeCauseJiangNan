@@ -2,6 +2,11 @@ const { Tool } = require('@langchain/core/tools');
 const { z } = require('zod');
 const { logger } = require('@because/data-schemas');
 const path = require('path');
+const {
+  resolveSearchText,
+  retrieveLightSchemaBundle,
+  DEFAULT_CELL_TOP_K,
+} = require('../../utils/lightSchemaRetrieval');
 
 // 延迟加载，避免路径别名问题
 let getDataSourceById = null;
@@ -37,13 +42,13 @@ function loadProjectModel() {
  * Light Schema 按需检索工具
  *
  * 从预生成的 pgvector Light Schema 缓存中检索表结构，完全绕过数据库直连。
- * 支持两种模式：
+ * 支持：
  *   - 语义模式：传入自然语言 query，embed 后做余弦相似度检索
  *   - 精确模式：传入 tables[]，直接按表名查询
- * 两种模式可同时使用，结果合并去重。
+ *   - Cell 值对齐：同一 query 并行 searchCells，返回 value_hints，并补拉命中表的 schema
  *
  * 与 database_schema 的分工：
- *   - light_schema（本工具）：首选，0 DB 连接开销，依赖预先生成的 Light Schema
+ *   - light_schema（本工具）：首选，0 DB 连接开销
  *   - database_schema：兜底，Light Schema 为空或需要最新实时结构时才用
  */
 class LightSchemaTool extends Tool {
@@ -51,16 +56,17 @@ class LightSchemaTool extends Tool {
 
   description =
     '从预生成的 Light Schema 缓存中按需检索数据库表结构，不连接数据库，速度快。' +
-    '支持语义检索（传入自然语言问题自动找最相关的表）和精确检索（传入具体表名直接返回）。' +
-    '生成 SQL 前优先调用此工具获取表结构，只有当此工具返回空结果（未预处理）时才降级到 database_schema。' +
+    '支持语义检索（传入自然语言问题自动找最相关的表）、精确检索（传入具体表名）' +
+    '以及 Cell 向量值对齐（返回 value_hints 辅助 WHERE 条件，无需降级 database_schema）。' +
+    '生成 SQL 前优先调用此工具，只有当此工具返回空结果（未预处理）时才降级到 database_schema。' +
     '返回格式与 database_schema 完全兼容，可直接将 semantic_models 传给 text-to-sql 工具。';
 
   schema = z.object({
     query: z
       .string()
       .describe(
-        '自然语言查询或关键词，用于语义向量检索最相关的表结构。' +
-        '可以是用户的业务问题，也可以是表名/列名关键词。',
+        '自然语言查询或关键词，用于语义向量检索最相关的表结构，并触发 Cell 值对齐。' +
+        '可以是用户的业务问题，也可以是表名/列名/维度值关键词。',
       ),
     tables: z
       .array(z.string())
@@ -90,11 +96,6 @@ class LightSchemaTool extends Tool {
     this.conversation = fields.conversation;
   }
 
-  // ── 工具方法 ───────────────────────────────────────────────────────────────
-
-  /**
-   * 清理数据源 ID，去除多余引号/格式
-   */
   cleanDataSourceId(id) {
     if (!id) return null;
     if (typeof id === 'object') {
@@ -107,16 +108,11 @@ class LightSchemaTool extends Tool {
     return s || null;
   }
 
-  /**
-   * 获取数据源 ID（五级查找链，与 DatabaseSchemaTool 完全一致）
-   */
   async getDataSourceId(input) {
-    // 1. input 参数直接指定
     if (input.data_source_id) {
       return this.cleanDataSourceId(input.data_source_id);
     }
 
-    // 2. conversation.project_id → Project → data_source_id
     if (this.conversation && this.conversation.project_id) {
       try {
         const getProjectByIdFn = loadProjectModel();
@@ -130,12 +126,10 @@ class LightSchemaTool extends Tool {
       }
     }
 
-    // 3. conversation.data_source_id
     if (this.conversation && this.conversation.data_source_id) {
       return this.cleanDataSourceId(this.conversation.data_source_id);
     }
 
-    // 4. req.body.data_source_id / req.body.project_id
     if (this.req && this.req.body) {
       if (this.req.body.data_source_id) {
         return this.cleanDataSourceId(this.req.body.data_source_id);
@@ -154,7 +148,6 @@ class LightSchemaTool extends Tool {
       }
     }
 
-    // 5. agentOptions / model_parameters（兜底）
     const agentOptions = this.conversation?.agentOptions || this.conversation?.model_parameters;
     if (agentOptions) {
       const rawId =
@@ -167,9 +160,6 @@ class LightSchemaTool extends Tool {
     return null;
   }
 
-  /**
-   * 获取 VectorDBService 和 EmbeddingService 单例
-   */
   _getServices() {
     const VectorDBService = require(
       path.resolve(__dirname, '../../../api/server/services/RAG/VectorDBService'),
@@ -180,37 +170,6 @@ class LightSchemaTool extends Tool {
     return { VectorDBService, EmbeddingService };
   }
 
-  /**
-   * 精确按表名查询 Light Schema（绕过 embedding，直接 SQL 查）
-   * @param {object} vectorDB  已初始化的 VectorDBService 实例
-   * @param {string} datasourceId
-   * @param {string[]} tableNames
-   * @returns {Promise<Array<{tableName, content, score}>>}
-   */
-  async fetchByTableNames(vectorDB, datasourceId, tableNames) {
-    if (!tableNames || tableNames.length === 0) return [];
-    try {
-      const result = await vectorDB.pool.query(
-        `SELECT table_name, content
-         FROM light_schema_vectors
-         WHERE datasource_id = $1 AND table_name = ANY($2)
-         ORDER BY table_name`,
-        [datasourceId, tableNames],
-      );
-      return result.rows.map((r) => ({
-        tableName: r.table_name,
-        content: r.content,
-        score: 1.0, // 精确匹配，得分最高
-      }));
-    } catch (e) {
-      logger.warn('[LightSchemaTool] 按表名精确查询失败:', e.message);
-      return [];
-    }
-  }
-
-  /**
-   * 将 Light Schema content JSON 转换为统一的 semantic_model 对象
-   */
   contentToSemanticModel(content) {
     try {
       const schema = typeof content === 'string' ? JSON.parse(content) : content;
@@ -231,22 +190,26 @@ class LightSchemaTool extends Tool {
     }
   }
 
-  // ── 主执行逻辑 ─────────────────────────────────────────────────────────────
-
   async _call(input) {
     const { query, tables, top_k: topK = 8 } = input;
     const startTime = Date.now();
 
     try {
+      const queryText = resolveSearchText({
+        input: { query, question: input.question },
+        req: this.req,
+        conversation: this.conversation,
+      });
+
       logger.info('[LightSchemaTool] _call 开始:', JSON.stringify({
         query: query?.substring(0, 80) || '',
+        queryText: queryText?.substring(0, 80) || '',
         tables: tables || [],
         topK,
         hasConversation: !!this.conversation,
         hasReq: !!this.req,
       }));
 
-      // ── 1. 解析数据源 ID ──────────────────────────────────────────────────
       const dataSourceId = await this.getDataSourceId(input);
       if (!dataSourceId) {
         return JSON.stringify({
@@ -256,51 +219,22 @@ class LightSchemaTool extends Tool {
         });
       }
 
-      // ── 2. 初始化服务 ─────────────────────────────────────────────────────
       const { VectorDBService, EmbeddingService } = this._getServices();
       const vectorDB = new VectorDBService();
+      const embeddingService = new EmbeddingService();
       await vectorDB.initialize();
 
-      // ── 3. 双模式检索 ─────────────────────────────────────────────────────
-      const exactResults = [];   // 精确模式结果
-      const semanticResults = []; // 语义模式结果
+      const bundle = await retrieveLightSchemaBundle({
+        datasourceId: dataSourceId,
+        queryText,
+        tables: tables || [],
+        schemaTopK: topK,
+        cellTopK: DEFAULT_CELL_TOP_K,
+        vectorDB,
+        embeddingService,
+      });
 
-      // 3a. 精确模式（tables 不为空）
-      if (tables && tables.length > 0) {
-        const rows = await this.fetchByTableNames(vectorDB, dataSourceId, tables);
-        exactResults.push(...rows);
-        logger.info(`[LightSchemaTool] 精确查询命中 ${rows.length}/${tables.length} 张表`);
-      }
-
-      // 3b. 语义模式（embed query → cosine search）
-      if (query) {
-        const embedding = new EmbeddingService();
-        const queryEmbedding = await embedding.embedText(query);
-        if (queryEmbedding) {
-          const rows = await vectorDB.searchLightSchema(dataSourceId, queryEmbedding, topK);
-          semanticResults.push(...rows);
-          logger.info(`[LightSchemaTool] 语义检索命中 ${rows.length} 张表（top ${topK}）`);
-        } else {
-          logger.warn('[LightSchemaTool] embedding 生成失败，跳过语义检索');
-        }
-      }
-
-      // ── 4. 合并去重（精确结果优先） ───────────────────────────────────────
-      // key = tableName，精确结果先放入，语义结果不覆盖
-      const mergedMap = new Map();
-      for (const r of exactResults) {
-        mergedMap.set(r.tableName, r);
-      }
-      for (const r of semanticResults) {
-        if (!mergedMap.has(r.tableName)) {
-          mergedMap.set(r.tableName, r);
-        }
-      }
-
-      const merged = [...mergedMap.values()];
-
-      // ── 5. 处理"无结果"情况 ──────────────────────────────────────────────
-      if (merged.length === 0) {
+      if (bundle.rows.length === 0) {
         logger.info('[LightSchemaTool] 无命中结果，建议降级到 database_schema');
         return JSON.stringify({
           success: false,
@@ -313,43 +247,49 @@ class LightSchemaTool extends Tool {
         });
       }
 
-      // ── 6. 转换为 semantic_models ─────────────────────────────────────────
-      const semanticModels = merged
+      const semanticModels = bundle.rows
         .map((r) => this.contentToSemanticModel(r.content))
         .filter(Boolean);
 
-      // 按精确/语义分类注释（方便 LLM 理解置信度）
-      const exactNames = new Set(exactResults.map((r) => r.tableName));
-      const semanticNames = new Set(semanticResults.map((r) => r.tableName));
+      let instruction =
+        'Extract the "semantic_models" array from this response and use it as the ' +
+        'semantic_models parameter when calling text-to-sql tool. ' +
+        'All schema data comes from the pre-generated Light Schema cache (no DB roundtrip).';
+
+      const response = {
+        success: true,
+        source: 'light_schema',
+        semantic_models: semanticModels,
+        tableCount: semanticModels.length,
+        retrieval_info: {
+          exact_match: bundle.exactTableNames,
+          semantic_match: bundle.semanticTableNames,
+          cell_table_boost: bundle.cellTableBoost,
+          cell_matches: bundle.cellMatches,
+          total: semanticModels.length,
+        },
+        format: 'semantic',
+        instruction,
+        dataSource: { id: dataSourceId },
+        elapsed_ms: Date.now() - startTime,
+      };
+
+      if (bundle.cellMatchStr) {
+        response.value_hints = bundle.cellMatchStr;
+        response.instruction +=
+          ' Additionally, "value_hints" contains column=value matches from cell vectorization ' +
+          '— use them to construct accurate WHERE conditions instead of guessing literal values.';
+      }
 
       logger.info(
-        `[LightSchemaTool] 完成：精确 ${exactResults.length} 张，` +
-        `语义 ${semanticResults.filter((r) => !exactNames.has(r.tableName)).length} 张，` +
+        `[LightSchemaTool] 完成：精确 ${bundle.exactTableNames.length} 张，` +
+        `语义 ${bundle.semanticTableNames.length} 张，` +
+        `cell补 ${bundle.cellTableBoost.length} 张，` +
+        `cell匹配 ${bundle.cellMatches.length} 条，` +
         `合计 ${semanticModels.length} 张，耗时 ${Date.now() - startTime}ms`,
       );
 
-      return JSON.stringify(
-        {
-          success: true,
-          source: 'light_schema',
-          semantic_models: semanticModels,
-          tableCount: semanticModels.length,
-          retrieval_info: {
-            exact_match: [...exactNames],
-            semantic_match: [...semanticNames].filter((n) => !exactNames.has(n)),
-            total: semanticModels.length,
-          },
-          format: 'semantic',
-          instruction:
-            'Extract the "semantic_models" array from this response and use it as the ' +
-            'semantic_models parameter when calling text-to-sql tool. ' +
-            'All schema data comes from the pre-generated Light Schema cache (no DB roundtrip).',
-          dataSource: { id: dataSourceId },
-          elapsed_ms: Date.now() - startTime,
-        },
-        null,
-        2,
-      );
+      return JSON.stringify(response, null, 2);
     } catch (error) {
       logger.error('[LightSchemaTool] 执行失败:', {
         error: error.message,

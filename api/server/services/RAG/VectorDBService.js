@@ -810,6 +810,29 @@ class VectorDBService {
   }
 
   /**
+   * 按表名精确查询 Light Schema（不做向量相似度）
+   * @param {string} datasourceId
+   * @param {string[]} tableNames
+   * @returns {Promise<Array<{tableName, content, score}>>}
+   */
+  async getLightSchemasByTableNames(datasourceId, tableNames) {
+    if (!this.initialized) await this.initialize();
+    if (!tableNames || tableNames.length === 0) return [];
+    const result = await this.pool.query(
+      `SELECT table_name, content
+       FROM light_schema_vectors
+       WHERE datasource_id = $1 AND table_name = ANY($2)
+       ORDER BY table_name`,
+      [datasourceId, tableNames],
+    );
+    return result.rows.map((r) => ({
+      tableName: r.table_name,
+      content: r.content,
+      score: 1.0,
+    }));
+  }
+
+  /**
    * 向量相似度搜索 Light Schema
    * @param {string} datasourceId
    * @param {number[]} queryEmbedding
