@@ -238,8 +238,22 @@ export const dataSources = {
   delete: (id: string) => `${BASE_URL}/api/config/data-sources/${id}`,
   test: (id: string) => `${BASE_URL}/api/config/data-sources/${id}/test`,
   testConnection: () => `${BASE_URL}/api/config/data-sources/test`,
+  listSchemas: (id: string) => `${BASE_URL}/api/config/data-sources/${id}/schemas`,
+  listSchemaTables: (id: string, schemaName: string) => `${BASE_URL}/api/config/data-sources/${id}/schemas/${encodeURIComponent(schemaName)}/tables`,
   getSchema: (id: string) => `${BASE_URL}/api/config/data-sources/${id}/schema`,
   generateSemanticModel: (id: string) => `${BASE_URL}/api/config/data-sources/${id}/generate-semantic-model`,
+  generateLightSchema: (id: string) => `${BASE_URL}/api/config/data-sources/${id}/light-schema/generate`,
+  vectorizeCells: (id: string) => `${BASE_URL}/api/config/data-sources/${id}/cells/vectorize`,
+  getLightSchemas: (id: string) => `${BASE_URL}/api/config/data-sources/${id}/light-schema`,
+  getCells: (id: string) => `${BASE_URL}/api/config/data-sources/${id}/cells`,
+  cellById: (id: string, cellId: string | number) => `${BASE_URL}/api/config/data-sources/${id}/cells/${cellId}`,
+  deleteLightSchema: (id: string, tableName: string) =>
+    `${BASE_URL}/api/config/data-sources/${id}/light-schema/${encodeURIComponent(tableName)}`,
+  uploadExcelFile: (id: string) => `${BASE_URL}/api/config/data-sources/${id}/excel-files`,
+  listExcelFiles: (id: string) => `${BASE_URL}/api/config/data-sources/${id}/excel-files`,
+  deleteExcelFile: (id: string, fileId: string) => `${BASE_URL}/api/config/data-sources/${id}/excel-files/${fileId}`,
+  getExcelFileRows: (id: string, fileId: string) => `${BASE_URL}/api/config/data-sources/${id}/excel-files/${fileId}/rows`,
+  searchExcelCells: (id: string) => `${BASE_URL}/api/config/data-sources/${id}/excel-files/search`,
 };
 
 export const rag = {

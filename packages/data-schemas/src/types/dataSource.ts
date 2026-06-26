@@ -1,6 +1,6 @@
 import { Document, Types } from 'mongoose';
 
-export type DataSourceType = 'mysql' | 'postgresql';
+export type DataSourceType = 'mysql' | 'postgresql' | 'gaussdb';
 
 export interface IDataSourceConnectionPool {
   min?: number;

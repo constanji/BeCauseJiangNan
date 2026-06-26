@@ -550,7 +550,23 @@ export const getDataSourceById = ({ id }: { id: string }): Promise<d.DataSourceR
   return request.get(endpoints.dataSources.get(id));
 };
 
-export const getDataSourceSchema = ({ id }: { id: string }): Promise<{
+export const listDataSourceSchemas = (id: string): Promise<{
+  success: boolean;
+  data?: { success: boolean; database: string; schemas: Array<{ schemaName: string; tableCount: number | null }> };
+  error?: string;
+}> => {
+  return request.get(endpoints.dataSources.listSchemas(id));
+};
+
+export const listDataSourceSchemaTables = (id: string, schemaName: string): Promise<{
+  success: boolean;
+  data?: { success: boolean; database: string; schemaName: string; tables: string[] };
+  error?: string;
+}> => {
+  return request.get(endpoints.dataSources.listSchemaTables(id, schemaName));
+};
+
+export const getDataSourceSchema = ({ id, schemaName, tableNames }: { id: string; schemaName?: string; tableNames?: string[] }): Promise<{
   success: boolean;
   data?: {
     success: boolean;
@@ -573,7 +589,11 @@ export const getDataSourceSchema = ({ id }: { id: string }): Promise<{
   };
   error?: string;
 }> => {
-  return request.get(endpoints.dataSources.getSchema(id));
+  const params = new URLSearchParams();
+  if (schemaName) params.set('schemaName', schemaName);
+  if (tableNames && tableNames.length > 0) params.set('tables', tableNames.join(','));
+  const query = params.toString();
+  return request.get(endpoints.dataSources.getSchema(id) + (query ? `?${query}` : ''));
 };
 
 export const generateSemanticModel = ({ 
@@ -624,6 +644,139 @@ export const deleteDataSource = ({ id }: { id: string }): Promise<{ success: boo
 
 export const testDataSourceConnection = ({ id }: { id: string }): Promise<d.DataSourceTestResponse> => {
   return request.post(endpoints.dataSources.test(id));
+};
+
+export const generateLightSchema = (
+  id: string,
+  body?: { tableNames?: string[]; sampleLimit?: number; schemaName?: string },
+): Promise<{ success: boolean; count: number; tables: string[]; error?: string }> => {
+  return request.post(endpoints.dataSources.generateLightSchema(id), body || {});
+};
+
+export const vectorizeCells = (
+  id: string,
+  body?: { tableNames?: string[]; rowLimit?: number; schemaName?: string },
+): Promise<{ success: boolean; count: number; error?: string }> => {
+  return request.post(endpoints.dataSources.vectorizeCells(id), body || {});
+};
+
+export const getLightSchemas = (
+  id: string,
+): Promise<{
+  success: boolean;
+  data: Array<{ tableName: string; content: string; ddlText: string; createdAt: string }>;
+  error?: string;
+}> => {
+  return request.get(endpoints.dataSources.getLightSchemas(id));
+};
+
+export const getCells = (
+  id: string,
+  params?: { tableName?: string; columnName?: string; limit?: number },
+): Promise<{
+  success: boolean;
+  data: Array<{ id: number; tableName: string; columnName: string; cellValue: string; createdAt: string }>;
+  error?: string;
+}> => {
+  const query = new URLSearchParams();
+  if (params?.tableName) query.set('tableName', params.tableName);
+  if (params?.columnName) query.set('columnName', params.columnName);
+  if (params?.limit) query.set('limit', String(params.limit));
+  const url = `${endpoints.dataSources.getCells(id)}${query.toString() ? `?${query.toString()}` : ''}`;
+  return request.get(url);
+};
+
+export const createCell = (
+  id: string,
+  body: { tableName: string; columnName: string; cellValue: string },
+): Promise<{
+  success: boolean;
+  data?: { id: number; tableName: string; columnName: string; cellValue: string; createdAt: string };
+  error?: string;
+}> => {
+  return request.post(endpoints.dataSources.getCells(id), body);
+};
+
+export const updateCell = (
+  id: string,
+  cellId: string | number,
+  body: { tableName: string; columnName: string; cellValue: string },
+): Promise<{
+  success: boolean;
+  data?: { id: number; tableName: string; columnName: string; cellValue: string; createdAt: string };
+  error?: string;
+}> => {
+  return request.put(endpoints.dataSources.cellById(id, cellId), body);
+};
+
+export const deleteCell = (
+  id: string,
+  cellId: string | number,
+): Promise<{ success: boolean; cellId?: number; error?: string }> => {
+  return request.delete(endpoints.dataSources.cellById(id, cellId));
+};
+
+export const deleteLightSchema = (
+  id: string,
+  tableName: string,
+): Promise<{ success: boolean; tableName?: string; error?: string }> => {
+  return request.delete(endpoints.dataSources.deleteLightSchema(id, tableName));
+};
+
+export const updateLightSchema = (
+  id: string,
+  tableName: string,
+  body: { columns: Array<{ name: string; type: string; nullable: boolean; description?: string; sampleValues?: string[] }>; primaryKeys?: string[] },
+): Promise<{ success: boolean; tableName?: string; columnCount?: number; error?: string }> => {
+  return request.put(endpoints.dataSources.deleteLightSchema(id, tableName), body);
+};
+
+export const uploadExcelFile = (
+  id: string,
+  formData: FormData,
+): Promise<{ success: boolean; fileId: string; rowCount: number; cellCount: number; sheetNames: string[]; error?: string }> => {
+  return request.postMultiPart(endpoints.dataSources.uploadExcelFile(id), formData);
+};
+
+export const listExcelFiles = (
+  id: string,
+): Promise<{
+  success: boolean;
+  data: Array<{ fileId: string; filename: string; cellCount: number; rowCount: number; createdAt: string }>;
+  error?: string;
+}> => {
+  return request.get(endpoints.dataSources.listExcelFiles(id));
+};
+
+export const deleteExcelFile = (
+  id: string,
+  fileId: string,
+): Promise<{ success: boolean; deletedCount: number; error?: string }> => {
+  return request.delete(endpoints.dataSources.deleteExcelFile(id, fileId));
+};
+
+export const getExcelFileRows = (
+  id: string,
+  fileId: string,
+  limit?: number,
+): Promise<{
+  success: boolean;
+  data: Array<{ rowIndex: number; fullRow: string; sheetName: string }>;
+  error?: string;
+}> => {
+  const url = endpoints.dataSources.getExcelFileRows(id, fileId) + (limit ? `?limit=${limit}` : '');
+  return request.get(url);
+};
+
+export const searchExcelCells = (
+  id: string,
+  body: { query: string; top_k?: number; min_score?: number },
+): Promise<{
+  success: boolean;
+  data: Array<{ score: number; cellValue: string; columnName: string; fullRow: string; filename: string; rowIndex: number; sheetName: string }>;
+  error?: string;
+}> => {
+  return request.post(endpoints.dataSources.searchExcelCells(id), body);
 };
 
 /* Projects */

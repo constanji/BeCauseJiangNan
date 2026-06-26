@@ -1,4 +1,4 @@
-export type DataSourceType = 'mysql' | 'postgresql';
+export type DataSourceType = 'mysql' | 'postgresql' | 'gaussdb';
 
 export interface DataSourceConnectionPool {
   min?: number;

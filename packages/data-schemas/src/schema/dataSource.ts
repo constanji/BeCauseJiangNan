@@ -12,7 +12,7 @@ const dataSourceSchema = new Schema<IDataSource>(
     type: {
       type: String,
       required: true,
-      enum: ['mysql', 'postgresql'],
+      enum: ['mysql', 'postgresql', 'gaussdb'],
       index: true,
     },
     host: {
