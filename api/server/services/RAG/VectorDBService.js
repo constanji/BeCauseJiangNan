@@ -259,6 +259,51 @@ class VectorDBService {
         WITH (m = 16, ef_construction = 64)
       `);
 
+      // Light Schema 向量表：每个数据源的每张表一条记录（含 DDL 文本 + 结构 JSON）
+      await this.pool.query(`
+        CREATE TABLE IF NOT EXISTS light_schema_vectors (
+          id            SERIAL PRIMARY KEY,
+          datasource_id VARCHAR(255) NOT NULL,
+          table_name    VARCHAR(255) NOT NULL,
+          content       TEXT NOT NULL,
+          ddl_text      TEXT,
+          embedding     vector(${embeddingDim}),
+          created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(datasource_id, table_name)
+        )
+      `);
+      await this.pool.query(`
+        CREATE INDEX IF NOT EXISTS idx_light_schema_vectors_ds
+          ON light_schema_vectors(datasource_id)
+      `);
+      await this.pool.query(`
+        CREATE INDEX IF NOT EXISTS idx_light_schema_vectors_hnsw
+          ON light_schema_vectors USING hnsw (embedding vector_cosine_ops)
+          WITH (m = 16, ef_construction = 64)
+      `);
+
+      // Cell 向量表：每个文本列的每个枚举值单独一条（用于字面量语义匹配）
+      await this.pool.query(`
+        CREATE TABLE IF NOT EXISTS cell_vectors (
+          id            SERIAL PRIMARY KEY,
+          datasource_id VARCHAR(255) NOT NULL,
+          table_name    VARCHAR(255) NOT NULL,
+          column_name   VARCHAR(255) NOT NULL,
+          cell_value    TEXT NOT NULL,
+          embedding     vector(${embeddingDim}),
+          created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      await this.pool.query(`
+        CREATE INDEX IF NOT EXISTS idx_cell_vectors_ds_table
+          ON cell_vectors(datasource_id, table_name)
+      `);
+      await this.pool.query(`
+        CREATE INDEX IF NOT EXISTS idx_cell_vectors_hnsw
+          ON cell_vectors USING hnsw (embedding vector_cosine_ops)
+          WITH (m = 16, ef_construction = 64)
+      `);
+
       logger.debug('[VectorDBService] Database tables and indexes created (DAT architecture: independent tables per type)');
     } catch (error) {
       logger.error('[VectorDBService] Failed to create tables:', error);
@@ -510,65 +555,69 @@ class VectorDBService {
    * @param {number} params.minScore - 最小相似度分数
    * @returns {Promise<Array>} 搜索结果数组
    */
-  async searchFileVectors({ queryEmbedding, fileId, userId, entityId, topK = 10, minScore = 0.5 }) {
+  async searchFileVectors({ queryEmbedding, rawQuery, fileId, userId, entityId, topK = 10, minScore = 0.5 }) {
     if (!this.initialized) {
       await this.initialize();
     }
 
     try {
-      const embeddingStr = `[${queryEmbedding.join(',')}]`;
-      
-      // 构建查询条件
-      let whereClause = 'WHERE embedding IS NOT NULL\n        AND 1 - (embedding <=> $1::vector) >= $2';
-      const queryParams = [embeddingStr, minScore];
-      let paramIndex = 3;
-
-      // 如果指定了file_id，只检索该文件的chunk
-      if (fileId) {
-        whereClause += `\n        AND file_id = $${paramIndex}`;
-        queryParams.push(fileId);
-        paramIndex++;
-      }
-
-      // 用户隔离：避免跨用户命中其他人的文件向量
-      if (userId) {
-        whereClause += `\n        AND user_id = $${paramIndex}`;
-        queryParams.push(userId.toString());
-        paramIndex++;
-      }
-
-      // 如果指定了entity_id，进行数据源隔离
-      if (entityId) {
-        whereClause += `\n        AND metadata->>'entity_id' = $${paramIndex}`;
-        queryParams.push(entityId);
-        paramIndex++;
-      }
-
-      const query = `
-        SELECT 
-          file_id,
-          chunk_index,
-          content,
-          metadata,
-          1 - (embedding <=> $1::vector) as similarity
-        FROM file_vectors
-        ${whereClause}
-        ORDER BY embedding <=> $1::vector
-        LIMIT $${paramIndex}
-      `;
-
-      queryParams.push(topK);
-
-      const result = await this.pool.query(query, queryParams);
-
-      return result.rows.map(row => ({
+      const formatRow = (row, similarity) => ({
         fileId: row.file_id,
         chunkIndex: row.chunk_index,
         content: row.content,
         metadata: row.metadata || {},
-        score: parseFloat(row.similarity),
-        similarity: parseFloat(row.similarity),
-      }));
+        score: similarity,
+        similarity,
+      });
+
+      // ── 文本精确匹配（Excel 指标编码/ID 类精确查询优先）──────────────────
+      // 只对 excel_cell 来源启用，普通文件 chunk 走向量检索即可。
+      let textRows = [];
+      if (rawQuery && entityId) {
+        const textParams = [entityId, `%${rawQuery}%`, topK];
+        let textWhere = `WHERE metadata->>'source' = 'excel_cell' AND metadata->>'entity_id' = $1 AND content ILIKE $2`;
+        if (fileId) { textWhere += ` AND file_id = $4`; textParams.push(fileId); }
+        if (userId) { textWhere += ` AND user_id = $${textParams.length + 1}`; textParams.push(userId.toString()); }
+        const textResult = await this.pool.query(
+          `SELECT file_id, chunk_index, content, metadata FROM file_vectors ${textWhere} LIMIT $3`,
+          textParams,
+        );
+        // 主列命中 score=1.0，非主列 score=0.99，主列优先
+        textRows = textResult.rows
+          .map((row) => {
+            const isPrimary = row.metadata?.is_primary_column === true || row.metadata?.is_primary_column === 'true';
+            return formatRow(row, isPrimary ? 1.0 : 0.99);
+          })
+          .sort((a, b) => b.score - a.score);
+      }
+      const textKeys = new Set(textRows.map((r) => `${r.fileId}:${r.chunkIndex}`));
+
+      // ── 向量语义检索 ──────────────────────────────────────────────────────
+      const embeddingStr = `[${queryEmbedding.join(',')}]`;
+      let whereClause = 'WHERE embedding IS NOT NULL\n        AND 1 - (embedding <=> $1::vector) >= $2';
+      const queryParams = [embeddingStr, minScore];
+      let paramIndex = 3;
+
+      if (fileId) { whereClause += `\n        AND file_id = $${paramIndex}`; queryParams.push(fileId); paramIndex++; }
+      if (userId) { whereClause += `\n        AND user_id = $${paramIndex}`; queryParams.push(userId.toString()); paramIndex++; }
+      if (entityId) { whereClause += `\n        AND metadata->>'entity_id' = $${paramIndex}`; queryParams.push(entityId); paramIndex++; }
+
+      queryParams.push(topK);
+      const result = await this.pool.query(
+        `SELECT file_id, chunk_index, content, metadata,
+                1 - (embedding <=> $1::vector) as similarity
+         FROM file_vectors ${whereClause}
+         ORDER BY embedding <=> $1::vector
+         LIMIT $${paramIndex}`,
+        queryParams,
+      );
+
+      const vectorRows = result.rows
+        .map((row) => formatRow(row, parseFloat(row.similarity)))
+        .filter((r) => !textKeys.has(`${r.fileId}:${r.chunkIndex}`));
+
+      // 文本命中优先，向量结果补充
+      return [...textRows, ...vectorRows].slice(0, topK);
     } catch (error) {
       logger.error('[VectorDBService] 文件向量检索失败:', error);
       throw error;
@@ -693,6 +742,287 @@ class VectorDBService {
       logger.error('[VectorDBService] Failed to delete knowledge vector:', error);
       throw error;
     }
+  }
+
+  // ─────────────────────────────── Light Schema ────────────────────────────────
+
+  /**
+   * UPSERT 多条 Light Schema 向量记录
+   * @param {string} datasourceId
+   * @param {Array<{tableName, content, ddlText, embedding}>} schemas
+   */
+  async upsertLightSchemas(datasourceId, schemas) {
+    if (!this.initialized) await this.initialize();
+    for (const { tableName, content, ddlText, embedding } of schemas) {
+      const embeddingStr = embedding ? `[${embedding.join(',')}]` : null;
+      await this.pool.query(
+        `INSERT INTO light_schema_vectors (datasource_id, table_name, content, ddl_text, embedding)
+         VALUES ($1, $2, $3, $4, $5::vector)
+         ON CONFLICT (datasource_id, table_name) DO UPDATE SET
+           content = EXCLUDED.content,
+           ddl_text = EXCLUDED.ddl_text,
+           embedding = EXCLUDED.embedding,
+           created_at = CURRENT_TIMESTAMP`,
+        [datasourceId, tableName, content, ddlText || null, embeddingStr],
+      );
+    }
+    logger.info(`[VectorDBService] Upserted ${schemas.length} light schemas for datasource: ${datasourceId}`);
+  }
+
+  /**
+   * 删除 Light Schema 向量记录（全量或按表名）
+   * @param {string} datasourceId
+   * @param {string[]|null} tableNames  为 null 时清空该数据源全部记录
+   */
+  async deleteLightSchemas(datasourceId, tableNames = null) {
+    if (!this.initialized) await this.initialize();
+    if (tableNames && tableNames.length > 0) {
+      await this.pool.query(
+        `DELETE FROM light_schema_vectors WHERE datasource_id = $1 AND table_name = ANY($2)`,
+        [datasourceId, tableNames],
+      );
+    } else {
+      await this.pool.query(
+        `DELETE FROM light_schema_vectors WHERE datasource_id = $1`,
+        [datasourceId],
+      );
+    }
+  }
+
+  /**
+   * 按数据源 ID 查询所有 Light Schema（不做向量相似度，直接全量返回）
+   * @param {string} datasourceId
+   * @returns {Promise<Array<{tableName, content, ddlText, createdAt}>>}
+   */
+  async getLightSchemas(datasourceId) {
+    if (!this.initialized) await this.initialize();
+    const result = await this.pool.query(
+      `SELECT table_name, content, ddl_text, created_at
+       FROM light_schema_vectors WHERE datasource_id = $1 ORDER BY table_name`,
+      [datasourceId],
+    );
+    return result.rows.map((r) => ({
+      tableName: r.table_name,
+      content: r.content,
+      ddlText: r.ddl_text,
+      createdAt: r.created_at,
+    }));
+  }
+
+  /**
+   * 向量相似度搜索 Light Schema
+   * @param {string} datasourceId
+   * @param {number[]} queryEmbedding
+   * @param {number} topK
+   * @returns {Promise<Array<{tableName, content, score}>>}
+   */
+  async searchLightSchema(datasourceId, queryEmbedding, topK = 5) {
+    if (!this.initialized) await this.initialize();
+    const embeddingStr = `[${queryEmbedding.join(',')}]`;
+    const result = await this.pool.query(
+      `SELECT table_name, content,
+              1 - (embedding <=> $1::vector) AS score
+       FROM light_schema_vectors
+       WHERE datasource_id = $2 AND embedding IS NOT NULL
+       ORDER BY embedding <=> $1::vector
+       LIMIT $3`,
+      [embeddingStr, datasourceId, topK],
+    );
+    return result.rows.map((r) => ({
+      tableName: r.table_name,
+      content: r.content,
+      score: parseFloat(r.score),
+    }));
+  }
+
+  // ─────────────────────────────── Cell Vectors ────────────────────────────────
+
+  /**
+   * 批量 INSERT cell 向量记录（不去重，调用方在插入前应先 deleteCells）
+   * @param {string} datasourceId
+   * @param {Array<{tableName, columnName, cellValue, embedding}>} rows
+   */
+  async insertCells(datasourceId, rows) {
+    if (!this.initialized) await this.initialize();
+    if (!rows || rows.length === 0) return;
+    for (const { tableName, columnName, cellValue, embedding } of rows) {
+      const embeddingStr = embedding ? `[${embedding.join(',')}]` : null;
+      await this.pool.query(
+        `INSERT INTO cell_vectors (datasource_id, table_name, column_name, cell_value, embedding)
+         VALUES ($1, $2, $3, $4, $5::vector)`,
+        [datasourceId, tableName, columnName, cellValue, embeddingStr],
+      );
+    }
+    logger.info(`[VectorDBService] Inserted ${rows.length} cell vectors for datasource: ${datasourceId}`);
+  }
+
+  /**
+   * 删除 cell 向量（全量或按表名）
+   * @param {string} datasourceId
+   * @param {string[]|null} tableNames  为 null 时清空该数据源全部记录
+   */
+  async deleteCells(datasourceId, tableNames = null) {
+    if (!this.initialized) await this.initialize();
+    if (tableNames && tableNames.length > 0) {
+      await this.pool.query(
+        `DELETE FROM cell_vectors WHERE datasource_id = $1 AND table_name = ANY($2)`,
+        [datasourceId, tableNames],
+      );
+    } else {
+      await this.pool.query(
+        `DELETE FROM cell_vectors WHERE datasource_id = $1`,
+        [datasourceId],
+      );
+    }
+  }
+
+  /**
+   * 查询指定数据源下的 cell 向量记录
+   * @param {string} datasourceId
+   * @param {{ tableName?: string, columnName?: string, limit?: number }} [options]
+   * @returns {Promise<Array<{id:number, tableName:string, columnName:string, cellValue:string, createdAt:string}>>}
+   */
+  async getCells(datasourceId, options = {}) {
+    if (!this.initialized) await this.initialize();
+    const { tableName, columnName, limit = 1000 } = options;
+
+    const where = ['datasource_id = $1'];
+    const params = [datasourceId];
+
+    if (tableName) {
+      where.push(`table_name = $${params.length + 1}`);
+      params.push(tableName);
+    }
+    if (columnName) {
+      where.push(`column_name = $${params.length + 1}`);
+      params.push(columnName);
+    }
+
+    params.push(Math.max(1, Math.min(Number(limit) || 1000, 5000)));
+
+    const result = await this.pool.query(
+      `SELECT id, table_name, column_name, cell_value, created_at
+       FROM cell_vectors
+       WHERE ${where.join(' AND ')}
+       ORDER BY table_name, column_name, cell_value
+       LIMIT $${params.length}`,
+      params,
+    );
+
+    return result.rows.map((r) => ({
+      id: r.id,
+      tableName: r.table_name,
+      columnName: r.column_name,
+      cellValue: r.cell_value,
+      createdAt: r.created_at,
+    }));
+  }
+
+  /**
+   * 新增一条 cell 向量记录
+   * @param {string} datasourceId
+   * @param {{ tableName:string, columnName:string, cellValue:string, embedding:number[]|null }} row
+   * @returns {Promise<{id:number, tableName:string, columnName:string, cellValue:string, createdAt:string}>}
+   */
+  async createCell(datasourceId, row) {
+    if (!this.initialized) await this.initialize();
+    const { tableName, columnName, cellValue, embedding } = row;
+    const embeddingStr = embedding ? `[${embedding.join(',')}]` : null;
+    const result = await this.pool.query(
+      `INSERT INTO cell_vectors (datasource_id, table_name, column_name, cell_value, embedding)
+       VALUES ($1, $2, $3, $4, $5::vector)
+       RETURNING id, table_name, column_name, cell_value, created_at`,
+      [datasourceId, tableName, columnName, cellValue, embeddingStr],
+    );
+    const created = result.rows[0];
+    return {
+      id: created.id,
+      tableName: created.table_name,
+      columnName: created.column_name,
+      cellValue: created.cell_value,
+      createdAt: created.created_at,
+    };
+  }
+
+  /**
+   * 更新一条 cell 向量记录
+   * @param {string} datasourceId
+   * @param {number|string} cellId
+   * @param {{ tableName:string, columnName:string, cellValue:string, embedding:number[]|null }} row
+   * @returns {Promise<{id:number, tableName:string, columnName:string, cellValue:string, createdAt:string}|null>}
+   */
+  async updateCell(datasourceId, cellId, row) {
+    if (!this.initialized) await this.initialize();
+    const { tableName, columnName, cellValue, embedding } = row;
+    const embeddingStr = embedding ? `[${embedding.join(',')}]` : null;
+    const result = await this.pool.query(
+      `UPDATE cell_vectors
+       SET table_name = $3,
+           column_name = $4,
+           cell_value = $5,
+           embedding = $6::vector
+       WHERE datasource_id = $1 AND id = $2
+       RETURNING id, table_name, column_name, cell_value, created_at`,
+      [datasourceId, Number(cellId), tableName, columnName, cellValue, embeddingStr],
+    );
+
+    if (result.rows.length === 0) {
+      return null;
+    }
+
+    const updated = result.rows[0];
+    return {
+      id: updated.id,
+      tableName: updated.table_name,
+      columnName: updated.column_name,
+      cellValue: updated.cell_value,
+      createdAt: updated.created_at,
+    };
+  }
+
+  /**
+   * 删除单条 cell 向量记录
+   * @param {string} datasourceId
+   * @param {number|string} cellId
+   * @returns {Promise<boolean>}
+   */
+  async deleteCellById(datasourceId, cellId) {
+    if (!this.initialized) await this.initialize();
+    const result = await this.pool.query(
+      `DELETE FROM cell_vectors WHERE datasource_id = $1 AND id = $2`,
+      [datasourceId, Number(cellId)],
+    );
+    return result.rowCount > 0;
+  }
+
+  /**
+   * 向量相似度搜索 cell 值（用于字面量语义匹配）
+   * @param {string} datasourceId
+   * @param {number[]} queryEmbedding
+   * @param {number} topK
+   * @param {number} minScore
+   * @returns {Promise<Array<{tableName, columnName, cellValue, score}>>}
+   */
+  async searchCells(datasourceId, queryEmbedding, topK = 10, minScore = 0.5) {
+    if (!this.initialized) await this.initialize();
+    const embeddingStr = `[${queryEmbedding.join(',')}]`;
+    const result = await this.pool.query(
+      `SELECT table_name, column_name, cell_value,
+              1 - (embedding <=> $1::vector) AS score
+       FROM cell_vectors
+       WHERE datasource_id = $2
+         AND embedding IS NOT NULL
+         AND 1 - (embedding <=> $1::vector) >= $3
+       ORDER BY embedding <=> $1::vector
+       LIMIT $4`,
+      [embeddingStr, datasourceId, minScore, topK],
+    );
+    return result.rows.map((r) => ({
+      tableName: r.table_name,
+      columnName: r.column_name,
+      cellValue: r.cell_value,
+      score: parseFloat(r.score),
+    }));
   }
 
   /**

@@ -3,6 +3,18 @@ const mongoose = require('mongoose');
 const { createModels } = require('@because/data-schemas');
 const VectorDBService = require('./VectorDBService');
 
+/**
+ * 从 file_vectors 检索结果中提取供 LLM / 前端展示的内容。
+ * Excel 单元格向量的 content 字段只有单个单元格值，
+ * 但 metadata.full_row 存储了整行序列化文本，应作为实际内容返回。
+ */
+function resolveFileVectorContent(result) {
+  if (result.metadata?.source === 'excel_cell' && result.metadata?.full_row) {
+    return result.metadata.full_row;
+  }
+  return result.content;
+}
+
 // 确保模型已创建（如果还没有）
 let KnowledgeEntry;
 try {
@@ -375,6 +387,7 @@ class RetrievalService {
         // 2. 从file_vectors表中检索
         const vectorResults = await this.vectorDBService.searchFileVectors({
           queryEmbedding,
+          rawQuery: query,
           fileId, // 指定file_id，只检索该文件的chunk
           userId, // 用户隔离
           entityId, // 数据源隔离
@@ -386,7 +399,7 @@ class RetrievalService {
         const results = vectorResults.map(result => ({
           type: KnowledgeType.FILE,
           title: result.metadata?.filename || result.metadata?.source?.split('/').pop() || '文件',
-          content: result.content,
+          content: resolveFileVectorContent(result),
           score: result.score,
           similarity: result.similarity,
           metadata: {
@@ -487,7 +500,8 @@ class RetrievalService {
     try {
       const promises = [];
       const hasSpecificFiles = Array.isArray(fileIds) && fileIds.length > 0;
-      const shouldSearchFiles = hasSpecificFiles || !Array.isArray(types) || types.includes(KnowledgeType.FILE);
+      // 当指定了 entityId（数据源）时，也应该检索该数据源下的文件向量（Excel 等）
+      const shouldSearchFiles = hasSpecificFiles || !!entityId || !Array.isArray(types) || types.includes(KnowledgeType.FILE);
 
       // 1. 从知识库检索
       promises.push(
@@ -532,6 +546,7 @@ class RetrievalService {
               if (queryEmbedding) {
                 const crossFileResults = await this.vectorDBService.searchFileVectors({
                   queryEmbedding,
+                  rawQuery: query,
                   // 不指定fileId，检索所有文件
                   fileId: null,
                   userId,
@@ -544,7 +559,7 @@ class RetrievalService {
                 const formattedCrossFileResults = crossFileResults.map(result => ({
                   type: KnowledgeType.FILE,
                   title: result.metadata?.filename || result.metadata?.source?.split('/').pop() || '文件',
-                  content: result.content,
+                  content: resolveFileVectorContent(result),
                   score: result.score,
                   similarity: result.similarity,
                   metadata: {
@@ -585,6 +600,7 @@ class RetrievalService {
             if (queryEmbedding) {
               const crossFileResults = await this.vectorDBService.searchFileVectors({
                 queryEmbedding,
+                rawQuery: query,
                 fileId: null, // 不指定fileId，检索所有文件
                 userId,
                 entityId,
@@ -596,7 +612,7 @@ class RetrievalService {
               fileResults = crossFileResults.map(result => ({
                 type: KnowledgeType.FILE,
                 title: result.metadata?.filename || result.metadata?.source?.split('/').pop() || '文件',
-                content: result.content,
+                content: resolveFileVectorContent(result),
                 score: result.score,
                 similarity: result.similarity,
                 metadata: {

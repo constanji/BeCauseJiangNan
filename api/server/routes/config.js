@@ -40,6 +40,22 @@ const {
   testDataSourceConnectionHandler,
   testConnectionHandler,
   getDataSourceSchemaHandler,
+  listDataSourceSchemasHandler,
+  listDataSourceSchemaTablesHandler,
+  generateLightSchemaHandler,
+  vectorizeCellsHandler,
+  getLightSchemasHandler,
+  getCellsHandler,
+  deleteLightSchemaHandler,
+  updateLightSchemaHandler,
+  createCellHandler,
+  updateCellHandler,
+  deleteCellHandler,
+  uploadExcelFileHandler,
+  listExcelFilesHandler,
+  deleteExcelFileHandler,
+  getExcelFileRowsHandler,
+  searchExcelCellsHandler,
 } = require('~/server/controllers/DataSourceController');
 const {
   generateSemanticModelHandler,
@@ -289,8 +305,27 @@ router.delete('/data-sources/:id', requireJwtAuth, checkAdmin, deleteDataSourceH
 router.post('/data-sources/:id/test', requireJwtAuth, checkAdmin, testDataSourceConnectionHandler);
 router.post('/data-sources/test', requireJwtAuth, checkAdmin, testConnectionHandler);
 // GET schema 接口：所有已认证用户都可以访问，但普通用户只能查看公开数据源的结构
+router.get('/data-sources/:id/schemas', requireJwtAuth, listDataSourceSchemasHandler);
+router.get('/data-sources/:id/schemas/:schemaName/tables', requireJwtAuth, listDataSourceSchemaTablesHandler);
 router.get('/data-sources/:id/schema', requireJwtAuth, getDataSourceSchemaHandler);
 router.post('/data-sources/:id/generate-semantic-model', requireJwtAuth, checkAdmin, generateSemanticModelHandler);
+// Light Schema 预处理路由
+router.post('/data-sources/:id/light-schema/generate', requireJwtAuth, checkAdmin, generateLightSchemaHandler);
+router.post('/data-sources/:id/cells/vectorize', requireJwtAuth, checkAdmin, vectorizeCellsHandler);
+router.get('/data-sources/:id/light-schema', requireJwtAuth, getLightSchemasHandler);
+router.get('/data-sources/:id/cells', requireJwtAuth, getCellsHandler);
+router.post('/data-sources/:id/cells', requireJwtAuth, checkAdmin, createCellHandler);
+router.put('/data-sources/:id/cells/:cellId', requireJwtAuth, checkAdmin, updateCellHandler);
+router.delete('/data-sources/:id/cells/:cellId', requireJwtAuth, checkAdmin, deleteCellHandler);
+router.delete('/data-sources/:id/light-schema/:tableName', requireJwtAuth, checkAdmin, deleteLightSchemaHandler);
+router.put('/data-sources/:id/light-schema/:tableName', requireJwtAuth, checkAdmin, updateLightSchemaHandler);
+
+// Excel 文件单元格向量化
+router.post('/data-sources/:id/excel-files', requireJwtAuth, checkAdmin, uploadExcelFileHandler);
+router.get('/data-sources/:id/excel-files', requireJwtAuth, listExcelFilesHandler);
+router.delete('/data-sources/:id/excel-files/:fileId', requireJwtAuth, checkAdmin, deleteExcelFileHandler);
+router.get('/data-sources/:id/excel-files/:fileId/rows', requireJwtAuth, getExcelFileRowsHandler);
+router.post('/data-sources/:id/excel-files/search', requireJwtAuth, searchExcelCellsHandler);
 
 // 项目查询路由（需要认证，但不需要管理员权限）
 router.get('/projects', requireJwtAuth, listProjectsHandler);
