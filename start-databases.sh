@@ -146,8 +146,9 @@ echo ""
 echo -e "${BLUE}🧠 步骤2: 启动 VectorDB (端口 5434)${NC}"
 echo -e "${BLUE}----------------${NC}"
 
-# 检查VectorDB容器是否已存在
-VECTORDB_CONTAINER="vectordb-local"
+# 与 BecauseChat 的 vectordb-local / becausechat_pgdata2 隔离，轮流跑时复用同一端口即可
+VECTORDB_CONTAINER="vectordb-jiangnan-local"
+VECTORDB_VOLUME="becausejiangnan_pgdata2"
 if docker ps -a --format '{{.Names}}' | grep -q "^${VECTORDB_CONTAINER}$"; then
     if docker ps --format '{{.Names}}' | grep -q "^${VECTORDB_CONTAINER}$"; then
         echo -e "${YELLOW}⚠️  VectorDB容器已在运行${NC}"
@@ -169,8 +170,8 @@ else
     echo "正在创建并启动VectorDB容器..."
     
     # 检查数据卷是否存在
-    if docker volume ls --format '{{.Name}}' | grep -q "^becausechat_pgdata2$"; then
-        echo -e "${GREEN}✅ 发现现有数据卷: becausechat_pgdata2${NC}"
+    if docker volume ls --format '{{.Name}}' | grep -q "^${VECTORDB_VOLUME}$"; then
+        echo -e "${GREEN}✅ 发现现有数据卷: ${VECTORDB_VOLUME}${NC}"
     else
         echo -e "${YELLOW}⚠️  数据卷不存在，将创建新数据卷${NC}"
     fi
@@ -180,7 +181,7 @@ else
       -e POSTGRES_DB=mydatabase \
       -e POSTGRES_USER=myuser \
       -e POSTGRES_PASSWORD=mypassword \
-      -v becausechat_pgdata2:/var/lib/postgresql/data \
+      -v ${VECTORDB_VOLUME}:/var/lib/postgresql/data \
       pgvector/pgvector:0.8.0-pg15-trixie > /dev/null 2>&1
     
     if [ $? -eq 0 ]; then
