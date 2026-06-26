@@ -5,6 +5,12 @@ const StatisticsEngine = require('../../utils/statisticsEngine');
 const TimeComparison = require('../../utils/timeComparison');
 const DimensionDrillDown = require('../../utils/dimensionDrillDown');
 const MetricAttribution = require('../../utils/metricAttribution');
+// ---- 新增：sql_hint 下钻闭环 ----
+const {
+  buildFollowUpSuggestions,
+  generateKeyInsights,
+  calculateAnalysisConfidence,
+} = require('../../utils/drillDownHints');
 
 /**
  * ResultAnalysisTool - 结果分析工具（重构版）
@@ -308,7 +314,7 @@ class ResultAnalysisTool extends Tool {
   }
 
   /**
-   * 生成智能后续建议
+   * 生成智能后续建议（含 sql_hint 下钻闭环）
    */
   generateSmartSuggestions(analysis) {
     const { results, fieldTypes, stats, anomalies, trends, correlation, dimensionAttribution } = analysis;
@@ -330,7 +336,7 @@ class ResultAnalysisTool extends Tool {
       suggestions.push({
         question: `${topAnomaly.field}存在${topAnomaly.outlierCount}个异常值，是否需要深入调查？`,
         reason: `异常值比例${(topAnomaly.outlierRate * 100).toFixed(1)}%，超出正常范围[${topAnomaly.bounds.lower}, ${topAnomaly.bounds.upper}]`,
-        sql_hint: `添加 WHERE ${topAnomaly.field} > ${topAnomaly.bounds.upper} 查看高异常值明细`,
+        sql_hint: `SELECT * FROM <表名> WHERE ${topAnomaly.field} > ${topAnomaly.bounds.upper} LIMIT 50`,
         priority: 'high',
       });
     }
@@ -342,7 +348,9 @@ class ResultAnalysisTool extends Tool {
           suggestions.push({
             question: `${metric}呈现${trend.direction === 'increasing' ? '上升' : '下降'}趋势（R²=${trend.rSquared}），需要进一步归因分析吗？`,
             reason: `线性趋势显著，斜率=${trend.slope}`,
-            sql_hint: '可以按维度分组查看趋势差异',
+            sql_hint: fieldTypes?.categoricalFields?.length > 0
+              ? `SELECT <时间字段>, ${fieldTypes.categoricalFields[0]}, SUM(${metric}) AS ${metric} FROM <表名> GROUP BY <时间字段>, ${fieldTypes.categoricalFields[0]} ORDER BY <时间字段>`
+              : `SELECT <时间字段>, SUM(${metric}) AS ${metric} FROM <表名> GROUP BY <时间字段> ORDER BY <时间字段>`,
             priority: 'medium',
           });
         }
@@ -355,20 +363,36 @@ class ResultAnalysisTool extends Tool {
       suggestions.push({
         question: `${finding.metric1}和${finding.metric2}之间存在${finding.strength === 'very_strong' ? '非常强' : '强'}的相关性(r=${finding.correlation})，是否需要因果分析？`,
         reason: `${finding.direction === 'positive' ? '正' : '负'}相关可能暗示因果关系`,
-        sql_hint: '可以用scatter plot可视化两个指标的关系',
+        sql_hint: `SELECT ${finding.metric1}, ${finding.metric2} FROM <表名> ORDER BY ${finding.metric1}`,
         priority: 'medium',
       });
     }
 
-    // 基于维度归因的建议
+    // 基于维度归因的 Adtributor 下钻建议（含可执行 sql_hint）
     if (dimensionAttribution?.dimensionRanking?.length > 0) {
-      const topDim = dimensionAttribution.dimensionRanking[0];
-      suggestions.push({
-        question: `"${topDim.dimension}"维度的Adtributor评分最高(${topDim.adtributorScore})，是否沿此维度下钻？`,
-        reason: `解释力=${topDim.explanatoryPower}，惊喜度=${topDim.surprise}`,
-        sql_hint: `添加 GROUP BY ${topDim.dimension} 查看维度分布`,
-        priority: 'high',
-      });
+      const report = { dimension_attribution: dimensionAttribution };
+      const primaryMetric = fieldTypes?.numericFields?.[0] || 'metric';
+      const drillSuggestions = buildFollowUpSuggestions(report, primaryMetric);
+      for (const s of drillSuggestions) {
+        suggestions.push({
+          question: s.question,
+          reason: s.reason,
+          sql_hint: s.sql_hint,
+          filter: s.filter,
+          priority: s.priority,
+        });
+      }
+
+      // 兜底：若没有 drill 路径，保留原来的 GROUP BY 提示
+      if (drillSuggestions.length === 0) {
+        const topDim = dimensionAttribution.dimensionRanking[0];
+        suggestions.push({
+          question: `"${topDim.dimension}"维度的Adtributor评分最高(${topDim.adtributorScore})，是否沿此维度下钻？`,
+          reason: `解释力=${topDim.explanatoryPower}，惊喜度=${topDim.surprise}`,
+          sql_hint: `SELECT ${topDim.dimension}, SUM(${fieldTypes?.numericFields?.[0] || 'metric'}) AS metric FROM <表名> GROUP BY ${topDim.dimension}`,
+          priority: 'high',
+        });
+      }
     }
 
     // 基于数据量的建议
@@ -376,7 +400,7 @@ class ResultAnalysisTool extends Tool {
       suggestions.push({
         question: `是否按"${fieldTypes.categoricalFields[0]}"维度分组分析？`,
         reason: '检测到分类字段，可以进行分组对比',
-        sql_hint: `添加 GROUP BY ${fieldTypes.categoricalFields[0]}`,
+        sql_hint: `SELECT ${fieldTypes.categoricalFields[0]}, COUNT(*) AS cnt FROM <表名> GROUP BY ${fieldTypes.categoricalFields[0]} ORDER BY cnt DESC`,
         priority: 'low',
       });
     }
@@ -475,7 +499,10 @@ class ResultAnalysisTool extends Tool {
       result.follow_up_suggestions = this.generateSmartSuggestions(analysisResult);
 
       // 分析置信度
-      result.metadata.analysis_confidence = this._calculateConfidence(results, analysis_depth);
+      result.metadata.analysis_confidence = this._calculateConfidence(results, analysis_depth, {
+        hasComparison: !!comparison_results,
+        hasDimensionAttribution: !!result.dimension_attribution?.dimensionRanking,
+      });
       result.metadata.analysis_depth = analysis_depth;
 
       logger.info('[ResultAnalysisTool] 分析完成:', {
@@ -502,15 +529,23 @@ class ResultAnalysisTool extends Tool {
   }
 
   /**
-   * 从分析结果生成关键洞察
+   * 从分析结果生成关键洞察（含归因路径洞察）
    */
   _generateKeyInsights(analysis) {
-    const insights = [];
     const { results, fieldTypes, stats, anomalies, trends, correlation, dimensionAttribution } = analysis;
 
-    if (!results || results.length === 0) return insights;
+    if (!results || results.length === 0) return [];
 
-    // 统计洞察
+    // 优先使用 drillDownHints 的结构化洞察生成（含下钻路径）
+    const report = dimensionAttribution ? { dimension_attribution: dimensionAttribution } : {};
+    const columnTypes = fieldTypes
+      ? { numeric: fieldTypes.numericFields, categorical: fieldTypes.categoricalFields }
+      : { numeric: [], categorical: [] };
+    const drillInsights = generateKeyInsights(report, columnTypes, results);
+
+    // 原有洞察（统计/趋势/相关性）
+    const insights = [...drillInsights];
+
     if (stats) {
       for (const [field, stat] of Object.entries(stats)) {
         if (stat.coefficientOfVariation > 0.5) {
@@ -525,47 +560,43 @@ class ResultAnalysisTool extends Tool {
       }
     }
 
-    // 异常洞察
     if (anomalies && anomalies.length > 0) {
       for (const anomaly of anomalies.slice(0, 3)) {
-        insights.push({
-          type: 'anomaly',
-          dimension: anomaly.field,
-          value: `发现${anomaly.outlierCount}个异常值`,
-          impact: `异常值比例${(anomaly.outlierRate * 100).toFixed(1)}%`,
-          importance: 'high',
-        });
-      }
-    }
-
-    // 趋势洞察
-    if (trends) {
-      for (const [metric, trend] of Object.entries(trends)) {
-        if (trend.direction !== 'no_trend' && trend.strength !== 'weak') {
+        // drillDownHints 已经处理了 anomaly_detection，这里处理原始 anomalies 数组格式
+        const alreadyCovered = insights.some(
+          (ins) => ins.type === 'anomaly' && ins.dimension === anomaly.field,
+        );
+        if (!alreadyCovered) {
           insights.push({
-            type: 'trend',
-            dimension: metric,
-            value: `${trend.direction === 'increasing' ? '上升' : '下降'}趋势(R²=${trend.rSquared})`,
-            impact: `趋势强度: ${trend.strength}`,
-            importance: trend.strength === 'strong' ? 'high' : 'medium',
+            type: 'anomaly',
+            dimension: anomaly.field,
+            value: `发现${anomaly.outlierCount}个异常值`,
+            impact: `异常值比例${(anomaly.outlierRate * 100).toFixed(1)}%`,
+            importance: 'high',
           });
         }
       }
     }
 
-    // 维度归因洞察
-    if (dimensionAttribution?.dimensionRanking?.length > 0) {
-      const top = dimensionAttribution.dimensionRanking[0];
-      insights.push({
-        type: 'attribution',
-        dimension: top.dimension,
-        value: `Adtributor评分=${top.adtributorScore}（EP=${top.explanatoryPower}, Surprise=${top.surprise}）`,
-        impact: `该维度是最主要的归因维度`,
-        importance: 'high',
-      });
+    if (trends) {
+      for (const [metric, trend] of Object.entries(trends)) {
+        if (trend.direction !== 'no_trend' && trend.strength !== 'weak') {
+          const alreadyCovered = insights.some(
+            (ins) => ins.type === 'trend' && ins.dimension === metric,
+          );
+          if (!alreadyCovered) {
+            insights.push({
+              type: 'trend',
+              dimension: metric,
+              value: `${trend.direction === 'increasing' ? '上升' : '下降'}趋势(R²=${trend.rSquared})`,
+              impact: `趋势强度: ${trend.strength}`,
+              importance: trend.strength === 'strong' ? 'high' : 'medium',
+            });
+          }
+        }
+      }
     }
 
-    // 相关性洞察
     if (correlation?.keyFindings?.length > 0) {
       for (const finding of correlation.keyFindings.slice(0, 2)) {
         insights.push({
@@ -578,7 +609,7 @@ class ResultAnalysisTool extends Tool {
       }
     }
 
-    // 基本数值洞察（当没有高级洞察时兜底）
+    // 兜底
     if (insights.length === 0 && fieldTypes.numericFields.length > 0) {
       for (const field of fieldTypes.numericFields.slice(0, 3)) {
         const values = results.map((r) => Number(r[field])).filter((v) => !isNaN(v));
@@ -603,24 +634,10 @@ class ResultAnalysisTool extends Tool {
   }
 
   /**
-   * 计算分析置信度
+   * 计算分析置信度（使用 drillDownHints 统一实现）
    */
-  _calculateConfidence(results, depth) {
-    if (!results || results.length === 0) return 0;
-
-    let confidence = 0.5;
-
-    if (results.length >= 100) confidence += 0.2;
-    else if (results.length >= 20) confidence += 0.15;
-    else if (results.length >= 5) confidence += 0.1;
-
-    if (depth === 'deep') confidence += 0.15;
-    else if (depth === 'standard') confidence += 0.1;
-
-    const columns = Object.keys(results[0]).length;
-    if (columns >= 3) confidence += 0.05;
-
-    return Number(Math.min(0.95, confidence).toFixed(2));
+  _calculateConfidence(results, depth, extra = {}) {
+    return calculateAnalysisConfidence(results, depth, extra);
   }
 }
 

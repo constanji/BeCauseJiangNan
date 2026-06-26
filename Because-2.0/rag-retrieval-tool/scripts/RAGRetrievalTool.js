@@ -155,6 +155,10 @@ class RAGRetrievalTool extends Tool {
       const ragService = this.getRAGService();
       logger.info('[RAGRetrievalTool] RAGService实例已创建');
 
+      // 当有 entityId 时，传入 fileIds: null 触发 hybridRetrieve 中的跨文件检索，
+      // 使 Excel 向量化的单元格数据（file_vectors, source='excel_cell'）也被纳入检索范围。
+      const resolvedFileIds = fileIds || (entityId ? null : undefined);
+
       const result = await ragService.query({
         query,
         userId,
@@ -164,7 +168,7 @@ class RAGRetrievalTool extends Tool {
           useReranking,
           enhancedReranking,
           entityId,
-          fileIds,
+          fileIds: resolvedFileIds,
         },
       });
 

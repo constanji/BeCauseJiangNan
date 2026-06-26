@@ -5,6 +5,7 @@ const { Pool } = require('pg');
 const { logger } = require('@because/data-schemas');
 const { decryptV2 } = require('@because/api');
 const path = require('path');
+const { gaussdbJdbcQuery } = require(path.join(__dirname, '../../utils/gaussdbJdbcBridge'));
 
 // 延迟加载模型函数，避免路径别名问题
 let getDataSourceById = null;
@@ -50,7 +51,7 @@ class DatabaseSchemaTool extends Tool {
     '可以获取所有表的Schema，或指定单个表的详细结构。返回的信息包括表名、列名、数据类型、是否可空、主键、索引等。' +
     '使用 format="semantic" 获取语义模型格式，直接用于 text-to-sql 工具的 semantic_models 参数。' +
     '这是生成SQL查询前必须调用的工具，也可用于意图分类时判断查询是否与数据库相关。' +
-    '支持MySQL和PostgreSQL数据库。';
+    '支持MySQL、PostgreSQL和GaussDB数据库。';
 
   schema = z.object({
     table: z
@@ -123,6 +124,20 @@ class DatabaseSchemaTool extends Tool {
         );
       }
       throw new Error(`密码解密失败: ${error.message}`);
+    }
+
+    // gaussdb 使用 Java JDBC 桥，不建真正的连接池，存储解密后的密码供每次查询使用
+    if (dataSource.type === 'gaussdb') {
+      connectionPools.set(cleanedId, {
+        pool: { type: 'gaussdb-jdbc', password },
+        dataSource,
+      });
+      logger.info('[DatabaseSchemaTool] GaussDB JDBC 适配器已就绪:', JSON.stringify({
+        dataSourceId: cleanedId,
+        host: dataSource.host,
+        database: dataSource.database,
+      }));
+      return { pool: { type: 'gaussdb-jdbc', password }, dataSource };
     }
 
     // 根据数据库类型创建连接池
@@ -410,6 +425,71 @@ class DatabaseSchemaTool extends Tool {
   }
 
   /**
+   * 获取 GaussDB 数据库 Schema（通过 Java JDBC 桥执行 information_schema 查询）
+   */
+  async getGaussDBSchema(password, table = null, dataSource) {
+    const database = dataSource.database;
+    const dsConfig = {
+      host: dataSource.host,
+      port: dataSource.port,
+      database: dataSource.database,
+      username: dataSource.username,
+      ssl: dataSource.ssl,
+    };
+
+    logger.info('[DatabaseSchemaTool] 使用GaussDB JDBC桥获取Schema:', JSON.stringify({ database, table: table || 'all' }));
+
+    if (table) {
+      const columns = await gaussdbJdbcQuery(
+        `SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 ORDER BY ordinal_position`,
+        [table],
+        dsConfig,
+        password,
+      );
+
+      const pkRows = await gaussdbJdbcQuery(
+        `SELECT a.attname as column_name FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) WHERE i.indrelid = $1::regclass AND i.indisprimary`,
+        [`public.${table}`],
+        dsConfig,
+        password,
+      );
+      const primaryKeys = new Set(pkRows.map((r) => r.column_name));
+
+      return {
+        database,
+        table,
+        columns: columns.map((col) => ({
+          column_name: col.column_name,
+          data_type: col.data_type,
+          is_nullable: col.is_nullable === 'YES',
+          column_key: primaryKeys.has(col.column_name) ? 'PRI' : '',
+          column_comment: '',
+          column_default: col.column_default,
+        })),
+        indexes: [],
+      };
+    } else {
+      const tables = await gaussdbJdbcQuery(
+        `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name`,
+        [],
+        dsConfig,
+        password,
+      );
+
+      const schema = {};
+      for (const { table_name } of tables) {
+        const tableSchema = await this.getGaussDBSchema(password, table_name, dataSource);
+        schema[table_name] = {
+          columns: tableSchema.columns,
+          indexes: tableSchema.indexes,
+        };
+      }
+
+      return { database, schema };
+    }
+  }
+
+  /**
    * 格式化MySQL索引
    */
   formatMySQLIndexes(indexes) {
@@ -470,6 +550,115 @@ class DatabaseSchemaTool extends Tool {
     }
     
     return cleaned || null;
+  }
+
+  /**
+   * 从 pgvector 读取预处理好的 Light Schema 列表（缓存优先逻辑）
+   * @param {string} datasourceId
+   * @returns {Promise<Array|null>}  有记录时返回数组，否则返回 null
+   */
+  async getLightSchemaFromCache(datasourceId) {
+    let VectorDBService;
+    try {
+      VectorDBService = require(path.resolve(__dirname, '../../../api/server/services/RAG/VectorDBService'));
+    } catch (_) {
+      return null;
+    }
+    const vectorDB = new VectorDBService();
+    await vectorDB.initialize();
+    const schemas = await vectorDB.getLightSchemas(datasourceId);
+    return schemas && schemas.length > 0 ? schemas : null;
+  }
+
+  /**
+   * 当有用户问题时，用一次 embedding 同时做：
+   *   1. Light Schema 语义检索（只返回最相关的 top-K 张表，避免全量返回）
+   *   2. Cell 向量检索（字面量值匹配，辅助 WHERE 条件生成）
+   *
+   * 这样 500~1000 张表的大型数据库也只会把最相关的表塞进 LLM 上下文。
+   *
+   * @param {string} datasourceId
+   * @param {string} question       用户原始问题
+   * @param {number} tableTopK      返回最相关的表数量，默认 15
+   * @param {number} cellTopK       Cell 匹配条数，默认 10
+   * @returns {Promise<{schemas: Array|null, cellMatchStr: string}>}
+   */
+  async fetchSchemasByQuestion(datasourceId, question, tableTopK = 15, cellTopK = 10) {
+    try {
+      const VectorDBService = require(path.resolve(__dirname, '../../../api/server/services/RAG/VectorDBService'));
+      const EmbeddingService = require(path.resolve(__dirname, '../../../api/server/services/RAG/EmbeddingService'));
+      const vectorDB = new VectorDBService();
+      const embedding = new EmbeddingService();
+      await vectorDB.initialize();
+
+      // 只做一次 embedding，复用于 schema 检索 + cell 检索
+      const queryEmbedding = await embedding.embedText(question);
+      if (!queryEmbedding) {
+        // embedding 失败时降级为全量 schema + 无 cell 匹配
+        const allSchemas = await vectorDB.getLightSchemas(datasourceId);
+        return { schemas: allSchemas?.length ? allSchemas : null, cellMatchStr: '' };
+      }
+
+      // 并行：语义检索相关表 + Cell 字面量匹配
+      const [schemaResults, cellMatches] = await Promise.all([
+        vectorDB.searchLightSchema(datasourceId, queryEmbedding, tableTopK),
+        vectorDB.searchCells(datasourceId, queryEmbedding, cellTopK, 0.5),
+      ]);
+
+      const schemas = schemaResults?.length ? schemaResults : null;
+      const cellMatchStr = cellMatches?.length
+        ? cellMatches.map((m) => `${m.tableName}.${m.columnName} = "${m.cellValue}"`).join(', ')
+        : '';
+
+      logger.info(
+        `[DatabaseSchemaTool] 语义检索完成：` +
+        `命中 ${schemas?.length ?? 0} 张表（top ${tableTopK}），` +
+        `Cell 匹配 ${cellMatches?.length ?? 0} 条`,
+      );
+      return { schemas, cellMatchStr };
+    } catch (err) {
+      logger.warn('[DatabaseSchemaTool] 语义检索失败，降级为全量:', err?.message || String(err));
+      // 降级：全量 schema，无 cell 匹配
+      try {
+        const VectorDBService = require(path.resolve(__dirname, '../../../api/server/services/RAG/VectorDBService'));
+        const vectorDB = new VectorDBService();
+        await vectorDB.initialize();
+        const allSchemas = await vectorDB.getLightSchemas(datasourceId);
+        return { schemas: allSchemas?.length ? allSchemas : null, cellMatchStr: '' };
+      } catch (_) {
+        return { schemas: null, cellMatchStr: '' };
+      }
+    }
+  }
+
+  /**
+   * 用问题文本做 Cell 向量检索，返回字面量匹配提示字符串。
+   * 仅在没有用户问题、无法调用 fetchSchemasByQuestion 时单独使用。
+   * @param {string} datasourceId
+   * @param {string} question  用户原始问题
+   * @returns {Promise<string>}  空字符串表示无命中或检索失败
+   */
+  async searchCellMatches(datasourceId, question) {
+    try {
+      const VectorDBService = require(path.resolve(__dirname, '../../../api/server/services/RAG/VectorDBService'));
+      const EmbeddingService = require(path.resolve(__dirname, '../../../api/server/services/RAG/EmbeddingService'));
+      const vectorDB = new VectorDBService();
+      const embedding = new EmbeddingService();
+      await vectorDB.initialize();
+
+      const queryEmbedding = await embedding.embedText(question);
+      if (!queryEmbedding) return '';
+
+      const matches = await vectorDB.searchCells(datasourceId, queryEmbedding, 10, 0.5);
+      if (!matches || matches.length === 0) return '';
+
+      return matches
+        .map((m) => `${m.tableName}.${m.columnName} = "${m.cellValue}"`)
+        .join(', ');
+    } catch (err) {
+      logger.warn('[DatabaseSchemaTool] Cell 向量检索失败（不影响主流程）:', err?.message || String(err));
+      return '';
+    }
   }
 
   /**
@@ -726,6 +915,82 @@ class DatabaseSchemaTool extends Tool {
         });
       }
 
+      // ── Light Schema 缓存优先 + 语义表过滤 + Cell 向量字面量匹配 ──────────
+      // 若已预处理过该数据源（pgvector 中有 light_schema_vectors 记录），
+      // 直接读取缓存并转换为 semantic_models 返回，避免实时连接远端数据库。
+      //
+      // 有用户问题时：用一次 embedding 同时做语义表过滤（只返回最相关的表）
+      //   + Cell 向量检索（辅助 WHERE 条件），适配 500~1000 张表的大型数据库。
+      // 无用户问题时：全量返回（仅适合小型数据库场景）。
+      try {
+        // 取出用户问题
+        const userQuestion = this.req?.body?.text
+          || this.req?.body?.message
+          || this.req?.body?.content
+          || input.question
+          || '';
+
+        let cachedSchemas, cellMatchStr;
+        if (userQuestion) {
+          // 有问题：语义检索相关表 + cell 匹配（复用同一个 embedding，一次向量化）
+          const result = await this.fetchSchemasByQuestion(dataSourceId, userQuestion);
+          cachedSchemas = result.schemas;
+          cellMatchStr = result.cellMatchStr;
+        } else {
+          // 无问题（如直接 format 查询）：全量返回 + 无 cell 匹配
+          [cachedSchemas, cellMatchStr] = await Promise.all([
+            this.getLightSchemaFromCache(dataSourceId),
+            Promise.resolve(''),
+          ]);
+        }
+
+        if (cachedSchemas && cachedSchemas.length > 0) {
+          logger.info(
+            `[DatabaseSchemaTool] Light Schema 缓存命中，共 ${cachedSchemas.length} 张表` +
+            (cellMatchStr ? `，Cell 匹配：${cellMatchStr}` : '，无 Cell 匹配'),
+          );
+          const semanticModels = cachedSchemas.map((s) => {
+            let schema;
+            try { schema = JSON.parse(s.content); } catch (_) { return null; }
+            if (!schema) return null;
+            return {
+              table_name: schema.tableName,
+              table_description: '',
+              columns: (schema.columns || []).map((c) => ({
+                column_name: c.name,
+                data_type: c.type,
+                is_nullable: c.nullable ? 'YES' : 'NO',
+                column_description: c.description || '',
+                sample_values: c.sampleValues || [],
+              })),
+              primary_keys: schema.primaryKeys || [],
+            };
+          }).filter(Boolean);
+
+          const result = {
+            success: true,
+            source: 'light_schema_cache',
+            semantic_models: semanticModels,
+            format: 'semantic',
+            instruction: 'Extract the "semantic_models" array from this response and use it as the semantic_models parameter when calling text-to-sql tool.',
+            dataSource: { id: dataSourceId },
+          };
+
+          // 注入字面量匹配（给 LLM 明确的 WHERE 值提示）
+          if (cellMatchStr) {
+            result.value_hints = cellMatchStr;
+            result.instruction +=
+              ' Additionally, "value_hints" contains possible column=value matches found in the database ' +
+              '— use them to construct accurate WHERE conditions instead of guessing literal values.';
+          }
+
+          return JSON.stringify(result, null, 2);
+        }
+      } catch (cacheErr) {
+        logger.warn('[DatabaseSchemaTool] Light Schema 缓存读取失败，降级为实时查询:', cacheErr.message);
+      }
+      // ─────────────────────────────────────────────────────────────────
+
       // 获取连接池和数据源信息
       const { pool, dataSource } = await this.getConnectionPool(dataSourceId);
 
@@ -741,6 +1006,8 @@ class DatabaseSchemaTool extends Tool {
           schemaData = await this.getMySQLSchema(pool, table, dataSource.database);
         } else if (dataSource.type === 'postgresql') {
           schemaData = await this.getPostgreSQLSchema(pool, table, dataSource.database);
+        } else if (dataSource.type === 'gaussdb') {
+          schemaData = await this.getGaussDBSchema(pool.password, table, dataSource);
         } else {
           throw new Error(`不支持的数据库类型: ${dataSource.type}`);
         }

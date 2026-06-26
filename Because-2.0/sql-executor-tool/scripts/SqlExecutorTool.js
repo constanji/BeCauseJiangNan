@@ -5,6 +5,7 @@ const { Pool } = require('pg');
 const { logger } = require('@because/data-schemas');
 const { decryptV2 } = require('@because/api');
 const path = require('path');
+const { gaussdbJdbcQuery } = require(path.join(__dirname, '../../utils/gaussdbJdbcBridge'));
 // 延迟加载模型函数，避免路径别名问题
 let getDataSourceById = null;
 let getProjectById = null;
@@ -46,7 +47,7 @@ class SqlExecutorTool extends Tool {
   description =
     '执行只读的SQL SELECT查询和WITH子句（CTE），并返回查询结果和详细的归因分析说明。' +
     '工具会根据Agent配置的数据源自动连接对应的数据库。' +
-    '支持MySQL和PostgreSQL数据库。' +
+    '支持MySQL、PostgreSQL和GaussDB数据库。' +
     '支持WITH子句（CTE）、复杂子查询、JOIN等高级SQL特性。';
 
   schema = z.object({
@@ -125,6 +126,20 @@ class SqlExecutorTool extends Tool {
     }
 
     // 根据数据库类型创建连接池
+    // gaussdb 使用 Java JDBC 桥，不建真正的连接池，存储解密后的密码供每次查询使用
+    if (dataSource.type === 'gaussdb') {
+      connectionPools.set(cleanedId, {
+        pool: { type: 'gaussdb-jdbc', password },
+        dataSource,
+      });
+      logger.info('[SqlExecutorTool] GaussDB JDBC 适配器已就绪:', {
+        dataSourceId: cleanedId,
+        host: dataSource.host,
+        database: dataSource.database,
+      });
+      return { pool: { type: 'gaussdb-jdbc', password }, dataSource };
+    }
+
     let pool;
     if (dataSource.type === 'mysql') {
       const poolConfig = {
@@ -217,6 +232,9 @@ class SqlExecutorTool extends Tool {
     } else if (dataSource.type === 'postgresql') {
       const result = await pool.query(sql);
       return result.rows;
+    } else if (dataSource.type === 'gaussdb') {
+      // 通过 Java JDBC 桥执行，pool 对象存有解密后的密码
+      return await gaussdbJdbcQuery(sql, [], dataSource, pool.password);
     } else {
       throw new Error(`不支持的数据库类型: ${dataSource.type}`);
     }

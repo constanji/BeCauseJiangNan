@@ -6,15 +6,34 @@ const TimeComparison = require('../../utils/timeComparison');
 const DimensionDrillDown = require('../../utils/dimensionDrillDown');
 const MetricAttribution = require('../../utils/metricAttribution');
 
+// ---- 新增：三类结构归因引擎 ----
+const { classifyMetricStructure } = require('../../utils/metricStructureClassifier');
+const { runAdditiveAttribution } = require('../../utils/additiveAttribution');
+const {
+  runMultiplicativeAttribution,
+  runSegmentedMultiplicative,
+} = require('../../utils/multiplicativeAttribution');
+const { runDivisiveAttribution } = require('../../utils/divisiveAttribution');
+const { appendWarnings, formatWarningsForConclusion } = require('../../utils/methodologyWarnings');
+
+// ---- 新增：sql_hint 下钻闭环 ----
+const {
+  buildDrillDownNextSteps,
+  buildStructuredAttributionNextSteps,
+} = require('../../utils/drillDownHints');
+
 /**
  * FluctuationAttributionTool - 波动归因工具
- * 
+ *
  * 基于Adtributor算法的智能波动归因分析工具，提供：
  * - 维度归因：哪些维度导致了指标波动（Adtributor算法）
  * - 指标归因：哪些子指标驱动了总指标变化（线性模型 + 特征重要性）
  * - 时间对比：基期/现期对比，支持同比/环比/自定义
  * - 维度下钻：沿维度层级逐层下钻（最多10条路径）
  * - 量化指标：解释力、简洁性、惊喜度（JS散度）
+ * - [新增] 三类公式归因：加法（贡献度）/ 乘法（链式分解）/ 除法（差分分解+情景模拟）
+ * - [新增] 方法论警示：掩盖效应、放大效应、稀释效应、伪加法陷阱
+ * - [新增] sql_hint 下钻闭环：每条 next_steps 携带可执行 SQL 提示
  */
 class FluctuationAttributionTool extends Tool {
   name = 'fluctuation_attribution';
@@ -24,6 +43,7 @@ class FluctuationAttributionTool extends Tool {
     '支持维度归因（哪个维度导致了变化）和指标归因（哪些子指标驱动了变化）。' +
     '使用Adtributor算法计算解释力、惊喜度、简洁性。' +
     '支持同比/环比时间对比，支持多层级维度下钻（最多10条路径）。' +
+    '支持加法型/乘法型/除法型三类指标结构归因，自动识别或显式指定 metric_structure。' +
     '输入需要基期数据和现期数据，或提供带时间字段的完整数据集。';
 
   schema = z.object({
@@ -90,6 +110,30 @@ class FluctuationAttributionTool extends Tool {
       .optional()
       .default(3)
       .describe('最大下钻深度，默认3'),
+    // ---- 新增参数 ----
+    metric_structure: z
+      .enum(['auto', 'additive', 'multiplicative', 'divisive'])
+      .optional()
+      .default('auto')
+      .describe(
+        '指标数学结构：auto=自动识别, additive=加法型（如收入=品类A+品类B）, ' +
+        'multiplicative=乘法型（如GMV=DAU×转化率×客单价）, divisive=除法型（如转化率=付费用户/DAU）',
+      ),
+    numerator_field: z
+      .string()
+      .optional()
+      .describe('除法型指标的分子字段（metric_structure=divisive 时使用，如 paid_users）'),
+    denominator_field: z
+      .string()
+      .optional()
+      .describe('除法型指标的分母字段（metric_structure=divisive 时使用，如 total_users）'),
+    factor_order: z
+      .array(z.string())
+      .optional()
+      .describe(
+        '乘法型链式分解的因子顺序（如 [dau, conversion_rate, arpu]），' +
+        '应按业务漏斗逻辑排序，顺序影响各因子贡献值',
+      ),
   });
 
   async _call(input) {
@@ -98,16 +142,15 @@ class FluctuationAttributionTool extends Tool {
         analysisType: input.analysis_type,
         metricFields: input.metric_fields,
         dimensionFields: input.dimension_fields,
+        metricStructure: input.metric_structure,
       });
 
       let { base_data: baseData, current_data: currentData } = input;
 
-      // 如果提供了完整数据，需要按时间分割
       if (!baseData || !currentData) {
         if (!input.full_data || input.full_data.length === 0) {
           return this._errorResult('必须提供 base_data + current_data 或 full_data');
         }
-
         const splitResult = this._splitDataByTime(input);
         if (splitResult.error) {
           return this._errorResult(splitResult.error);
@@ -138,7 +181,7 @@ class FluctuationAttributionTool extends Tool {
         });
       }
 
-      // 维度归因
+      // 维度归因（Adtributor）
       if (input.analysis_type === 'dimension' || input.analysis_type === 'comprehensive') {
         if (input.dimension_fields && input.dimension_fields.length > 0) {
           const dimFields = input.dimension_fields.slice(0, input.max_drill_depth || 3);
@@ -156,21 +199,28 @@ class FluctuationAttributionTool extends Tool {
         }
       }
 
-      // 指标归因
+      // 指标归因（线性回归/特征重要性）
       if (input.analysis_type === 'metric' || input.analysis_type === 'comprehensive') {
         result.metric_attribution = this._performMetricAttribution(input, baseData, currentData);
       }
 
-      // 生成综合归因结论
+      // ---- 新增：三类结构化归因引擎 ----
+      const structuredResult = this._performStructuredAttribution(input, baseData, currentData);
+      if (structuredResult) {
+        result.structured_attribution = structuredResult;
+      }
+
+      // 生成综合归因结论（含方法论警示）
       result.conclusion = this._generateConclusion(result, input);
 
-      // 生成后续建议
+      // 生成后续建议（含 sql_hint）
       result.next_steps = this._generateNextSteps(result, input);
 
       logger.info('[FluctuationAttributionTool] 归因分析完成:', {
         hasTimeCmp: !!result.time_comparison,
         hasDimAttr: !!result.dimension_attribution?.dimensionRanking,
         hasMetricAttr: !!result.metric_attribution,
+        hasStructuredAttr: !!result.structured_attribution,
       });
 
       return JSON.stringify(result, null, 2);
@@ -178,6 +228,95 @@ class FluctuationAttributionTool extends Tool {
       logger.error('[FluctuationAttributionTool] 归因分析失败:', error);
       return this._errorResult(`归因分析失败: ${error.message}`);
     }
+  }
+
+  /**
+   * 三类结构化归因（加法/乘法/除法）
+   * 自动识别或使用显式指定的 metric_structure
+   */
+  _performStructuredAttribution(input, baseData, currentData) {
+    const {
+      metric_fields: metricFields,
+      target_metric: targetMetric,
+      component_metrics: componentMetrics,
+      dimension_fields: dimensionFields,
+      metric_structure: metricStructureInput,
+      numerator_field: numeratorField,
+      denominator_field: denominatorField,
+      factor_order: factorOrder,
+    } = input;
+
+    const primaryMetric = targetMetric || metricFields[0];
+
+    // 识别指标结构（显式指定或自动识别）
+    const classification = classifyMetricStructure({
+      metricStructure: metricStructureInput || 'auto',
+      baseData,
+      currentData,
+      metricFields,
+      targetMetric: primaryMetric,
+      componentMetrics: componentMetrics || [],
+      numeratorField,
+      denominatorField,
+      dimensionFields: dimensionFields || [],
+    });
+
+    const { structure, confidence, reason, warnings: classifyWarnings } = classification;
+
+    // 置信度过低时（0.4 以下）且未显式指定，跳过
+    if (confidence < 0.4 && (!metricStructureInput || metricStructureInput === 'auto')) {
+      return null;
+    }
+
+    let attrResult = null;
+
+    try {
+      if (structure === 'additive') {
+        attrResult = runAdditiveAttribution({
+          baseData,
+          currentData,
+          targetMetric: primaryMetric,
+          componentMetrics: componentMetrics || [],
+          dimensionFields: dimensionFields || [],
+        });
+      } else if (structure === 'multiplicative') {
+        if (!componentMetrics || componentMetrics.length < 2) {
+          return null;
+        }
+        attrResult = runMultiplicativeAttribution({
+          baseData,
+          currentData,
+          targetMetric: primaryMetric,
+          componentMetrics,
+          factorOrder,
+        });
+      } else if (structure === 'divisive') {
+        if (!numeratorField || !denominatorField) {
+          return null;
+        }
+        attrResult = runDivisiveAttribution({
+          baseData,
+          currentData,
+          numeratorField,
+          denominatorField,
+          targetMetric: primaryMetric,
+        });
+      }
+    } catch (err) {
+      logger.warn('[FluctuationAttributionTool] 结构化归因失败:', err.message);
+      return null;
+    }
+
+    if (!attrResult) return null;
+
+    // 附加结构识别元信息与警示
+    attrResult.structure_classification = { structure, confidence, reason };
+    attrResult.methodology_warnings = appendWarnings(
+      attrResult.methodology_warnings || [],
+      ...classifyWarnings,
+    );
+
+    return attrResult;
   }
 
   /**
@@ -199,7 +338,6 @@ class FluctuationAttributionTool extends Tool {
       );
     }
 
-    // 自动推断时间范围
     const times = data.map((r) => new Date(r[actualTimeField]).getTime()).filter((t) => !isNaN(t));
     if (times.length === 0) {
       return { error: `时间字段"${actualTimeField}"中没有有效的时间值` };
@@ -207,8 +345,6 @@ class FluctuationAttributionTool extends Tool {
 
     const maxTime = new Date(Math.max(...times));
     const minTime = new Date(Math.min(...times));
-
-    // 使用中位时间点分割
     const midTime = new Date((minTime.getTime() + maxTime.getTime()) / 2);
 
     let currentStart, currentEnd, baseStart, baseEnd;
@@ -234,18 +370,16 @@ class FluctuationAttributionTool extends Tool {
   }
 
   /**
-   * 执行指标归因
+   * 执行指标归因（线性回归/ElasticNet/特征重要性）
    */
   _performMetricAttribution(input, baseData, currentData) {
     const result = {};
 
-    // 指标间相关性分析
     if (input.metric_fields.length > 1) {
       const allData = [...baseData, ...currentData];
       result.correlation = MetricAttribution.metricCorrelation(allData, input.metric_fields);
     }
 
-    // 指标分解归因
     if (input.target_metric && input.component_metrics && input.component_metrics.length > 0) {
       result.decomposition = MetricAttribution.metricDecomposition({
         baseData,
@@ -255,7 +389,6 @@ class FluctuationAttributionTool extends Tool {
       });
     }
 
-    // 特征重要性（用维度字段编码后作为特征预测指标）
     if (input.dimension_fields && input.dimension_fields.length > 0 && input.metric_fields.length > 0) {
       const allData = [...baseData, ...currentData];
       const encoded = this._encodeDimensionsAsFeatures(allData, input.dimension_fields);
@@ -265,7 +398,6 @@ class FluctuationAttributionTool extends Tool {
           encoded.X, Y, encoded.featureNames,
         );
 
-        // ElasticNet回归
         const elasticResult = MetricAttribution.elasticNet(encoded.X, Y, 0.1, 0.5);
         result.regression = {
           method: 'ElasticNet',
@@ -291,8 +423,6 @@ class FluctuationAttributionTool extends Tool {
     const encodingMap = {};
 
     for (const dim of dimensionFields) {
-      const uniqueValues = [...new Set(data.map((r) => String(r[dim])))];
-      // 取前10个最常见的值做编码，避免维度爆炸
       const valueCounts = {};
       data.forEach((r) => {
         const v = String(r[dim]);
@@ -322,24 +452,47 @@ class FluctuationAttributionTool extends Tool {
   }
 
   /**
-   * 生成综合归因结论
+   * 生成综合归因结论（含方法论警示）
    */
   _generateConclusion(result, input) {
     const lines = [];
 
-    // 时间对比结论
     if (result.time_comparison?.overview) {
       const ov = result.time_comparison.overview;
       const dirMap = { increase: '上升', decrease: '下降', unchanged: '持平' };
       lines.push(`【总体趋势】${ov.primaryMetric} ${dirMap[ov.direction] || ov.direction}了${ov.changeRate}（绝对变化: ${ov.absoluteChange}）`);
     }
 
-    // 维度归因结论
+    // 结构化归因结论
+    if (result.structured_attribution) {
+      const sa = result.structured_attribution;
+      if (sa.type === 'additive' && sa.topContributor) {
+        const tc = sa.topContributor;
+        const label = tc.label || tc.metric || tc.dimensionValue;
+        lines.push(`【加法归因】最大贡献子项: ${label}（变化 ${tc.change?.toFixed ? tc.change.toFixed(2) : tc.change}，贡献率 ${typeof tc.contributionRate === 'number' ? (tc.contributionRate * 100).toFixed(1) : tc.contributionRate}%）`);
+      } else if (sa.type === 'multiplicative' && sa.topContributor) {
+        const tc = sa.topContributor;
+        lines.push(`【乘法链式归因】最大驱动因子: ${tc.metric}（贡献值 ${typeof tc.contribution === 'number' ? tc.contribution.toFixed(2) : tc.contribution}，变化率 ${typeof tc.pct_change === 'number' ? (tc.pct_change * 100).toFixed(1) : tc.pct_change}%）`);
+        if (sa.reconstruction?.error_rate < 0.01) {
+          lines.push(`【分解验证】链式分解重建误差 ${(sa.reconstruction.error_rate * 100).toFixed(2)}%，精度良好`);
+        }
+      } else if (sa.type === 'divisive') {
+        const driver = sa.primary_driver === 'denominator' ? '分母扩张（稀释效应）' : '分子变化';
+        lines.push(`【除法差分归因】主要驱动: ${driver}，分子贡献 ${sa.decomposition?.numerator_contrib?.toFixed(4)}，分母贡献 ${sa.decomposition?.denominator_contrib?.toFixed(4)}`);
+      }
+
+      // 方法论警示
+      const warnings = sa.methodology_warnings || [];
+      if (warnings.length > 0) {
+        lines.push(`\n【方法论警示】\n${formatWarningsForConclusion(warnings)}`);
+      }
+    }
+
+    // Adtributor 维度归因结论
     if (result.dimension_attribution?.summary) {
       lines.push(`【维度归因】${result.dimension_attribution.summary}`);
     }
 
-    // 下钻路径结论
     if (result.dimension_attribution?.drillPaths?.length > 0) {
       const topPath = result.dimension_attribution.drillPaths[0];
       const pathStr = topPath.steps.map((s) => `${s.dimension}="${s.value}"`).join(' → ');
@@ -364,22 +517,40 @@ class FluctuationAttributionTool extends Tool {
   }
 
   /**
-   * 生成后续建议
+   * 生成后续建议（含 sql_hint 下钻闭环）
    */
   _generateNextSteps(result, input) {
     const steps = [];
+    const metricField = input.metric_fields[0];
 
-    if (result.dimension_attribution?.dimensionRanking?.length > 0) {
-      const top = result.dimension_attribution.dimensionRanking[0];
+    // 基于维度归因的 Adtributor 下钻（含 sql_hint）
+    const dimAttr = result.dimension_attribution;
+    if (dimAttr && !dimAttr.warning) {
+      const drillSteps = buildDrillDownNextSteps(dimAttr, metricField);
+      for (const s of drillSteps) {
+        steps.push(s);
+      }
+    } else if (dimAttr?.dimensionRanking?.length > 0) {
+      const top = dimAttr.dimensionRanking[0];
       if (top.surprise > 0.05) {
         steps.push({
           action: `深入分析"${top.dimension}"维度的分布变化`,
           reason: `该维度惊喜度较高(${top.surprise.toFixed(4)})，分布发生了显著结构性变化`,
+          sql_hint: `SELECT ${top.dimension}, SUM(${metricField}) AS ${metricField} FROM <表名> GROUP BY ${top.dimension}`,
           priority: 'high',
         });
       }
     }
 
+    // 基于结构化归因的下钻（含 sql_hint）
+    if (result.structured_attribution) {
+      const structuredSteps = buildStructuredAttributionNextSteps(result.structured_attribution, metricField);
+      for (const s of structuredSteps) {
+        steps.push(s);
+      }
+    }
+
+    // 时间对比显著性
     if (result.time_comparison?.metricComparisons?.length > 0) {
       const mc = result.time_comparison.metricComparisons[0];
       if (mc.significance?.significant) {
@@ -391,14 +562,7 @@ class FluctuationAttributionTool extends Tool {
       }
     }
 
-    if (result.dimension_attribution?.drillPaths?.length > 0) {
-      steps.push({
-        action: '沿归因路径进一步下钻',
-        reason: `发现${result.dimension_attribution.drillPaths.length}条归因路径`,
-        priority: 'medium',
-      });
-    }
-
+    // 指标相关性
     if (result.metric_attribution?.correlation?.keyFindings?.length > 0) {
       const finding = result.metric_attribution.correlation.keyFindings[0];
       steps.push({

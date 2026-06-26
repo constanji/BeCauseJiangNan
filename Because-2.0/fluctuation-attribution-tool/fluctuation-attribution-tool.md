@@ -4,6 +4,11 @@
 
 基于 Adtributor 算法的智能波动归因分析工具，当指标发生异常波动时，自动分析波动的根本原因。
 
+**2.0 增强（已上线）**：
+- **三类公式归因**（`structured_attribution`）：加法贡献度 / 乘法链式分解 / 除法差分+情景模拟
+- **sql_hint 下钻闭环**：`next_steps[]` 携带可执行 SQL 提示
+- **方法论警示**：掩盖效应、放大效应、稀释效应、伪加法陷阱
+
 ## 核心能力
 
 ### 1. 维度归因 (Dimension Attribution)
@@ -11,88 +16,73 @@
 - **JS 散度**：衡量维度在基期和现期的分布差异
 - **贡献度分解**：将整体变化分解到每个维度值
 
-### 2. 指标归因 (Metric Attribution)
-- **多元线性回归**：分析各子指标对总指标的贡献
-- **ElasticNet 正则化**：稀疏特征选择，找出关键驱动因素
-- **特征重要性**：置换重要性 + Shapley 值近似
+### 2. 公式归因 (Structured Attribution) ✅ 新增
+| 类型 | metric_structure | 方法 |
+|------|------------------|------|
+| 加法型 | `additive` | 贡献度分解 ΔTotal = ΣΔXi |
+| 乘法型 | `multiplicative` | 链式分解 (A₁-A₀)×B₀×C₀ … |
+| 除法型 | `divisive` | 差分分解 + 情景模拟（控制分子/分母） |
+
+### 3. 指标归因 (Metric Attribution)
+- **ElasticNet 回归 / 特征重要性**：探索性子指标相关性（无明确公式时）
 - **指标相关性**：Pearson 相关系数矩阵
 
-### 3. 时间对比 (Time Comparison)
-- 同比 (Year-over-Year)
-- 环比 (Month-over-Month)
-- 周比 (Week-over-Week)
-- 日比 (Day-over-Day)
-- 自定义时间区间
+### 4. 时间对比 (Time Comparison)
+- 同比 / 环比 / 周比 / 日比 / 自定义时间区间
 
-### 4. 维度下钻 (Dimension Drill-down)
+### 5. 维度下钻 + sql_hint
 - 逐层下钻（最多 10 条路径）
-- 每层计算 Adtributor 评分
-- 自动筛选最显著的归因路径
+- `next_steps[].sql_hint` / `filter` 引导 Agent 继续查数
 
-## 量化指标
-
-| 指标 | 说明 | 范围 |
-|------|------|------|
-| 解释力 (EP) | 该维度能解释多少整体变化 | [0, 1] |
-| 惊喜度 (Surprise) | 维度分布的 JS 散度 | [0, 1] |
-| 简洁性 (Parsimony) | 用更少的元素解释变化 | [0, 1] |
-| Adtributor 评分 | α·EP + β·Surprise + γ·Parsimony | [0, 1] |
-
-## 输入参数
+## 输入参数（新增字段）
 
 ```json
 {
   "analysis_type": "comprehensive",
   "base_data": [...],
   "current_data": [...],
-  "metric_fields": ["revenue"],
-  "dimension_fields": ["region", "product_category", "channel"],
-  "weights": {
-    "explanatoryPower": 0.5,
-    "surprise": 0.3,
-    "parsimony": 0.2
-  }
+  "metric_fields": ["gmv"],
+  "target_metric": "gmv",
+  "component_metrics": ["dau", "conversion_rate", "arpu"],
+  "dimension_fields": ["region"],
+  "metric_structure": "multiplicative",
+  "factor_order": ["dau", "conversion_rate", "arpu"],
+  "numerator_field": "paid_users",
+  "denominator_field": "total_users"
 }
 ```
 
-## 输出结构
+- `metric_structure`: `auto` | `additive` | `multiplicative` | `divisive`
+- `factor_order`: 乘法链式分解顺序（按业务漏斗）
+- `numerator_field` / `denominator_field`: 除法型必填
+
+## 输出结构（新增字段）
 
 ```json
 {
-  "analysis_type": "comprehensive",
-  "time_comparison": {
-    "overview": { "direction": "decrease", "changeRate": "-15.23%" },
-    "metricComparisons": [...],
-    "dimensionBreakdowns": [...]
+  "structured_attribution": {
+    "type": "multiplicative",
+    "method": "chain_rule",
+    "factors": [...],
+    "topContributor": {...},
+    "methodology_warnings": [...]
   },
-  "dimension_attribution": {
-    "overview": { "baseTotal": 1000, "currentTotal": 850, "totalChange": -150 },
-    "dimensionRanking": [
-      {
-        "dimension": "region",
-        "explanatoryPower": 0.85,
-        "surprise": 0.12,
-        "parsimony": 0.80,
-        "adtributorScore": 0.62,
-        "topContributors": [...]
-      }
-    ],
-    "drillPaths": [...],
-    "summary": "..."
-  },
-  "metric_attribution": {
-    "correlation": { "correlationMatrix": {...}, "keyFindings": [...] },
-    "feature_importance": [...],
-    "regression": { "method": "ElasticNet", "rSquared": 0.85, ... }
-  },
+  "dimension_attribution": { "dimensionRanking": [...], "drillPaths": [...] },
   "conclusion": "...",
-  "next_steps": [...]
+  "next_steps": [
+    {
+      "action": "...",
+      "sql_hint": "SELECT ...",
+      "filter": "region = '华东'",
+      "priority": "high"
+    }
+  ]
 }
 ```
 
 ## 使用场景
 
-1. **销售额波动分析**：哪个地区/产品/渠道导致了收入下降？
-2. **用户流失归因**：哪些用户特征与流失强相关？
-3. **成本异常分析**：哪个部门/项目导致了成本飙升？
-4. **KPI 变动追溯**：将复合 KPI 分解为子指标贡献
+1. **销售额波动**：Adtributor 维度归因 + 按 region 下钻
+2. **GMV = DAU × 转化率 × 客单价**：`metric_structure=multiplicative` 链式分解
+3. **转化率下降**：`metric_structure=divisive`，检测分母稀释效应
+4. **分品类收入**：`metric_structure=additive`，贡献度 + 掩盖效应警示

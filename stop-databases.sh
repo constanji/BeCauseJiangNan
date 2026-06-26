@@ -46,7 +46,7 @@ echo ""
 # ==================== 停止 VectorDB ====================
 echo -e "${YELLOW}🧠 停止 VectorDB...${NC}"
 
-VECTORDB_CONTAINER="vectordb-local"
+VECTORDB_CONTAINER="vectordb-jiangnan-local"
 if docker ps --format '{{.Names}}' | grep -q "^${VECTORDB_CONTAINER}$"; then
     echo "发现VectorDB容器: $VECTORDB_CONTAINER"
     docker stop "$VECTORDB_CONTAINER" > /dev/null 2>&1
