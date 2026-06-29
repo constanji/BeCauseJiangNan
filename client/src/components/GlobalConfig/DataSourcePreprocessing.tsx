@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
   Sparkles,
@@ -64,7 +64,6 @@ interface ColumnCellSummary {
   values: CellVectorEntry[];
   distinctCount: number;
   preview: string;
-  distribution: Array<{ value: string; count: number; pct: number }>;
 }
 
 function buildColumnMetaMap(schemas: LightSchemaEntry[]): Map<string, { description: string; type: string }> {
@@ -98,12 +97,6 @@ function buildColumnSummaries(entries: CellVectorEntry[], metaMap: Map<string, {
     values.sort((a, b) => a.cellValue.localeCompare(b.cellValue, 'zh-CN'));
     const [tableName, columnName] = key.split('::');
     const meta = metaMap.get(key);
-    const total = values.length;
-    const distribution = values.map((v) => ({
-      value: v.cellValue,
-      count: 1,
-      pct: total > 0 ? Math.round((1 / total) * 100) : 0,
-    }));
     const previewLimit = 4;
     const previewParts = values.slice(0, previewLimit).map((v) => v.cellValue);
     const preview =
@@ -120,7 +113,6 @@ function buildColumnSummaries(entries: CellVectorEntry[], metaMap: Map<string, {
       values,
       distinctCount: values.length,
       preview,
-      distribution,
     });
   }
 
@@ -128,6 +120,28 @@ function buildColumnSummaries(entries: CellVectorEntry[], metaMap: Map<string, {
     const t = a.tableName.localeCompare(b.tableName, 'zh-CN');
     return t !== 0 ? t : a.columnName.localeCompare(b.columnName, 'zh-CN');
   });
+}
+
+interface TableCellGroup {
+  tableName: string;
+  columns: ColumnCellSummary[];
+  valueCount: number;
+}
+
+function buildTableGroups(rows: ColumnCellSummary[]): TableCellGroup[] {
+  const map = new Map<string, ColumnCellSummary[]>();
+  for (const row of rows) {
+    if (!map.has(row.tableName)) map.set(row.tableName, []);
+    map.get(row.tableName)!.push(row);
+  }
+
+  return [...map.entries()]
+    .map(([tableName, columns]) => ({
+      tableName,
+      columns,
+      valueCount: columns.reduce((sum, col) => sum + col.distinctCount, 0),
+    }))
+    .sort((a, b) => a.tableName.localeCompare(b.tableName, 'zh-CN'));
 }
 
 // ─── TablePickerModal ─────────────────────────────────────────────────────────
@@ -248,7 +262,6 @@ function TablePickerModal({
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
-      onClick={(e) => e.target === e.currentTarget && onClose()}
     >
       <div className="flex w-[440px] max-h-[82vh] flex-col rounded-xl border border-border-light bg-surface-primary shadow-2xl">
         {/* 头部 */}
@@ -404,35 +417,41 @@ function parsedToColDraft(col: LightSchemaColumn): ColDraft {
   };
 }
 
-function CellVectorManager({
+function CellVectorViewer({
   entries,
   schemas,
   loading,
   saving,
-  search,
-  onSearchChange,
+  initialSelectedTable,
+  onBack,
   onRefresh,
   onCreate,
   onUpdate,
   onDelete,
+  onDeleteTable,
 }: {
   entries: CellVectorEntry[];
   schemas: LightSchemaEntry[];
   loading: boolean;
   saving: boolean;
-  search: string;
-  onSearchChange: (value: string) => void;
+  initialSelectedTable?: string;
+  onBack: () => void;
   onRefresh: () => void;
   onCreate: (payload: { tableName: string; columnName: string; cellValue: string }) => Promise<boolean>;
   onUpdate: (id: number, payload: { tableName: string; columnName: string; cellValue: string }) => Promise<boolean>;
   onDelete: (id: number) => Promise<boolean>;
+  onDeleteTable: (tableName: string) => Promise<boolean>;
 }) {
+  const [search, setSearch] = useState('');
+  const [tableSearch, setTableSearch] = useState('');
   const [draft, setDraft] = useState({ tableName: '', columnName: '', cellValue: '' });
+  const [selectedTable, setSelectedTable] = useState<string | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [panelSearch, setPanelSearch] = useState('');
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editingDraft, setEditingDraft] = useState({ tableName: '', columnName: '', cellValue: '' });
   const [panelAddValue, setPanelAddValue] = useState('');
+  const [deletingTable, setDeletingTable] = useState<string | null>(null);
 
   const columnMeta = buildColumnMetaMap(schemas);
 
@@ -450,7 +469,50 @@ function CellVectorManager({
   });
 
   const columnRows = buildColumnSummaries(filteredEntries, columnMeta);
+  const tableGroups = useMemo(() => buildTableGroups(columnRows), [columnRows]);
+  const activeTable =
+    selectedTable && tableGroups.some((g) => g.tableName === selectedTable)
+      ? selectedTable
+      : tableGroups[0]?.tableName ?? null;
+  const activeGroup = tableGroups.find((g) => g.tableName === activeTable) ?? null;
+  const visibleColumns = activeGroup?.columns ?? [];
   const selectedSummary = selectedKey ? columnRows.find((r) => r.key === selectedKey) ?? null : null;
+  const filteredTableGroups = tableGroups.filter(
+    (g) => !tableSearch.trim() || g.tableName.toLowerCase().includes(tableSearch.trim().toLowerCase()),
+  );
+
+  const initialAppliedRef = useRef(false);
+  useEffect(() => {
+    initialAppliedRef.current = false;
+  }, [initialSelectedTable]);
+
+  useEffect(() => {
+    if (initialAppliedRef.current || tableGroups.length === 0) return;
+    if (initialSelectedTable && tableGroups.some((g) => g.tableName === initialSelectedTable)) {
+      setSelectedTable(initialSelectedTable);
+    } else {
+      setSelectedTable((prev) => prev ?? tableGroups[0]?.tableName ?? null);
+    }
+    initialAppliedRef.current = true;
+  }, [initialSelectedTable, tableGroups]);
+
+  // 过滤后当前表不存在时，回退到第一张表
+  useEffect(() => {
+    if (tableGroups.length === 0) {
+      setSelectedTable(null);
+      return;
+    }
+    if (!selectedTable || !tableGroups.some((g) => g.tableName === selectedTable)) {
+      setSelectedTable(tableGroups[0].tableName);
+    }
+  }, [tableGroups, selectedTable]);
+
+  // 选中列时同步当前表
+  useEffect(() => {
+    if (!selectedKey) return;
+    const row = columnRows.find((r) => r.key === selectedKey);
+    if (row) setSelectedTable(row.tableName);
+  }, [selectedKey, columnRows]);
 
   // 当前选中列被过滤掉时关闭面板
   useEffect(() => {
@@ -459,15 +521,33 @@ function CellVectorManager({
     }
   }, [selectedKey, columnRows]);
 
-  // 搜索命中具体值时自动打开对应列（默认收起，搜索直达）
+  // 搜索命中时自动定位表/列（默认收起，搜索直达）
   useEffect(() => {
     const q = search.trim().toLowerCase();
     if (!q) return;
-    const hit = columnRows.find((row) =>
+
+    const valueHit = columnRows.find((row) =>
       row.values.some((v) => v.cellValue.toLowerCase().includes(q)),
     );
-    if (hit) setSelectedKey(hit.key);
-  }, [search]);
+    if (valueHit) {
+      setSelectedTable(valueHit.tableName);
+      setSelectedKey(valueHit.key);
+      return;
+    }
+
+    const columnHit = columnRows.find(
+      (row) =>
+        row.columnName.toLowerCase().includes(q) ||
+        row.description.toLowerCase().includes(q),
+    );
+    if (columnHit) {
+      setSelectedTable(columnHit.tableName);
+      return;
+    }
+
+    const tableHit = tableGroups.find((g) => g.tableName.toLowerCase().includes(q));
+    if (tableHit) setSelectedTable(tableHit.tableName);
+  }, [search, columnRows, tableGroups]);
 
   useEffect(() => {
     setPanelSearch('');
@@ -477,7 +557,32 @@ function CellVectorManager({
 
   const resetCreateDraft = () => setDraft({ tableName: '', columnName: '', cellValue: '' });
 
-  const tableCount = new Set(columnRows.map((r) => r.tableName)).size;
+  const handleSelectTable = (tableName: string) => {
+    setSelectedTable(tableName);
+    if (selectedKey) {
+      const row = columnRows.find((r) => r.key === selectedKey);
+      if (row?.tableName !== tableName) setSelectedKey(null);
+    }
+  };
+
+  const handleDeleteTable = async (tableName: string) => {
+    if (!window.confirm(`确定删除「${tableName}」的全部 Cell 向量吗？此操作无法撤销。`)) return;
+    setDeletingTable(tableName);
+    try {
+      const ok = await onDeleteTable(tableName);
+      if (ok) {
+        if (selectedTable === tableName) {
+          const remaining = tableGroups.filter((g) => g.tableName !== tableName);
+          setSelectedTable(remaining[0]?.tableName ?? null);
+          setSelectedKey(null);
+        }
+      }
+    } finally {
+      setDeletingTable(null);
+    }
+  };
+
+  const tableCount = tableGroups.length;
   const totalValues = filteredEntries.length;
 
   const panelFilteredValues = selectedSummary
@@ -489,45 +594,68 @@ function CellVectorManager({
     : [];
 
   return (
-    <section className="rounded-xl border border-border-light bg-surface-primary p-5 flex flex-col gap-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h3 className="text-base font-semibold text-text-primary">单元格向量结果管理</h3>
-          <p className="text-xs text-text-secondary">
-            字段级浏览 + 右侧详情面板查看值分布；搜索表/列/注释/值直达。
-          </p>
+    <div className="flex h-full flex-col overflow-hidden bg-surface-primary">
+      {/* 顶部导航栏 */}
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border-light bg-[radial-gradient(circle_at_top_left,_rgba(16,185,129,0.16),_transparent_30%),linear-gradient(180deg,rgba(255,255,255,0.03),rgba(255,255,255,0))] px-5 py-3.5">
+        <div className="flex min-w-0 items-center gap-4">
+          <button
+            onClick={onBack}
+            className="flex items-center gap-1.5 rounded-lg border border-border-light/70 bg-surface-primary/70 px-3 py-2 text-sm text-text-secondary hover:border-green-500/40 hover:bg-surface-hover hover:text-text-primary transition-colors"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+            返回
+          </button>
+          <div className="h-8 w-px bg-border-light/70" />
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-green-500/20 bg-green-500/10 shadow-[0_0_0_1px_rgba(16,185,129,0.06)]">
+              <Sparkles className="h-4 w-4 text-green-400" />
+            </div>
+            <div className="min-w-0">
+              <div className="text-[11px] uppercase tracking-[0.22em] text-green-500/70">Cell Vector Browser</div>
+              <div className="flex items-center gap-2">
+                <span className="truncate text-sm font-semibold text-text-primary">单元格向量预览</span>
+                <span className="rounded-full border border-green-700/30 bg-green-900/30 px-2 py-0.5 text-xs text-green-400">
+                  {tableCount} 张表
+                </span>
+              </div>
+            </div>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <div className="relative">
             <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-secondary pointer-events-none" />
             <input
               type="text"
               value={search}
-              onChange={(e) => onSearchChange(e.target.value)}
+              onChange={(e) => setSearch(e.target.value)}
               placeholder="搜索表 / 列 / 注释 / 值…"
               aria-label="搜索单元格向量结果"
-              className="w-64 rounded-md border border-border-light bg-surface-secondary py-1.5 pl-8 pr-3 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-green-500"
+              className="w-56 rounded-lg border border-border-light bg-surface-primary py-1.5 pl-8 pr-3 text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-green-500"
             />
           </div>
           <button
             onClick={onRefresh}
             disabled={loading}
-            className="flex items-center gap-1 rounded-md border border-border-light bg-surface-secondary px-2.5 py-1.5 text-xs text-text-secondary hover:text-green-400 disabled:opacity-50 transition-colors"
+            className="flex items-center gap-1 rounded-lg border border-border-light bg-surface-primary/60 px-2.5 py-1.5 text-xs text-text-secondary hover:text-green-400 disabled:opacity-50 transition-colors"
           >
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
             刷新
           </button>
+          <span className="hidden rounded-full border border-border-light bg-surface-primary/60 px-2.5 py-1 text-[11px] text-text-secondary lg:inline">
+            {columnRows.length} 字段 · {totalValues} 值
+          </span>
         </div>
       </div>
 
-      <div className="grid gap-3 rounded-lg border border-border-light bg-surface-secondary p-3 md:grid-cols-[1fr_1fr_2fr_auto]">
+      {/* 快捷新增 */}
+      <div className="grid shrink-0 gap-2 border-b border-border-light bg-surface-secondary/40 px-5 py-3 md:grid-cols-[1fr_1fr_2fr_auto]">
         <input
           type="text"
           value={draft.tableName}
           onChange={(e) => setDraft((prev) => ({ ...prev, tableName: e.target.value }))}
           placeholder="表名"
           aria-label="新增单元格向量表名"
-          className="rounded-md border border-border-light bg-surface-primary px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-green-500"
+          className="rounded-md border border-border-light bg-surface-primary px-3 py-1.5 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-green-500"
         />
         <input
           type="text"
@@ -535,7 +663,7 @@ function CellVectorManager({
           onChange={(e) => setDraft((prev) => ({ ...prev, columnName: e.target.value }))}
           placeholder="列名"
           aria-label="新增单元格向量列名"
-          className="rounded-md border border-border-light bg-surface-primary px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-green-500"
+          className="rounded-md border border-border-light bg-surface-primary px-3 py-1.5 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-green-500"
         />
         <input
           type="text"
@@ -543,7 +671,7 @@ function CellVectorManager({
           onChange={(e) => setDraft((prev) => ({ ...prev, cellValue: e.target.value }))}
           placeholder="单元格值"
           aria-label="新增单元格向量值"
-          className="rounded-md border border-border-light bg-surface-primary px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-green-500"
+          className="rounded-md border border-border-light bg-surface-primary px-3 py-1.5 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-green-500"
         />
         <button
           onClick={async () => {
@@ -551,140 +679,190 @@ function CellVectorManager({
             if (ok) resetCreateDraft();
           }}
           disabled={saving}
-          className="rounded-md bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-500 disabled:opacity-50"
+          className="rounded-md bg-green-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-green-500 disabled:opacity-50"
         >
           新增
         </button>
       </div>
 
-      <div className="flex min-h-[360px] overflow-hidden rounded-lg border border-border-light">
-        {/* 主列表：扁平字段表 */}
-        <div className={`flex min-w-0 flex-col ${selectedSummary ? 'flex-1 border-r border-border-light' : 'w-full'}`}>
-          <div className="flex items-center justify-between bg-surface-secondary px-4 py-2 text-xs font-medium text-text-secondary">
-            <span>表 · 列 · 值摘要</span>
-            {!loading && totalValues > 0 && (
-              <span>{tableCount} 张表 · {columnRows.length} 字段 · {totalValues} 值</span>
-            )}
+      {/* 双面板主体：表 | 列 + 值 */}
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        {/* 左侧表列表 */}
+        <div className="flex w-52 shrink-0 flex-col overflow-hidden border-r border-border-light bg-surface-secondary">
+          <div className="shrink-0 px-3 py-3">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-secondary" />
+              <input
+                type="text"
+                value={tableSearch}
+                onChange={(e) => setTableSearch(e.target.value)}
+                placeholder="搜索表名…"
+                aria-label="搜索表名"
+                className="w-full rounded-lg border border-border-light bg-surface-primary py-1.5 pl-8 pr-7 text-xs text-text-primary placeholder:text-text-secondary focus:outline-none focus:ring-1 focus:ring-green-500"
+              />
+              {tableSearch && (
+                <button
+                  onClick={() => setTableSearch('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-text-secondary hover:text-text-primary"
+                  aria-label="清空"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              )}
+            </div>
           </div>
-
-          <div className="grid grid-cols-[minmax(120px,1fr)_minmax(100px,0.9fr)_minmax(100px,0.9fr)_minmax(140px,1.6fr)_72px] gap-2 border-b border-border-light bg-surface-secondary/60 px-4 py-2 text-[11px] font-medium uppercase tracking-wide text-text-secondary">
-            <span>表名</span>
-            <span>列名</span>
-            <span>注释</span>
-            <span>值摘要</span>
-            <span className="text-right">操作</span>
-          </div>
-
-          <div className="max-h-[400px] flex-1 overflow-y-auto">
+          <div className="min-h-0 flex-1 overflow-y-auto">
             {loading ? (
-              <div className="flex items-center justify-center py-12 text-sm text-text-secondary">
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              <div className="flex items-center justify-center py-8 text-xs text-text-secondary">
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
                 加载中…
               </div>
-            ) : columnRows.length === 0 ? (
-              <div className="py-12 text-center text-sm text-text-secondary">暂无匹配的 Cell 向量记录</div>
+            ) : filteredTableGroups.length === 0 ? (
+              <p className="px-3 py-6 text-center text-xs text-text-secondary">无匹配表</p>
             ) : (
-              columnRows.map((row) => {
-                const isSelected = selectedKey === row.key;
-                const q = search.trim().toLowerCase();
-                const valueHit = q
-                  ? row.values.some((v) => v.cellValue.toLowerCase().includes(q))
-                  : false;
-
-                return (
-                  <button
-                    key={row.key}
-                    type="button"
-                    onClick={() => setSelectedKey(isSelected ? null : row.key)}
-                    className={`grid w-full grid-cols-[minmax(120px,1fr)_minmax(100px,0.9fr)_minmax(100px,0.9fr)_minmax(140px,1.6fr)_72px] gap-2 border-b border-border-light/60 px-4 py-2.5 text-left text-sm transition-colors hover:bg-surface-hover/70 ${
-                      isSelected ? 'bg-green-900/15 ring-1 ring-inset ring-green-700/30' : ''
-                    }`}
-                  >
-                    <span className="truncate font-medium text-text-primary" title={row.tableName}>
-                      {row.tableName}
-                    </span>
-                    <span className="truncate text-text-primary" title={row.columnName}>
-                      {row.columnName}
-                    </span>
-                    <span
-                      className={`truncate text-xs ${row.description ? 'text-text-secondary' : 'text-text-secondary/40'}`}
-                      title={row.description || '无列注释'}
-                    >
-                      {row.description || '—'}
-                    </span>
-                    <span className="min-w-0 truncate text-xs text-text-secondary" title={row.preview}>
-                      <span className="mr-1.5 rounded bg-surface-secondary px-1.5 py-0.5 text-[10px] text-green-400/90">
-                        {row.distinctCount}
-                      </span>
-                      {valueHit && q ? (
-                        <span className="text-green-300">{row.preview}</span>
-                      ) : (
-                        row.preview
-                      )}
-                    </span>
-                    <span className="text-right text-xs text-green-400/80">
-                      {isSelected ? '收起' : '查看'}
-                    </span>
-                  </button>
-                );
-              })
+              <ul>
+                {filteredTableGroups.map((group) => {
+                  const isActive = activeTable === group.tableName;
+                  return (
+                    <li key={group.tableName} className="group flex items-stretch">
+                      <button
+                        type="button"
+                        onClick={() => handleSelectTable(group.tableName)}
+                        className={`min-w-0 flex-1 border-l-[3px] px-4 py-3 text-left transition-all ${
+                          isActive
+                            ? 'border-l-green-500 bg-green-900/25 text-green-300'
+                            : 'border-l-transparent text-text-primary hover:border-l-border-light hover:bg-surface-hover'
+                        }`}
+                      >
+                        <div className={`truncate font-mono text-xs font-medium ${isActive ? 'text-green-300' : 'text-text-primary'}`} title={group.tableName}>
+                          {group.tableName}
+                        </div>
+                        <div className={`mt-0.5 text-[11px] ${isActive ? 'text-green-500/70' : 'text-text-secondary'}`}>
+                          {group.columns.length} 列 · {group.valueCount} 值
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteTable(group.tableName)}
+                        disabled={deletingTable === group.tableName}
+                        title={`删除 ${group.tableName}`}
+                        aria-label={`删除 ${group.tableName}`}
+                        className={`flex w-9 shrink-0 items-center justify-center transition-colors ${
+                          isActive
+                            ? 'text-red-400/70 hover:bg-red-900/20 hover:text-red-400'
+                            : 'text-text-secondary/40 opacity-0 hover:bg-red-900/10 hover:text-red-400 group-hover:opacity-100'
+                        } disabled:opacity-50`}
+                      >
+                        {deletingTable === group.tableName
+                          ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          : <Trash2 className="h-3.5 w-3.5" />}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
             )}
           </div>
         </div>
 
-        {/* 右侧 Drilldown 面板（默认收起，点击行打开） */}
-        {selectedSummary && (
-          <div className="flex w-[min(400px,42%)] shrink-0 flex-col bg-surface-secondary/30">
-            <div className="flex items-start justify-between border-b border-border-light px-4 py-3">
-              <div className="min-w-0 pr-2">
-                <p className="truncate text-sm font-semibold text-text-primary">
-                  {selectedSummary.tableName}
-                  <span className="mx-1.5 text-text-secondary/50">·</span>
-                  {selectedSummary.columnName}
-                </p>
-                <p className="mt-0.5 truncate text-xs text-text-secondary" title={selectedSummary.description || '无列注释'}>
-                  {selectedSummary.description || '无列注释'}
-                  {selectedSummary.columnType ? ` · ${selectedSummary.columnType}` : ''}
-                </p>
-                <p className="mt-1 text-[11px] text-text-secondary/70">
-                  共 {selectedSummary.distinctCount} 个 distinct 值
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setSelectedKey(null)}
-                className="shrink-0 rounded p-1 text-text-secondary hover:bg-surface-hover hover:text-text-primary"
-                aria-label="关闭详情面板"
-              >
-                <X className="h-4 w-4" />
-              </button>
+        {/* 右侧：列列表 + 值详情 */}
+        <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+          <div className={`flex min-h-0 min-w-0 flex-col ${selectedSummary ? 'flex-1 border-r border-border-light' : 'w-full'}`}>
+            <div className="flex shrink-0 items-center justify-between border-b border-border-light bg-surface-secondary/60 px-4 py-2.5">
+              <span className="truncate text-sm font-medium text-text-primary" title={activeTable ?? undefined}>
+                {activeTable ? `列 · ${activeTable}` : '列'}
+              </span>
+              {activeGroup && (
+                <span className="shrink-0 text-[11px] text-text-secondary">{activeGroup.columns.length} 字段</span>
+              )}
             </div>
 
-            {/* 值分布 */}
-            <div className="border-b border-border-light px-4 py-3">
-              <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-text-secondary">值分布</p>
-              <div className="flex max-h-[120px] flex-col gap-1.5 overflow-y-auto">
-                {selectedSummary.distribution.map((item) => (
-                  <div key={item.value} className="flex items-center gap-2 text-xs">
-                    <span className="w-16 shrink-0 truncate text-text-primary" title={item.value}>
-                      {item.value}
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <div className="h-1.5 overflow-hidden rounded-full bg-surface-primary">
-                        <div
-                          className="h-full rounded-full bg-green-500/70"
-                          style={{ width: `${Math.max(item.pct, 4)}%` }}
-                        />
-                      </div>
-                    </div>
-                    <span className="w-8 shrink-0 text-right text-text-secondary">{item.pct}%</span>
-                  </div>
-                ))}
-              </div>
+            <div className="grid shrink-0 grid-cols-[minmax(88px,0.9fr)_minmax(100px,1fr)_minmax(140px,1.6fr)_56px] gap-2 border-b border-border-light bg-surface-secondary/40 px-4 py-2 text-[11px] font-medium uppercase tracking-wide text-text-secondary">
+              <span>列名</span>
+              <span>注释</span>
+              <span>值摘要</span>
+              <span className="text-right">操作</span>
             </div>
 
-            {/* 面板内搜索 + 快捷新增 */}
-            <div className="space-y-2 border-b border-border-light px-4 py-3">
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              {loading ? (
+                <div className="flex items-center justify-center py-12 text-sm text-text-secondary">
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  加载中…
+                </div>
+              ) : columnRows.length === 0 ? (
+                <div className="py-12 text-center text-sm text-text-secondary">暂无匹配的 Cell 向量记录</div>
+              ) : !activeTable ? (
+                <div className="flex h-full items-center justify-center py-12 text-sm text-text-secondary">从左侧选择一张表</div>
+              ) : visibleColumns.length === 0 ? (
+                <div className="py-12 text-center text-sm text-text-secondary">当前表无匹配字段</div>
+              ) : (
+                visibleColumns.map((row) => {
+                  const isSelected = selectedKey === row.key;
+                  const q = search.trim().toLowerCase();
+                  const valueHit = q ? row.values.some((v) => v.cellValue.toLowerCase().includes(q)) : false;
+
+                  return (
+                    <button
+                      key={row.key}
+                      type="button"
+                      onClick={() => setSelectedKey(isSelected ? null : row.key)}
+                      className={`grid w-full grid-cols-[minmax(88px,0.9fr)_minmax(100px,1fr)_minmax(140px,1.6fr)_56px] gap-2 border-b border-border-light/60 px-4 py-2.5 text-left text-sm transition-colors hover:bg-surface-hover/70 ${
+                        isSelected ? 'bg-green-900/15 ring-1 ring-inset ring-green-700/30' : ''
+                      }`}
+                    >
+                      <span className="truncate font-medium text-text-primary" title={row.columnName}>
+                        {row.columnName}
+                      </span>
+                      <span
+                        className={`truncate text-xs ${row.description ? 'text-text-secondary' : 'text-text-secondary/40'}`}
+                        title={row.description || '无列注释'}
+                      >
+                        {row.description || '—'}
+                      </span>
+                      <span className="min-w-0 truncate text-xs text-text-secondary" title={row.preview}>
+                        <span className="mr-1.5 rounded bg-surface-secondary px-1.5 py-0.5 text-[10px] text-green-400/90">
+                          {row.distinctCount}
+                        </span>
+                        {valueHit && q ? <span className="text-green-300">{row.preview}</span> : row.preview}
+                      </span>
+                      <span className="text-right text-xs text-green-400/80">{isSelected ? '收起' : '查看'}</span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
+
+          {selectedSummary && (
+            <div className="flex h-full min-h-0 w-[min(400px,42%)] shrink-0 flex-col overflow-hidden bg-surface-secondary/30">
+              <div className="flex shrink-0 items-start justify-between border-b border-border-light px-4 py-3">
+                <div className="min-w-0 pr-2">
+                  <p className="truncate text-sm font-semibold text-text-primary">
+                    {selectedSummary.tableName}
+                    <span className="mx-1.5 text-text-secondary/50">·</span>
+                    {selectedSummary.columnName}
+                  </p>
+                  <p className="mt-0.5 truncate text-xs text-text-secondary" title={selectedSummary.description || '无列注释'}>
+                    {selectedSummary.description || '无列注释'}
+                    {selectedSummary.columnType ? ` · ${selectedSummary.columnType}` : ''}
+                  </p>
+                  <p className="mt-1 text-[11px] text-text-secondary/70">
+                    共 {selectedSummary.distinctCount} 个 distinct 值
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedKey(null)}
+                  className="shrink-0 rounded p-1 text-text-secondary hover:bg-surface-hover hover:text-text-primary"
+                  aria-label="关闭详情面板"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              {/* 面板内搜索 + 快捷新增 */}
+              <div className="shrink-0 space-y-2 border-b border-border-light px-4 py-3">
               <div className="relative">
                 <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-text-secondary pointer-events-none" />
                 <input
@@ -724,7 +902,7 @@ function CellVectorManager({
             </div>
 
             {/* 值列表 */}
-            <div className="flex-1 overflow-y-auto px-2 py-2">
+            <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
               {panelFilteredValues.length === 0 ? (
                 <p className="py-4 text-center text-xs text-text-secondary">无匹配值</p>
               ) : (
@@ -810,10 +988,11 @@ function CellVectorManager({
                 })
               )}
             </div>
-          </div>
-        )}
+            </div>
+          )}
+        </div>
       </div>
-    </section>
+    </div>
   );
 }
 
@@ -823,12 +1002,16 @@ function SchemaViewer({
   onBack,
   onDeleteTable,
   onUpdateTable,
+  onRegenerateTables,
+  regenerating,
 }: {
   schemas: LightSchemaEntry[];
   initialSelectedTable?: string;
   onBack: () => void;
   onDeleteTable: (tableName: string) => Promise<boolean>;
   onUpdateTable: (tableName: string, columns: LightSchemaColumn[], primaryKeys: string[]) => Promise<boolean>;
+  onRegenerateTables: (tableNames: string[]) => Promise<boolean>;
+  regenerating: boolean;
 }) {
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<string>(() => {
@@ -942,6 +1125,12 @@ function SchemaViewer({
     }
   };
 
+  const handleRegenerate = async (tableNames: string[], label: string) => {
+    if (tableNames.length === 0) return;
+    if (!window.confirm(`确定重新生成 ${label} 的 Light Schema 吗？将覆盖已有内容。`)) return;
+    await onRegenerateTables(tableNames);
+  };
+
   return (
     <div className="flex h-full flex-col overflow-hidden bg-surface-primary">
       {/* 顶部导航栏 */}
@@ -970,13 +1159,35 @@ function SchemaViewer({
           </div>
         </div>
         </div>
-        <div className="hidden items-center gap-2 text-[11px] text-text-secondary lg:flex">
-          <span className="rounded-full border border-border-light bg-surface-primary/60 px-2.5 py-1">
+        <div className="flex flex-wrap items-center justify-end gap-2 text-[11px] text-text-secondary">
+          <span className="hidden rounded-full border border-border-light bg-surface-primary/60 px-2.5 py-1 lg:inline">
             当前视图: {activeTab === 'columns' ? '列详情' : 'DDL'}
           </span>
-          <span className="rounded-full border border-border-light bg-surface-primary/60 px-2.5 py-1">
+          <span className="hidden rounded-full border border-border-light bg-surface-primary/60 px-2.5 py-1 lg:inline">
             已筛选: {filteredSchemas.length}
           </span>
+          {selected && (
+            <button
+              type="button"
+              onClick={() => handleRegenerate([selected], `「${selected}」`)}
+              disabled={regenerating}
+              className="flex items-center gap-1 rounded-full border border-green-700/40 bg-green-900/20 px-2.5 py-1 text-green-300 transition-colors hover:border-green-500 hover:bg-green-800/30 disabled:opacity-50"
+            >
+              {regenerating ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+              重新生成当前表
+            </button>
+          )}
+          {schemas.length > 1 && (
+            <button
+              type="button"
+              onClick={() => handleRegenerate(schemas.map((s) => s.tableName), `全部 ${schemas.length} 张表`)}
+              disabled={regenerating}
+              className="flex items-center gap-1 rounded-full border border-border-light bg-surface-primary/60 px-2.5 py-1 transition-colors hover:border-green-500 hover:text-green-400 disabled:opacity-50"
+            >
+              {regenerating ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+              重新生成全部
+            </button>
+          )}
         </div>
       </div>
 
@@ -1323,8 +1534,8 @@ export default function DataSourcePreprocessing({
 }: DataSourcePreprocessingProps) {
   const { showToast } = useToastContext();
 
-  // 子视图：'main' | 'schema-viewer'
-  const [view, setView] = useState<'main' | 'schema-viewer'>('main');
+  // 子视图：'main' | 'schema-viewer' | 'cell-viewer'
+  const [view, setView] = useState<'main' | 'schema-viewer' | 'cell-viewer'>('main');
 
   const [allTables, setAllTables] = useState<string[]>([]);
   const [selectedTables, setSelectedTables] = useState<Set<string>>(new Set());
@@ -1339,6 +1550,7 @@ export default function DataSourcePreprocessing({
   const [schemas, setSchemas] = useState<LightSchemaEntry[]>([]);
   const [loadingSchemas, setLoadingSchemas] = useState(false);
   const [schemaViewerTable, setSchemaViewerTable] = useState<string | null>(null);
+  const [cellViewerTable, setCellViewerTable] = useState<string | null>(null);
   const cachedTables = new Set(schemas.map((s) => s.tableName));
 
   const [sampleLimit, setSampleLimit] = useState(5);
@@ -1351,7 +1563,15 @@ export default function DataSourcePreprocessing({
   const [cellEntries, setCellEntries] = useState<CellVectorEntry[]>([]);
   const [loadingCellEntries, setLoadingCellEntries] = useState(false);
   const [savingCellEntry, setSavingCellEntry] = useState(false);
-  const [cellSearch, setCellSearch] = useState('');
+
+  const cellTableNames = useMemo(
+    () => [...new Set(cellEntries.map((e) => e.tableName))].sort((a, b) => a.localeCompare(b, 'zh-CN')),
+    [cellEntries],
+  );
+  const cellColumnCount = useMemo(
+    () => new Set(cellEntries.map((e) => `${e.tableName}::${e.columnName}`)).size,
+    [cellEntries],
+  );
 
 
   const fetchTables = async (cachedSet?: Set<string>, schemaName = selectedSchemaName) => {
@@ -1484,6 +1704,30 @@ export default function DataSourcePreprocessing({
       }
     } catch (err: any) {
       showToast({ message: `生成 Light Schema 失败: ${err?.message || err}`, status: 'error' });
+    } finally {
+      setGeneratingSchema(false);
+    }
+  };
+
+  const handleRegenerateSchema = async (tableNames: string[]): Promise<boolean> => {
+    if (tableNames.length === 0) return false;
+    setGeneratingSchema(true);
+    try {
+      const res = await (dataService as any).generateLightSchema(dataSourceId, {
+        sampleLimit,
+        tableNames,
+        schemaName: selectedSchemaName,
+      });
+      if (res?.success) {
+        showToast({ message: `已重新生成 ${res.count} 张表的 Light Schema`, status: 'success' });
+        await fetchSchemas();
+        return true;
+      }
+      showToast({ message: `重新生成失败: ${res?.error || '未知错误'}`, status: 'error' });
+      return false;
+    } catch (err: any) {
+      showToast({ message: `重新生成 Light Schema 失败: ${err?.message || err}`, status: 'error' });
+      return false;
     } finally {
       setGeneratingSchema(false);
     }
@@ -1625,6 +1869,26 @@ export default function DataSourcePreprocessing({
     }
   };
 
+  const handleDeleteCellTable = async (tableName: string): Promise<boolean> => {
+    try {
+      const res = await (dataService as any).deleteCellsByTable(dataSourceId, tableName);
+      if (res?.success) {
+        setCellEntries((prev) => {
+          const remaining = prev.filter((e) => e.tableName !== tableName);
+          if (remaining.length === 0) setView('main');
+          return remaining;
+        });
+        showToast({ message: `已删除 ${tableName} 的全部 Cell 向量`, status: 'success' });
+        return true;
+      }
+      showToast({ message: `删除失败: ${res?.error || '未知错误'}`, status: 'error' });
+      return false;
+    } catch (err: any) {
+      showToast({ message: `删除 Cell 向量失败: ${err?.message || err}`, status: 'error' });
+      return false;
+    }
+  };
+
   const tableLabel = loadingTables
     ? '加载中…'
     : selectedList.length === allTables.length
@@ -1644,6 +1908,31 @@ export default function DataSourcePreprocessing({
         }}
         onDeleteTable={handleDeleteSchema}
         onUpdateTable={handleUpdateSchema}
+        onRegenerateTables={handleRegenerateSchema}
+        regenerating={generatingSchema}
+      />
+    );
+  }
+
+  // ── Cell 向量预览子视图 ──
+  if (view === 'cell-viewer') {
+    return (
+      <CellVectorViewer
+        key={`${dataSourceId}-${cellViewerTable ?? '__default__'}`}
+        entries={cellEntries}
+        schemas={schemas}
+        loading={loadingCellEntries}
+        saving={savingCellEntry}
+        initialSelectedTable={cellViewerTable ?? undefined}
+        onBack={() => {
+          setCellViewerTable(null);
+          setView('main');
+        }}
+        onRefresh={fetchCellEntries}
+        onCreate={handleCreateCellEntry}
+        onUpdate={handleUpdateCellEntry}
+        onDelete={handleDeleteCellEntry}
+        onDeleteTable={handleDeleteCellTable}
       />
     );
   }
@@ -1920,21 +2209,56 @@ export default function DataSourcePreprocessing({
             <p className="text-xs text-text-secondary">
               仅处理 CHAR / VARCHAR / TEXT / ENUM 类型列。优先选择已生成 Light Schema 的表，效果更好。
             </p>
-          </section>
 
-          <CellVectorManager
-            key={dataSourceId}
-            entries={cellEntries}
-            schemas={schemas}
-            loading={loadingCellEntries}
-            saving={savingCellEntry}
-            search={cellSearch}
-            onSearchChange={setCellSearch}
-            onRefresh={fetchCellEntries}
-            onCreate={handleCreateCellEntry}
-            onUpdate={handleUpdateCellEntry}
-            onDelete={handleDeleteCellEntry}
-          />
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-text-secondary">
+                {loadingCellEntries
+                  ? '加载中…'
+                  : cellEntries.length > 0
+                  ? `已存储 ${cellEntries.length} 条向量 · ${cellTableNames.length} 张表 · ${cellColumnCount} 字段`
+                  : '暂无 Cell 向量，请先执行向量化'}
+              </p>
+              <div className="flex items-center gap-2">
+                {cellEntries.length > 0 && (
+                  <button
+                    onClick={() => {
+                      setCellViewerTable(null);
+                      setView('cell-viewer');
+                    }}
+                    className="flex items-center gap-1 text-xs text-green-400 hover:text-green-300 transition-colors"
+                  >
+                    <Sparkles className="h-3.5 w-3.5" />
+                    查看 Cell 向量
+                  </button>
+                )}
+                <button
+                  onClick={fetchCellEntries}
+                  disabled={loadingCellEntries}
+                  className="flex items-center gap-1 text-xs text-text-secondary hover:text-green-400 disabled:opacity-50 transition-colors"
+                >
+                  <RefreshCw className={`h-3 w-3 ${loadingCellEntries ? 'animate-spin' : ''}`} />
+                  刷新
+                </button>
+              </div>
+            </div>
+            {cellTableNames.length > 0 && (
+              <ul className="flex flex-wrap gap-2">
+                {cellTableNames.map((name) => (
+                  <li key={name}>
+                    <button
+                      onClick={() => {
+                        setCellViewerTable(name);
+                        setView('cell-viewer');
+                      }}
+                      className="rounded-md border border-green-700/40 bg-green-900/20 px-2 py-0.5 text-xs text-green-300 hover:border-green-500 hover:bg-green-800/30 hover:text-green-200 transition-colors"
+                    >
+                      {name}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
 
         </div>
       </div>

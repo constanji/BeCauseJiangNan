@@ -716,6 +716,13 @@ export const deleteCell = (
   return request.delete(endpoints.dataSources.cellById(id, cellId));
 };
 
+export const deleteCellsByTable = (
+  id: string,
+  tableName: string,
+): Promise<{ success: boolean; tableName?: string; error?: string }> => {
+  return request.delete(endpoints.dataSources.deleteCellsByTable(id, tableName));
+};
+
 export const deleteLightSchema = (
   id: string,
   tableName: string,

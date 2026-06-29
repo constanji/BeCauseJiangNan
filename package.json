@@ -5,7 +5,8 @@
   "workspaces": [
     "api",
     "client",
-    "packages/*"
+    "packages/*",
+    "Schema"
   ],
   "scripts": {
     "update": "node config/update.js",

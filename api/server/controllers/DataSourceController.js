@@ -1789,6 +1789,32 @@ async function updateCellHandler(req, res) {
 }
 
 /**
+ * DELETE /data-sources/:id/cells/by-table/:tableName
+ * 删除指定表的全部 Cell 向量记录
+ */
+async function deleteCellsByTableHandler(req, res) {
+  const { id, tableName } = req.params;
+  if (!tableName) {
+    return res.status(400).json({ success: false, error: '缺少表名' });
+  }
+
+  try {
+    const dataSource = await getDataSourceById(id);
+    if (!dataSource) {
+      return res.status(404).json({ success: false, error: '数据源不存在' });
+    }
+
+    const { vectorDB } = await getSharedServices();
+    await vectorDB.deleteCells(String(dataSource._id), [tableName]);
+    logger.info(`[deleteCellsByTableHandler] Deleted cell vectors for table: ${tableName}, datasource: ${id}`);
+    return res.json({ success: true, tableName });
+  } catch (error) {
+    logger.error('[deleteCellsByTableHandler] Error:', error.message);
+    return res.status(500).json({ success: false, error: error.message || '删除 Cell 向量失败' });
+  }
+}
+
+/**
  * DELETE /data-sources/:id/cells/:cellId
  * 删除单条 Cell 向量记录
  */
@@ -1998,6 +2024,7 @@ module.exports = {
   createCellHandler,
   updateCellHandler,
   deleteCellHandler,
+  deleteCellsByTableHandler,
   uploadExcelFileHandler,
   listExcelFilesHandler,
   deleteExcelFileHandler,

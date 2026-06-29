@@ -51,6 +51,7 @@ const {
   createCellHandler,
   updateCellHandler,
   deleteCellHandler,
+  deleteCellsByTableHandler,
   uploadExcelFileHandler,
   listExcelFilesHandler,
   deleteExcelFileHandler,
@@ -316,6 +317,7 @@ router.get('/data-sources/:id/light-schema', requireJwtAuth, getLightSchemasHand
 router.get('/data-sources/:id/cells', requireJwtAuth, getCellsHandler);
 router.post('/data-sources/:id/cells', requireJwtAuth, checkAdmin, createCellHandler);
 router.put('/data-sources/:id/cells/:cellId', requireJwtAuth, checkAdmin, updateCellHandler);
+router.delete('/data-sources/:id/cells/by-table/:tableName', requireJwtAuth, checkAdmin, deleteCellsByTableHandler);
 router.delete('/data-sources/:id/cells/:cellId', requireJwtAuth, checkAdmin, deleteCellHandler);
 router.delete('/data-sources/:id/light-schema/:tableName', requireJwtAuth, checkAdmin, deleteLightSchemaHandler);
 router.put('/data-sources/:id/light-schema/:tableName', requireJwtAuth, checkAdmin, updateLightSchemaHandler);
