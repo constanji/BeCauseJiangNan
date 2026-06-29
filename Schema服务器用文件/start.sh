@@ -53,6 +53,7 @@ done
 
 if [[ "$READY" -eq 1 ]]; then
   echo "==> 健康检查通过: ${HEALTH_URL}"
+  echo "==> 浏览器打开前端: http://127.0.0.1:${API_PORT}/"
   "${COMPOSE_CMD[@]}" ps
 else
   echo "警告: 健康检查未通过（${HEALTH_URL}）"

@@ -1,6 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { DatabaseSync } = require('node:sqlite');
+const Database = require('better-sqlite3');
 const { buildColumnSearchText } = require('../lib/lightSchemaIndex');
 
 let db;
@@ -31,10 +31,10 @@ function backfillColumnSearchText(database) {
 }
 
 function migrate(database) {
-  database.exec(`
-    PRAGMA journal_mode = WAL;
-    PRAGMA foreign_keys = ON;
+  database.pragma('journal_mode = WAL');
+  database.pragma('foreign_keys = ON');
 
+  database.exec(`
     CREATE TABLE IF NOT EXISTS data_sources (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
@@ -104,7 +104,7 @@ function getDb() {
   const dir = dataDir();
   ensureDir(dir);
   const file = path.join(dir, 'schema.sqlite');
-  db = new DatabaseSync(file);
+  db = new Database(file);
   migrate(db);
   return db;
 }

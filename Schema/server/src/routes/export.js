@@ -20,7 +20,12 @@ router.post('/excel', async (req, res) => {
   const skipped = [];
   for (const row of rows) {
     try {
-      schemas.push({ ...JSON.parse(row.content), updatedAt: row.updated_at });
+      schemas.push({
+        ...JSON.parse(row.content),
+        tableName: row.table_name,
+        schemaName: row.schema_name,
+        updatedAt: row.updated_at,
+      });
     } catch (error) {
       skipped.push({ tableName: row.table_name, error: error.message });
     }

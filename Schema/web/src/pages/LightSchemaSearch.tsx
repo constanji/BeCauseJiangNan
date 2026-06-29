@@ -5,25 +5,16 @@ import Button from '../components/Button';
 import FilterBar from '../components/FilterBar';
 import StatusBanner from '../components/StatusBanner';
 import TagBadge from '../components/TagBadge';
+import { HideInCartToggle } from '../components/ToggleSwitch';
 import { useUiState } from '../context/UiStateProvider';
+import { highlightText } from '../lib/highlightText';
 import { ExportCartItem, SearchHit } from '../lib/uiState';
 
-function highlightSnippet(snippet: string, q: string) {
-  if (!q.trim()) return snippet;
-  const idx = snippet.toLowerCase().indexOf(q.toLowerCase());
-  if (idx < 0) return snippet;
-  return (
-    <>
-      {snippet.slice(0, idx)}
-      <mark className="rounded bg-brand-muted px-0.5 text-brand">{snippet.slice(idx, idx + q.length)}</mark>
-      {snippet.slice(idx + q.length)}
-    </>
-  );
-}
-
-export default function LightSchemaSearch() {
-  const { state, setSearch, toggleCart, isInCart } = useUiState();
+export default function LightSchemaSearch({ cartOnly = false }: { cartOnly?: boolean }) {
+  const { state, setSearch, setReview, toggleCart, isInCart } = useUiState();
   const { search } = state;
+  const { hideInCart } = state.review;
+  const cartCount = state.exportCart.items.length;
   const [results, setResults] = React.useState<SearchHit[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -34,6 +25,12 @@ export default function LightSchemaSearch() {
     const q = search.q.trim();
     if (!q) {
       setError('请输入搜索关键词');
+      return;
+    }
+    if (cartOnly && cartCount === 0) {
+      setError('导出篮为空，请先在主页加入表');
+      setResults([]);
+      setSearched(true);
       return;
     }
     setLoading(true);
@@ -55,13 +52,25 @@ export default function LightSchemaSearch() {
       })
       .catch((err) => setError(err.message || String(err)))
       .finally(() => setLoading(false));
-  }, [search.q, search.dataSourceId, search.schemaName, search.tagId]);
+  }, [cartOnly, cartCount, search.q, search.dataSourceId, search.schemaName, search.tagId]);
+
+  const visibleResults = React.useMemo(() => {
+    if (cartOnly) return results.filter((hit) => isInCart(hit.lightSchemaId));
+    if (hideInCart) return results.filter((hit) => !isInCart(hit.lightSchemaId));
+    return results;
+  }, [results, cartOnly, hideInCart, isInCart]);
 
   return (
     <div className="flex h-full flex-col overflow-hidden px-4 py-4">
       <div className="mb-4">
-        <h2 className="text-xl font-semibold text-text-primary">列注释搜索</h2>
-        <p className="mt-1 text-sm text-text-secondary">按列备注关键词搜索，结果按表聚合展示</p>
+        <h2 className="text-xl font-semibold text-text-primary">
+          {cartOnly ? '导出篮搜索' : '列注释搜索'}
+        </h2>
+        <p className="mt-1 text-sm text-text-secondary">
+          {cartOnly
+            ? '仅在导出篮内的表中搜索列备注，结果按表聚合展示'
+            : '按列备注关键词搜索，结果按表聚合展示'}
+        </p>
       </div>
 
       {error && <div className="mb-4"><StatusBanner tone="error" title="操作失败" message={error} /></div>}
@@ -89,18 +98,32 @@ export default function LightSchemaSearch() {
           onSchemaChange={(v) => setSearch({ schemaName: v })}
           onTagIdsChange={(ids) => setSearch({ tagId: ids[0] ? String(ids[0]) : '' })}
         />
+        {!cartOnly && (
+          <HideInCartToggle
+            checked={hideInCart}
+            onChange={(val) => setReview({ hideInCart: val })}
+          />
+        )}
       </div>
 
       <div className="flex-1 overflow-auto">
         {loading ? (
           <div className="flex h-48 items-center justify-center text-text-secondary">搜索中…</div>
         ) : !searched ? (
-          <div className="flex h-48 items-center justify-center text-text-secondary">输入关键词开始搜索</div>
+          <div className="flex h-48 items-center justify-center text-text-secondary">
+            {cartOnly && cartCount === 0 ? '导出篮为空，请先在主页加入表' : '输入关键词开始搜索'}
+          </div>
         ) : results.length === 0 ? (
           <div className="flex h-48 items-center justify-center text-text-secondary">未找到匹配结果</div>
+        ) : visibleResults.length === 0 ? (
+          <div className="flex h-48 items-center justify-center text-text-secondary">
+            {cartOnly
+              ? '导出篮内无匹配结果'
+              : '匹配结果均已加入导出篮，关闭「隐藏已加入导出篮」可查看'}
+          </div>
         ) : (
           <div className="space-y-3">
-            {results.map((hit) => {
+            {visibleResults.map((hit) => {
               const open = expanded[hit.lightSchemaId];
               const cartItem: ExportCartItem = {
                 lightSchemaId: hit.lightSchemaId,
@@ -150,7 +173,7 @@ export default function LightSchemaSearch() {
                             <tr key={m.columnName} className="border-t border-border-light/60">
                               <td className="py-2 pr-3 font-medium text-text-primary">{m.columnName}</td>
                               <td className="py-2 pr-3 text-text-secondary">{m.description}</td>
-                              <td className="py-2 text-text-secondary">{highlightSnippet(m.snippet, search.q)}</td>
+                              <td className="py-2 text-text-secondary">{highlightText(m.snippet, search.q)}</td>
                             </tr>
                           ))}
                         </tbody>

@@ -69,6 +69,11 @@ export type SearchUiState = {
   tagId: string;
 };
 
+export type ReviewUiState = {
+  columnSearchQuery: string;
+  hideInCart: boolean;
+};
+
 export type ExportCartState = {
   items: ExportCartItem[];
   tagIds: number[];
@@ -77,6 +82,7 @@ export type ExportCartState = {
 export type UiState = {
   library: LibraryUiState;
   search: SearchUiState;
+  review: ReviewUiState;
   exportCart: ExportCartState;
 };
 
@@ -96,6 +102,10 @@ export const DEFAULT_UI_STATE: UiState = {
     schemaName: '',
     tagId: '',
   },
+  review: {
+    columnSearchQuery: '',
+    hideInCart: false,
+  },
   exportCart: {
     items: [],
     tagIds: [],
@@ -111,6 +121,7 @@ export function loadUiState(): UiState {
     return {
       library: { ...DEFAULT_UI_STATE.library, ...(parsed.library || {}) },
       search: { ...DEFAULT_UI_STATE.search, ...(parsed.search || {}) },
+      review: { ...DEFAULT_UI_STATE.review, ...(parsed.review || {}) },
       exportCart: {
         items: Array.isArray(parsed.exportCart?.items) ? parsed.exportCart.items : [],
         tagIds: Array.isArray(parsed.exportCart?.tagIds) ? parsed.exportCart.tagIds : [],

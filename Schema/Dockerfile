@@ -25,14 +25,16 @@ RUN set -eux; \
       /etc/apt/sources.list; \
   fi; \
   apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=120 update \
-  && apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=120 install -y --no-install-recommends default-jdk-headless \
+  && apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=120 install -y --no-install-recommends \
+       default-jdk-headless python3 build-essential \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app/Schema
 
 COPY Schema/package.json Schema/package-lock.json* ./
 RUN npm config set registry https://registry.npmmirror.com \
-  && npm install --ignore-scripts
+  && npm install --ignore-scripts \
+  && npm rebuild better-sqlite3
 
 COPY Schema/ ./
 

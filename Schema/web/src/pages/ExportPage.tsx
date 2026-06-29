@@ -132,7 +132,7 @@ export default function ExportPage() {
         <div className="flex-1 overflow-auto p-4">
           {exportCart.items.length === 0 ? (
             <p className="text-sm text-text-secondary">
-              导出篮为空。可在「LightSchema 库」或「搜索」页勾选表，或使用上方按标签加入。
+              导出篮为空。可在 LightSchema 库主页或搜索页加入表，或使用上方按标签加入。
             </p>
           ) : (
             <div className="space-y-2">

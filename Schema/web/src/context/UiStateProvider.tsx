@@ -5,6 +5,7 @@ import {
   GroupMode,
   LibraryUiState,
   SearchUiState,
+  ReviewUiState,
   UiState,
   cartItemKey,
   loadUiState,
@@ -15,6 +16,7 @@ type UiStateContextValue = {
   state: UiState;
   setLibrary: (patch: Partial<LibraryUiState>) => void;
   setSearch: (patch: Partial<SearchUiState>) => void;
+  setReview: (patch: Partial<ReviewUiState>) => void;
   setExportTagIds: (tagIds: number[]) => void;
   addToCart: (items: ExportCartItem[]) => void;
   removeFromCart: (lightSchemaId: number) => void;
@@ -39,6 +41,10 @@ export function UiStateProvider({ children }: { children: React.ReactNode }) {
 
   const setSearch = React.useCallback((patch: Partial<SearchUiState>) => {
     setState((prev) => ({ ...prev, search: { ...prev.search, ...patch } }));
+  }, []);
+
+  const setReview = React.useCallback((patch: Partial<ReviewUiState>) => {
+    setState((prev) => ({ ...prev, review: { ...prev.review, ...patch } }));
   }, []);
 
   const setExportTagIds = React.useCallback((tagIds: number[]) => {
@@ -91,6 +97,7 @@ export function UiStateProvider({ children }: { children: React.ReactNode }) {
     state,
     setLibrary,
     setSearch,
+    setReview,
     setExportTagIds,
     addToCart,
     removeFromCart,

@@ -1,12 +1,14 @@
 import React from 'react';
-import { Pencil, Save, Trash2, X } from 'lucide-react';
+import { Pencil, Plus, Save, Trash2, X } from 'lucide-react';
 import Button from './Button';
 import StatusBanner from './StatusBanner';
 import { useToast } from '../context/ToastProvider';
+import { highlightText } from '../lib/highlightText';
 import {
   LightSchemaColumn,
   LightSchemaContent,
   cloneLightSchemaContent,
+  emptyLightSchemaColumn,
 } from '../lib/lightSchemaTypes';
 
 const COLUMN_PAGE_SIZE = 30;
@@ -14,21 +16,10 @@ const COLUMN_PAGE_SIZE = 30;
 function updateDraftColumn(
   draft: LightSchemaContent,
   index: number,
-  patch: Partial<Pick<LightSchemaColumn, 'description' | 'sampleValues'>>,
+  patch: Partial<LightSchemaColumn>,
 ): LightSchemaContent {
   const columns = draft.columns.map((col, i) => (i === index ? { ...col, ...patch } : col));
   return { ...draft, columns };
-}
-
-function mergeEditableFields(original: LightSchemaContent, draft: LightSchemaContent): LightSchemaContent {
-  return {
-    ...original,
-    columns: original.columns.map((col, index) => ({
-      ...col,
-      description: draft.columns[index]?.description ?? col.description ?? '',
-      sampleValues: draft.columns[index]?.sampleValues ?? col.sampleValues ?? [],
-    })),
-  };
 }
 
 export default function LightSchemaEditor({
@@ -36,6 +27,7 @@ export default function LightSchemaEditor({
   ddlText = '',
   showSamples = false,
   showDdlTab = false,
+  highlightQuery = '',
   onSave,
   onDelete,
 }: {
@@ -43,6 +35,7 @@ export default function LightSchemaEditor({
   ddlText?: string;
   showSamples?: boolean;
   showDdlTab?: boolean;
+  highlightQuery?: string;
   onSave: (content: LightSchemaContent) => Promise<void>;
   onDelete?: () => Promise<void>;
 }) {
@@ -53,6 +46,7 @@ export default function LightSchemaEditor({
   const [error, setError] = React.useState<string | null>(null);
   const [saving, setSaving] = React.useState(false);
   const [displayDdl, setDisplayDdl] = React.useState(ddlText);
+  const [newColumnIndices, setNewColumnIndices] = React.useState<Set<number>>(() => new Set());
   const { showToast } = useToast();
 
   React.useEffect(() => {
@@ -73,15 +67,27 @@ export default function LightSchemaEditor({
     columnPage * COLUMN_PAGE_SIZE,
   );
   const pageOffset = (columnPage - 1) * COLUMN_PAGE_SIZE;
+  const highlightQ = highlightQuery.trim();
+
+  const renderReadonlyText = (text: string, muted = false) => {
+    if (!text) return <span className="text-text-secondary">—</span>;
+    const className = muted ? 'text-text-secondary' : 'font-medium text-text-primary';
+    if (highlightQ) {
+      return <span className={className}>{highlightText(text, highlightQ)}</span>;
+    }
+    return <span className={className}>{text}</span>;
+  };
 
   const startEdit = () => {
     setDraft(cloneLightSchemaContent(content));
+    setNewColumnIndices(new Set());
     setError(null);
     setEditing(true);
   };
 
   const cancelEdit = () => {
     setDraft(cloneLightSchemaContent(content));
+    setNewColumnIndices(new Set());
     setError(null);
     setEditing(false);
   };
@@ -90,7 +96,7 @@ export default function LightSchemaEditor({
     setSaving(true);
     setError(null);
     try {
-      await onSave(mergeEditableFields(content, draft));
+      await onSave({ ...draft, tableName: content.tableName });
       setEditing(false);
       showToast('保存成功');
     } catch (err: any) {
@@ -116,6 +122,34 @@ export default function LightSchemaEditor({
     }
   };
 
+  const removeColumn = (index: number) => {
+    if (draft.columns.length <= 1) {
+      setError('至少保留一列');
+      return;
+    }
+    setError(null);
+    setDraft({ ...draft, columns: draft.columns.filter((_, i) => i !== index) });
+    setNewColumnIndices((prev) => {
+      const next = new Set<number>();
+      for (const i of prev) {
+        if (i < index) next.add(i);
+        else if (i > index) next.add(i - 1);
+      }
+      return next;
+    });
+  };
+
+  const addColumn = () => {
+    setError(null);
+    const nextColumns = [...draft.columns, emptyLightSchemaColumn()];
+    const newIndex = nextColumns.length - 1;
+    setDraft({ ...draft, columns: nextColumns });
+    setNewColumnIndices((prev) => new Set([...prev, newIndex]));
+    setColumnPage(Math.max(1, Math.ceil(nextColumns.length / COLUMN_PAGE_SIZE)));
+  };
+
+  const isNewColumn = (index: number) => newColumnIndices.has(index);
+
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <div className="mb-3 flex shrink-0 flex-wrap items-center justify-between gap-2">
@@ -129,6 +163,12 @@ export default function LightSchemaEditor({
                 DDL
               </Button>
             </>
+          )}
+          {editing && (!showDdlTab || tab === 'columns') && (
+            <Button variant="neutral" className="px-2 py-1 text-xs" onClick={addColumn} disabled={saving}>
+              <Plus className="h-3.5 w-3.5" />
+              新增
+            </Button>
           )}
         </div>
         <div className="flex flex-wrap gap-2">
@@ -161,7 +201,9 @@ export default function LightSchemaEditor({
       </div>
 
       {editing && (
-        <p className="mb-3 shrink-0 text-xs text-text-tertiary">列名、类型、可空来自数据库结构，仅可编辑备注与采样值</p>
+        <p className="mb-3 shrink-0 text-xs text-text-tertiary">
+          已有列的列名、类型、可空不可修改；通过「新增」添加的列可编辑全部字段，备注与采样值均可编辑
+        </p>
       )}
 
       {error && (
@@ -171,42 +213,81 @@ export default function LightSchemaEditor({
       )}
 
       {(!showDdlTab || tab === 'columns') ? (
-        <>
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain">
-            <table className="w-full text-sm">
-              <thead className="sticky top-0 bg-surface-primary">
+            <table className="w-full table-fixed text-sm">
+              <thead className="sticky top-0 z-10 bg-surface-primary">
                 <tr className="text-left text-text-secondary">
-                  <th className="py-2 pr-3">列名</th>
-                  <th className="pr-3">类型</th>
-                  <th className="pr-3">可空</th>
-                  <th className="pr-3">备注</th>
-                  {showSamples && <th>采样值</th>}
+                  <th className="w-[9rem] whitespace-nowrap py-2 pr-3">列名</th>
+                  <th className="w-[5.5rem] whitespace-nowrap py-2 pr-3">类型</th>
+                  <th className="w-[4.5rem] whitespace-nowrap py-2 pr-3">可空</th>
+                  <th className="whitespace-nowrap py-2 pr-3">备注</th>
+                  {showSamples && <th className="w-[10rem] whitespace-nowrap py-2">采样值</th>}
+                  {editing && <th className="w-16 whitespace-nowrap py-2 text-right">操作</th>}
                 </tr>
               </thead>
               <tbody>
                 {pageColumns.map((col, pageIndex) => {
                   const index = pageOffset + pageIndex;
+                  const canEditStructure = isNewColumn(index);
                   return (
                     <tr key={`${col.name}-${index}`} className="border-t border-border-light">
-                      <td className="py-2 pr-3 font-medium text-text-primary">{col.name}</td>
-                      <td className="py-2 pr-3 text-text-primary">{col.type}</td>
-                      <td className="py-2 pr-3 text-text-primary">{col.nullable ? 'YES' : 'NO'}</td>
+                      <td className="py-2 pr-3">
+                        {editing && canEditStructure ? (
+                          <input
+                            className="input w-full py-1 text-xs"
+                            value={col.name}
+                            placeholder="列名"
+                            onChange={(e) => setDraft(updateDraftColumn(draft, index, { name: e.target.value }))}
+                          />
+                        ) : (
+                          renderReadonlyText(col.name)
+                        )}
+                      </td>
+                      <td className="py-2 pr-3">
+                        {editing && canEditStructure ? (
+                          <input
+                            className="input w-full py-1 text-xs"
+                            value={col.type}
+                            placeholder="类型"
+                            onChange={(e) => setDraft(updateDraftColumn(draft, index, { type: e.target.value }))}
+                          />
+                        ) : (
+                          <span className="text-text-primary">{col.type}</span>
+                        )}
+                      </td>
+                      <td className="py-2 pr-3">
+                        {editing && canEditStructure ? (
+                          <select
+                            className="input w-full py-1 text-xs"
+                            value={col.nullable ? 'YES' : 'NO'}
+                            aria-label={`列 ${col.name || index + 1} 可空`}
+                            onChange={(e) => setDraft(updateDraftColumn(draft, index, { nullable: e.target.value === 'YES' }))}
+                          >
+                            <option value="YES">YES</option>
+                            <option value="NO">NO</option>
+                          </select>
+                        ) : (
+                          <span className="whitespace-nowrap text-text-primary">{col.nullable ? 'YES' : 'NO'}</span>
+                        )}
+                      </td>
                       <td className="py-2 pr-3">
                         {editing ? (
                           <input
-                            className="input py-1 text-xs"
+                            className="input w-full py-1 text-xs"
                             value={col.description || ''}
+                            placeholder="备注"
                             onChange={(e) => setDraft(updateDraftColumn(draft, index, { description: e.target.value }))}
                           />
                         ) : (
-                          <span className="text-text-secondary">{col.description || '—'}</span>
+                          renderReadonlyText(col.description || '', true)
                         )}
                       </td>
                       {showSamples && (
                         <td className="py-2">
                           {editing ? (
                             <input
-                              className="input py-1 text-xs"
+                              className="input w-full py-1 text-xs"
                               value={(col.sampleValues || []).join(', ')}
                               onChange={(e) => setDraft(updateDraftColumn(draft, index, {
                                 sampleValues: e.target.value.split(',').map((v) => v.trim()).filter(Boolean),
@@ -214,10 +295,21 @@ export default function LightSchemaEditor({
                               placeholder="逗号分隔"
                             />
                           ) : (
-                            <span className="text-text-secondary">
-                              {(col.sampleValues || []).join(', ') || '—'}
-                            </span>
+                            renderReadonlyText((col.sampleValues || []).join(', '), true)
                           )}
+                        </td>
+                      )}
+                      {editing && (
+                        <td className="py-2 text-right">
+                          <button
+                            type="button"
+                            className="rounded p-1 text-text-secondary hover:bg-surface-tertiary hover:text-red-400"
+                            title="删除列"
+                            aria-label={`删除列 ${col.name || index + 1}`}
+                            onClick={() => removeColumn(index)}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
                         </td>
                       )}
                     </tr>
@@ -227,7 +319,7 @@ export default function LightSchemaEditor({
             </table>
           </div>
           {activeContent.columns.length > 0 && (
-            <div className="mt-3 flex shrink-0 items-center justify-between border-t border-border-light pt-3 text-xs text-text-secondary">
+            <div className="flex min-h-[3.75rem] shrink-0 items-center justify-between border-t border-border-light px-1 py-4 text-xs text-text-secondary">
               <span>共 {activeContent.columns.length} 列，每页 {COLUMN_PAGE_SIZE} 列</span>
               <div className="flex items-center gap-2">
                 <Button
@@ -252,7 +344,7 @@ export default function LightSchemaEditor({
               </div>
             </div>
           )}
-        </>
+        </div>
       ) : (
         <pre className="min-h-0 flex-1 overflow-auto rounded bg-surface-secondary p-3 text-xs text-text-primary">
           {displayDdl || '—'}

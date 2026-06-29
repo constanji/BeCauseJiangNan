@@ -13,6 +13,7 @@ import {
 import { api } from '../api/client';
 import Button from '../components/Button';
 import StatusBanner from '../components/StatusBanner';
+import ToggleSwitch from '../components/ToggleSwitch';
 import { useToast } from '../context/ToastProvider';
 import { cn } from '../lib/cn';
 import {
@@ -30,37 +31,6 @@ const defaultSSL = {
   cert: '',
   key: '',
 };
-
-function Toggle({
-  checked,
-  onChange,
-  label,
-}: {
-  checked: boolean;
-  onChange: (val: boolean) => void;
-  label?: string;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked ? 'true' : 'false'}
-      aria-label={label ?? (checked ? '已开启' : '已关闭')}
-      onClick={() => onChange(!checked)}
-      className={cn(
-        'relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
-        checked ? 'bg-brand' : 'bg-surface-tertiary',
-      )}
-    >
-      <span
-        className={cn(
-          'pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transition',
-          checked ? 'translate-x-4' : 'translate-x-0',
-        )}
-      />
-    </button>
-  );
-}
 
 export default function DataSourceForm({ mode }: { mode: 'create' | 'edit' }) {
   const nav = useNavigate();
@@ -310,7 +280,7 @@ export default function DataSourceForm({ mode }: { mode: 'create' | 'edit' }) {
                 <p className="text-sm font-medium text-text-primary">启用数据源</p>
                 <p className="mt-0.5 text-xs text-text-secondary">关闭后该数据源将不可用</p>
               </div>
-              <Toggle
+              <ToggleSwitch
                 checked={form.status === 'active'}
                 onChange={(val) => setForm({ ...form, status: val ? 'active' : 'inactive' })}
                 label="启用数据源"
@@ -409,7 +379,7 @@ export default function DataSourceForm({ mode }: { mode: 'create' | 'edit' }) {
             <div className="space-y-4 p-5">
               <div className="flex items-center justify-between">
                 <span className="text-sm text-text-secondary">启用 SSL</span>
-                <Toggle
+                <ToggleSwitch
                   checked={!!form.ssl.enabled}
                   onChange={(val) => setForm({ ...form, ssl: { ...form.ssl, enabled: val } })}
                 />

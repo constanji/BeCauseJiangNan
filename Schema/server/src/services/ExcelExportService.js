@@ -14,6 +14,58 @@ function uniqueSheetName(workbook, base) {
   return safeSheetName(`${base}_${Date.now()}`);
 }
 
+function sortSchemas(schemas) {
+  return [...schemas].sort((a, b) => {
+    const ds = String(a.dataSourceName || '').localeCompare(String(b.dataSourceName || ''));
+    if (ds !== 0) return ds;
+    const sn = String(a.schemaName || '').localeCompare(String(b.schemaName || ''));
+    if (sn !== 0) return sn;
+    return String(a.tableName || '').localeCompare(String(b.tableName || ''));
+  });
+}
+
+function toLightSchemaJson(item) {
+  return JSON.stringify({
+    tableName: item.tableName,
+    columns: item.columns || [],
+    primaryKeys: item.primaryKeys || [],
+  });
+}
+
+function addSummarySheet(workbook, schemas, { multiSource = false, dataSourceName = '' } = {}) {
+  const summary = workbook.addWorksheet('汇总');
+  const header = multiSource
+    ? ['数据源', 'Schema', '表名', '表名备注', '主键', 'LightSchema JSON']
+    : ['Schema', '表名', '表名备注', '主键', 'LightSchema JSON'];
+  summary.addRow(header);
+  summary.getRow(1).font = { bold: true };
+
+  for (const item of sortSchemas(schemas)) {
+    const row = summary.addRow(multiSource
+      ? [
+        item.dataSourceName || dataSourceName,
+        item.schemaName || '',
+        item.tableName,
+        '',
+        (item.primaryKeys || []).join(', '),
+        toLightSchemaJson(item),
+      ]
+      : [
+        item.schemaName || '',
+        item.tableName,
+        '',
+        (item.primaryKeys || []).join(', '),
+        toLightSchemaJson(item),
+      ]);
+    const jsonCell = row.getCell(multiSource ? 6 : 5);
+    jsonCell.alignment = { wrapText: true, vertical: 'top' };
+  }
+
+  summary.columns = multiSource
+    ? [{ width: 24 }, { width: 18 }, { width: 28 }, { width: 20 }, { width: 24 }, { width: 80 }]
+    : [{ width: 18 }, { width: 28 }, { width: 20 }, { width: 24 }, { width: 80 }];
+}
+
 async function buildWorkbook({ dataSourceName, schemas, multiSource = false }) {
   const workbook = new ExcelJS.Workbook();
   const catalog = workbook.addWorksheet('目录');
@@ -23,17 +75,19 @@ async function buildWorkbook({ dataSourceName, schemas, multiSource = false }) {
   catalog.addRow(header);
   catalog.getRow(1).font = { bold: true };
 
-  for (const item of schemas) {
+  addSummarySheet(workbook, schemas, { multiSource, dataSourceName });
+
+  for (const item of sortSchemas(schemas)) {
     const catalogRow = multiSource
       ? [
         item.dataSourceName || dataSourceName,
         item.schemaName || '',
         item.tableName,
         item.columns.length,
-        item.primaryKeys.join(', '),
+        (item.primaryKeys || []).join(', '),
         item.updatedAt || '',
       ]
-      : [item.tableName, item.columns.length, item.primaryKeys.join(', '), item.updatedAt || ''];
+      : [item.tableName, item.columns.length, (item.primaryKeys || []).join(', '), item.updatedAt || ''];
     catalog.addRow(catalogRow);
 
     const sheetBase = multiSource

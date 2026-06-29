@@ -9,7 +9,6 @@ const tabs = [
   { id: 'dataSources', label: '数据源管理', path: '/' },
   { id: 'library', label: 'LightSchema 库', path: '/library' },
   { id: 'tags', label: '标签管理', path: '/tags' },
-  { id: 'search', label: '搜索', path: '/search' },
   { id: 'export', label: '导出', path: '/export' },
 ] as const;
 
@@ -18,6 +17,14 @@ function isTabActive(path: string, locationPath: string) {
     return locationPath === '/'
       || locationPath.startsWith('/new')
       || locationPath.startsWith('/edit');
+  }
+  if (path === '/library') {
+    return locationPath === '/library'
+      || locationPath.startsWith('/library/');
+  }
+  if (path === '/export') {
+    return locationPath === '/export'
+      || locationPath.startsWith('/export/');
   }
   return locationPath.startsWith(path);
 }

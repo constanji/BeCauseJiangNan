@@ -11,7 +11,8 @@ Schema服务器用文件/
 ├── docker-compose.yml      # 单容器编排
 ├── .env.example            # 环境变量模板 → 复制为 .env
 ├── data/                   # SQLite 持久化（运行时写入，新环境可空）
-├── save-image.sh           # 【本机】导出 schema-server-amd64.tar
+├── save-image.sh           # 【本机】仅导出已有镜像 tar（见 build-amd64.sh）
+├── build-amd64.sh          # 【本机】一键：JDBC + 构建镜像 + 导出 tar（推荐）
 ├── pack.sh                 # 【本机】打包配置目录 → schema-deploy-*.tar.gz
 ├── load-image.sh           # 【服务器】仅加载镜像 tar
 ├── start.sh                # 【服务器】加载镜像（若有）+ compose up + 健康检查
@@ -30,9 +31,41 @@ Schema服务器用文件/
 
 ## 一、本机发版（按顺序执行）
 
+> 推荐一键脚本（含 JDBC 准备、buildx 构建、导出 tar）：
+>
+> ```bash
+> chmod +x Schema服务器用文件/build-amd64.sh
+> ./Schema服务器用文件/build-amd64.sh --pack
+> ```
+>
+> 输出：`Schema服务器用文件/schema-server-amd64.tar` 与 `schema-deploy-YYYYMMDD-HHMMSS.tar.gz`
+
 > 在项目根目录 `BeCauseJiangNan` 操作，除非注明在 `Schema服务器用文件/` 下。
 
-### 第 0 步：准备 JDBC 驱动（仅首次 / jar 变更时）
+### 方式 A：一键构建（推荐）
+
+```bash
+chmod +x Schema服务器用文件/build-amd64.sh
+
+# 构建镜像 + 导出 tar
+./Schema服务器用文件/build-amd64.sh
+
+# 构建 + 导出 + 打配置包
+./Schema服务器用文件/build-amd64.sh --pack
+```
+
+可选环境变量：
+
+| 变量 | 默认 | 说明 |
+|------|------|------|
+| `TAG` | `schema:result` | 镜像标签，须与 `.env` 中 `SCHEMA_IMAGE` 一致 |
+| `OUTPUT` | `./Schema服务器用文件/schema-server-amd64.tar` | tar 输出路径 |
+| `BUILDX_BUILDER` | `builder-with-mirror` | buildx builder；不存在时回退 `default` |
+| `JDBC_SRC` | `Because-2.0/drivers/lib/gsjdbc4-1.0.jar` | 驱动 jar 源路径 |
+
+### 方式 B：手动分步
+
+#### 第 0 步：准备 JDBC 驱动（仅首次 / jar 变更时）
 
 构建镜像前，确保驱动存在（不入 Git）：
 
@@ -40,7 +73,7 @@ Schema服务器用文件/
 cp Because-2.0/drivers/lib/gsjdbc4-1.0.jar Schema/server/drivers/lib/
 ```
 
-### 第 1 步：构建 Docker 镜像（linux/amd64）
+#### 第 1 步：构建 Docker 镜像（linux/amd64）
 
 ```bash
 docker buildx build \
@@ -52,13 +85,15 @@ docker buildx build \
   .
 ```
 
-### 第 2 步：导出镜像 tar
+#### 第 2 步：导出镜像 tar
 
 ```bash
-docker save -o Schema服务器用文件/schema-server-amd64.tar schema:result
+cd Schema服务器用文件
+./save-image.sh
+# 或: docker save -o schema-server-amd64.tar schema:result
 ```
 
-### 第 3 步：打包部署配置
+#### 第 3 步：打包部署配置
 
 ```bash
 cd Schema服务器用文件
@@ -127,7 +162,8 @@ docker compose logs -f api
 
 | 脚本 | 执行位置 | 作用 |
 |------|----------|------|
-| `save-image.sh` | **本机** | 将 `schema:result` 导出为 `schema-server-amd64.tar` |
+| `build-amd64.sh` | **本机** | **推荐** 准备 JDBC → buildx 构建 amd64 镜像 → 导出 tar（可选 `--pack`） |
+| `save-image.sh` | **本机** | 将已有 `schema:result` 导出为 tar（镜像已构建时使用） |
 | `pack.sh` | **本机** | 打包本目录为 `schema-deploy-*.tar.gz`（不含 .env / tar / 数据） |
 | `load-image.sh` | **服务器** | 从 `schema-server-amd64.tar` 加载镜像 |
 | `start.sh` | **服务器** | 若存在 tar 则 load → `compose up -d` → 健康检查 |
