@@ -3,6 +3,14 @@ import type { LightSchemaContent } from '../lib/lightSchemaTypes';
 
 export type ApiResponse<T> = { success: boolean; data?: T; error?: string; message?: string };
 
+export type CatalogMeta = { source?: string; cachedAt?: string | null };
+
+export type SchemasResponse = ApiResponse<Array<{ schemaName: string; tableCount?: number | null }>> & {
+  meta?: CatalogMeta;
+};
+
+export type TablesResponse = ApiResponse<string[]> & { meta?: CatalogMeta };
+
 const qs = (params: Record<string, string | number | undefined>) => {
   const q = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
@@ -47,8 +55,23 @@ export const api = {
   deleteDataSource: (id: string) => json(`/api/data-sources/${id}`, { method: 'DELETE' }),
   testDataSource: (id: string) => json(`/api/data-sources/${id}/test`, { method: 'POST' }),
   testDataSourceConfig: (body: unknown) => json('/api/data-sources/test', { method: 'POST', body: JSON.stringify(body) }),
-  listSchemas: (id: string) => json(`/api/data-sources/${id}/schemas`),
-  listTables: (id: string, schemaName: string) => json(`/api/data-sources/${id}/schemas/${encodeURIComponent(schemaName)}/tables`),
+  listSchemas: (id: string, source: 'auto' | 'remote' | 'sqlite' = 'auto') =>
+    json<Array<{ schemaName: string; tableCount?: number | null }>>(`/api/data-sources/${id}/schemas${qs({ source })}`),
+  listTables: (id: string, schemaName: string, source: 'auto' | 'remote' | 'sqlite' = 'auto') =>
+    json<string[]>(`/api/data-sources/${id}/schemas/${encodeURIComponent(schemaName)}/tables${qs({ source })}`),
+  refreshCatalog: (id: string, schemaName: string) =>
+    json<{
+      schemas: Array<{ schemaName: string; tableCount?: number | null }>;
+      tables: string[];
+      schemaName: string | null;
+    }>(`/api/data-sources/${id}/catalog/refresh`, {
+      method: 'POST',
+      body: JSON.stringify({ schemaName }),
+    }),
+  refreshSchemaTables: (id: string, schemaName: string) =>
+    json<string[]>(`/api/data-sources/${id}/catalog/refresh-schema/${encodeURIComponent(schemaName)}`, {
+      method: 'POST',
+    }),
   generateLightSchema: (id: string, body: unknown, signal?: AbortSignal) => json(`/api/data-sources/${id}/light-schema/generate`, { method: 'POST', body: JSON.stringify(body), signal }),
   listLightSchemas: (id: string, schemaName?: string) => json(`/api/data-sources/${id}/light-schema${qs({ schemaName })}`),
   getLightSchema: (id: string, tableName: string, schemaName?: string) =>

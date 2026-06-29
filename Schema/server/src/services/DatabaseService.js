@@ -157,6 +157,40 @@ async function gaussGetTableSchema(config, password, schemaName, tableName, samp
   return output;
 }
 
+async function gaussIsTableEmpty(config, password, schemaName, tableName) {
+  const tableRef = `${quoteIdentPg(schemaName)}.${quoteIdentPg(tableName)}`;
+  const rows = await gaussdbJdbcQuery(
+    `SELECT 1 AS ok FROM ${tableRef} LIMIT 1`,
+    [],
+    config,
+    password,
+  );
+  return rows.length === 0;
+}
+
+async function mysqlIsTableEmpty(config, password, schemaName, tableName) {
+  const mysql = loadMysql();
+  const dbName = schemaName || config.database;
+  const connection = await mysql.createConnection(mysqlConnectionConfig(config, password));
+  try {
+    const tableRef = `${quoteIdentMySQL(dbName)}.${quoteIdentMySQL(tableName)}`;
+    const [rows] = await connection.query(
+      `SELECT 1 AS ok FROM ${tableRef} LIMIT 1`,
+    );
+    return rows.length === 0;
+  } finally {
+    await connection.end();
+  }
+}
+
+async function isTableEmpty(config, password, schemaName, tableName) {
+  const type = config.type || 'gaussdb';
+  assertSupported(type);
+  if (type === 'gaussdb') return gaussIsTableEmpty(config, password, schemaName, tableName);
+  if (type === 'mysql') return mysqlIsTableEmpty(config, password, schemaName, tableName);
+  throw new UnsupportedDbTypeError(type);
+}
+
 async function gaussListTables(config, password, schemaName) {
   const rows = await gaussdbJdbcQuery(
     `SELECT c.relname AS table_name
@@ -304,6 +338,7 @@ module.exports = {
   listSchemas,
   listTables,
   getTableSchema,
+  isTableEmpty,
   toDDL,
   isTextType,
   UnsupportedDbTypeError,

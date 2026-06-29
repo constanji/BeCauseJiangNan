@@ -80,7 +80,45 @@ function migrate(database) {
       FOREIGN KEY(light_schema_id) REFERENCES light_schemas(id) ON DELETE CASCADE,
       FOREIGN KEY(tag_id) REFERENCES tags(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS catalog_meta (
+      data_source_id INTEGER PRIMARY KEY,
+      schemas_updated_at TEXT NOT NULL,
+      FOREIGN KEY(data_source_id) REFERENCES data_sources(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS catalog_schemas (
+      data_source_id INTEGER NOT NULL,
+      schema_name TEXT NOT NULL,
+      table_count INTEGER,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (data_source_id, schema_name),
+      FOREIGN KEY(data_source_id) REFERENCES data_sources(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS catalog_schema_meta (
+      data_source_id INTEGER NOT NULL,
+      schema_name TEXT NOT NULL,
+      tables_updated_at TEXT,
+      PRIMARY KEY (data_source_id, schema_name),
+      FOREIGN KEY(data_source_id) REFERENCES data_sources(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS catalog_tables (
+      data_source_id INTEGER NOT NULL,
+      schema_name TEXT NOT NULL,
+      table_name TEXT NOT NULL,
+      PRIMARY KEY (data_source_id, schema_name, table_name),
+      FOREIGN KEY(data_source_id) REFERENCES data_sources(id) ON DELETE CASCADE
+    );
   `);
+
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_catalog_schemas_ds ON catalog_schemas(data_source_id);
+    CREATE INDEX IF NOT EXISTS idx_catalog_tables_ds_schema ON catalog_tables(data_source_id, schema_name);
+  `);
+
+  migrateCatalogSchemasNullable(database);
 
   if (!hasColumn(database, 'light_schemas', 'column_search_text')) {
     database.exec('ALTER TABLE light_schemas ADD COLUMN column_search_text TEXT');
@@ -97,6 +135,50 @@ function migrate(database) {
   `);
 
   backfillColumnSearchText(database);
+}
+
+function migrateCatalogSchemasNullable(database) {
+  const row = database.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='catalog_schemas'",
+  ).get();
+  if (!row?.sql?.includes('table_count INTEGER NOT NULL')) return;
+  database.exec(`
+    DROP TABLE IF EXISTS catalog_tables;
+    DROP TABLE IF EXISTS catalog_schema_meta;
+    DROP TABLE IF EXISTS catalog_schemas;
+    DROP TABLE IF EXISTS catalog_meta;
+  `);
+  database.exec(`
+    CREATE TABLE catalog_meta (
+      data_source_id INTEGER PRIMARY KEY,
+      schemas_updated_at TEXT NOT NULL,
+      FOREIGN KEY(data_source_id) REFERENCES data_sources(id) ON DELETE CASCADE
+    );
+    CREATE TABLE catalog_schemas (
+      data_source_id INTEGER NOT NULL,
+      schema_name TEXT NOT NULL,
+      table_count INTEGER,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (data_source_id, schema_name),
+      FOREIGN KEY(data_source_id) REFERENCES data_sources(id) ON DELETE CASCADE
+    );
+    CREATE TABLE catalog_schema_meta (
+      data_source_id INTEGER NOT NULL,
+      schema_name TEXT NOT NULL,
+      tables_updated_at TEXT,
+      PRIMARY KEY (data_source_id, schema_name),
+      FOREIGN KEY(data_source_id) REFERENCES data_sources(id) ON DELETE CASCADE
+    );
+    CREATE TABLE catalog_tables (
+      data_source_id INTEGER NOT NULL,
+      schema_name TEXT NOT NULL,
+      table_name TEXT NOT NULL,
+      PRIMARY KEY (data_source_id, schema_name, table_name),
+      FOREIGN KEY(data_source_id) REFERENCES data_sources(id) ON DELETE CASCADE
+    );
+    CREATE INDEX idx_catalog_schemas_ds ON catalog_schemas(data_source_id);
+    CREATE INDEX idx_catalog_tables_ds_schema ON catalog_tables(data_source_id, schema_name);
+  `);
 }
 
 function getDb() {

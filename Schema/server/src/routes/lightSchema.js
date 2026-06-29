@@ -1,7 +1,7 @@
 const express = require('express');
 const { getDb, now } = require('../db/sqlite');
 const { decrypt } = require('../services/crypto');
-const { getTableSchema } = require('../services/DatabaseService');
+const { getTableSchema, isTableEmpty } = require('../services/DatabaseService');
 const { buildColumnSearchText } = require('../lib/lightSchemaIndex');
 const { updateLightSchemaById, deleteLightSchemaById } = require('../lib/lightSchemaContent');
 const { toConnectionConfig } = require('../lib/dataSourceConfig');
@@ -29,6 +29,7 @@ router.post('/generate', async (req, res) => {
   }
   const sampleLimit = Math.max(1, Math.min(Number(body.sampleLimit || 5), 20));
   const sampleScope = body.sampleScope === 'all_columns' ? 'all_columns' : 'text_only';
+  const skipEmptyTables = body.skipEmptyTables === true;
   const password = decrypt(source.password_enc);
   const dataSource = toConnectionConfig(source);
   let schemaName = body.schemaName;
@@ -46,6 +47,17 @@ router.post('/generate', async (req, res) => {
       column_search_text = excluded.column_search_text, updated_at = excluded.updated_at
   `);
   for (const tableName of tableNames) {
+    if (skipEmptyTables) {
+      try {
+        if (await isTableEmpty(dataSource, password, schemaName, tableName)) {
+          skipped.push({ tableName, error: '空表', reason: 'empty_table' });
+          continue;
+        }
+      } catch (error) {
+        skipped.push({ tableName, error: error.message, reason: 'row_count_failed' });
+        continue;
+      }
+    }
     try {
       const schema = await getTableSchema(dataSource, password, schemaName, tableName, sampleLimit, sampleScope);
       const searchText = buildColumnSearchText(schema);
@@ -55,7 +67,7 @@ router.post('/generate', async (req, res) => {
         sampleWarnings.push(...schema.sampleWarnings.map((item) => ({ tableName, ...item })));
       }
     } catch (error) {
-      skipped.push({ tableName, error: error.message });
+      skipped.push({ tableName, error: error.message, reason: 'generate_failed' });
     }
   }
   res.json({
@@ -66,6 +78,7 @@ router.post('/generate', async (req, res) => {
       requested: tableNames.length,
       generated: out.length,
       skipped: skipped.length,
+      skippedEmpty: skipped.filter((x) => x.reason === 'empty_table').length,
       skippedTables: skipped,
       sampleWarnings,
     },
