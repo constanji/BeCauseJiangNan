@@ -1,0 +1,17 @@
+name: schema-server
+
+services:
+  api:
+    container_name: Schema-Server
+    image: ${SCHEMA_IMAGE:-schema:result}
+    restart: always
+    ports:
+      - "${PORT:-4100}:4100"
+    env_file:
+      - .env
+    environment:
+      - HOST=0.0.0.0
+      - PORT=4100
+      - SCHEMA_DATA_DIR=/app/data
+    volumes:
+      - ./data:/app/data

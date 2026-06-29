@@ -1,0 +1,171 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #0d0d0d;
+  --text-primary: #ececf1;
+  --text-secondary: #c5c5d2;
+  --text-tertiary: #8e8ea0;
+  --surface-primary: #171717;
+  --surface-secondary: #212121;
+  --surface-tertiary: #2f2f2f;
+  --border-light: rgba(255, 255, 255, 0.1);
+  --border-medium: rgba(255, 255, 255, 0.15);
+  --brand: #10a37f;
+  --brand-hover: #1a7f64;
+  --brand-muted: rgba(16, 163, 127, 0.15);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--background);
+  color: var(--text-primary);
+}
+
+@layer utilities {
+  .bg-background { background-color: var(--background); }
+  .bg-surface-primary { background-color: var(--surface-primary); }
+  .bg-surface-secondary { background-color: var(--surface-secondary); }
+  .bg-surface-tertiary { background-color: var(--surface-tertiary); }
+  .text-text-primary { color: var(--text-primary); }
+  .text-text-secondary { color: var(--text-secondary); }
+  .text-text-tertiary { color: var(--text-tertiary); }
+  .border-border-light { border-color: var(--border-light); }
+  .border-border-medium { border-color: var(--border-medium); }
+  .border-brand { border-color: var(--brand); }
+  .text-brand { color: var(--brand); }
+  .bg-brand-muted { background-color: var(--brand-muted); }
+}
+
+@layer components {
+  .panel {
+    border: 1px solid var(--border-light);
+    background: var(--surface-primary);
+  }
+
+  .btn {
+    cursor: pointer;
+    border: none;
+    outline: none;
+  }
+
+  .btn-primary {
+    background-color: var(--brand);
+    color: #fff;
+  }
+
+  .btn-primary:hover:not(:disabled) {
+    background-color: var(--brand-hover);
+  }
+
+  .btn-neutral {
+    background-color: var(--surface-secondary);
+    border: 1px solid var(--border-light);
+    color: var(--text-primary);
+  }
+
+  .btn-neutral:hover:not(:disabled) {
+    background-color: var(--surface-tertiary);
+  }
+
+  .input {
+    width: 100%;
+    border: 1px solid var(--border-light);
+    background: var(--surface-secondary);
+    border-radius: 0.5rem;
+    padding: 0.625rem 0.75rem;
+    color: var(--text-primary);
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+  }
+
+  .input:focus {
+    outline: 2px solid rgba(16, 163, 127, 0.35);
+    outline-offset: 0;
+    border-color: rgba(16, 163, 127, 0.45);
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    border-radius: 0.25rem;
+    padding: 0.125rem 0.5rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+  }
+
+  .badge-success {
+    background: var(--brand-muted);
+    color: #6ee7b7;
+  }
+
+  .badge-muted {
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-secondary);
+  }
+
+  .badge-danger {
+    background: rgba(239, 68, 68, 0.15);
+    color: #fca5a5;
+  }
+
+  .checkbox-theme {
+    appearance: none;
+    width: 1rem;
+    height: 1rem;
+    flex-shrink: 0;
+    cursor: pointer;
+    border: 1px solid var(--border-medium);
+    border-radius: 0.3rem;
+    background: var(--surface-tertiary);
+    transition: background-color 0.15s, border-color 0.15s, box-shadow 0.15s;
+  }
+
+  .checkbox-theme:hover:not(:disabled) {
+    border-color: rgba(16, 163, 127, 0.45);
+  }
+
+  .checkbox-theme:checked {
+    border-color: var(--brand);
+    background-color: var(--brand);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='M3.5 8.5L6.5 11.5L12.5 4.5' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-size: 0.75rem;
+    background-position: center;
+    background-repeat: no-repeat;
+  }
+
+  .checkbox-theme:focus-visible {
+    outline: 2px solid rgba(16, 163, 127, 0.35);
+    outline-offset: 2px;
+  }
+
+  .list-item-active {
+    border: 1px solid rgba(16, 163, 127, 0.35);
+    background: var(--surface-secondary);
+    box-shadow: inset 3px 0 0 0 var(--brand);
+  }
+
+  .toast-popup {
+    animation: toast-slide-in 0.24s cubic-bezier(0.175, 0.885, 0.32, 1.175) both;
+  }
+}
+
+@keyframes toast-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

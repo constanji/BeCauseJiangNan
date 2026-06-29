@@ -1,0 +1,6 @@
+.env
+*.tar
+*.tar.gz
+data/*
+!data/.gitkeep
+.DS_Store
