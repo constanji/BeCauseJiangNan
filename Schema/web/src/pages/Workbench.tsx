@@ -28,9 +28,26 @@ import {
   type TableTimeoutMinutes,
   type WorkbenchGenJob,
 } from '../lib/workbenchGenJob';
+import {
+  countTablesByCategory,
+  getTableCategory,
+  loadTableOutcomes,
+  mergeTableOutcomes,
+  saveTableOutcomes,
+  type TableListFilter,
+  type TableOutcome,
+} from '../lib/workbenchTableOutcomes';
 import SchemaViewer from './SchemaViewer';
 
 type SkippedTable = SkippedTableRecord;
+
+const TABLE_LIST_FILTERS: Array<{ id: TableListFilter; label: string }> = [
+  { id: 'all', label: '全览' },
+  { id: 'ungenerated', label: '未生成' },
+  { id: 'empty', label: '空表' },
+  { id: 'failed', label: '失败' },
+  { id: 'completed', label: '已完成' },
+];
 
 const TABLE_TIMEOUT_OPTIONS: Array<{ value: TableTimeoutMinutes; label: string }> = [
   { value: 0, label: '不限制' },
@@ -82,7 +99,8 @@ export default function Workbench() {
   const [refreshingSchema, setRefreshingSchema] = React.useState(false);
   const [tables, setTables] = React.useState<string[]>([]);
   const [search, setSearch] = React.useState('');
-  const [showUngeneratedOnly, setShowUngeneratedOnly] = React.useState(false);
+  const [tableListFilter, setTableListFilter] = React.useState<TableListFilter>('all');
+  const [tableOutcomes, setTableOutcomes] = React.useState<Record<string, TableOutcome>>({});
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
   const [generated, setGenerated] = React.useState<any[]>([]);
   const [sampleLimit, setSampleLimit] = React.useState(5);
@@ -148,7 +166,8 @@ export default function Workbench() {
     setSchemaPickerOpen(false);
     setTables([]);
     setGenerated([]);
-    setShowUngeneratedOnly(false);
+    setTableListFilter('all');
+    setTableOutcomes({});
     setError(null);
 
     const local = loadWorkbenchCatalog(id);
@@ -184,6 +203,29 @@ export default function Workbench() {
   }, [id]);
 
   React.useEffect(() => {
+    if (!schemaName) {
+      setTableOutcomes({});
+      setTableListFilter('all');
+      return;
+    }
+    setTableOutcomes(loadTableOutcomes(id, schemaName));
+    setTableListFilter('all');
+  }, [id, schemaName]);
+
+  React.useEffect(() => {
+    if (!interruptedJob || !schemaName || interruptedJob.schemaName !== schemaName) return;
+    setTableOutcomes((prev) => {
+      const next = mergeTableOutcomes(
+        prev,
+        interruptedJob.failedTables || [],
+        interruptedJob.completedTables || [],
+      );
+      saveTableOutcomes(id, schemaName, next);
+      return next;
+    });
+  }, [interruptedJob, schemaName, id]);
+
+  React.useEffect(() => {
     if (!schemasReady || schemas.length === 0) return;
     const current = schemas.find((s) => s.schemaName === schemaName);
     if (current && !schemaHasTables(current)) {
@@ -195,13 +237,21 @@ export default function Workbench() {
     }
   }, [schemasReady, schemas, schemaName, id]);
 
-  const applyTablesSelection = React.useCallback((list: string[], genRows: any[]) => {
+  const applyTablesSelection = React.useCallback((
+    list: string[],
+    genRows: any[],
+    sn: string,
+    outcomes?: Record<string, TableOutcome>,
+  ) => {
     setTables(list);
     setGenerated(genRows || []);
-    const cached = new Set((genRows || []).map((g: any) => g.table_name || g.tableName));
-    const ungenerated = list.filter((t) => !cached.has(t));
-    setSelected(new Set(ungenerated.length > 0 ? ungenerated : list));
-  }, []);
+    const generatedSet = new Set((genRows || []).map((g: any) => g.table_name || g.tableName));
+    const resolvedOutcomes = outcomes ?? loadTableOutcomes(id, sn);
+    const selectable = list.filter(
+      (t) => getTableCategory(t, generatedSet, resolvedOutcomes) === 'ungenerated',
+    );
+    setSelected(new Set(selectable));
+  }, [id]);
 
   React.useEffect(() => {
     if (!schemasReady || !schemaName) return;
@@ -214,7 +264,7 @@ export default function Workbench() {
     const useLocalTables = Array.isArray(cachedTables);
 
     if (useLocalTables) {
-      applyTablesSelection(cachedTables, []);
+      applyTablesSelection(cachedTables, [], schemaName);
     }
 
     Promise.all([api.listTables(id, schemaName, 'auto'), refreshGenerated(schemaName)])
@@ -222,7 +272,7 @@ export default function Workbench() {
         if (seq !== tablesLoadSeq.current) return;
         if (!tablesRes.success) throw new Error(tablesRes.error || '加载表失败');
         const list = ((tablesRes.data || []) as string[]).slice().sort();
-        applyTablesSelection(list, genRows || []);
+        applyTablesSelection(list, genRows || [], schemaName);
         patchWorkbenchCatalog(id, {
           tablesBySchema: { [schemaName]: list },
           lastSchemaName: schemaName,
@@ -254,7 +304,7 @@ export default function Workbench() {
       setCatalogFetchedAt(fetchedAt);
       setSchemaName(resolvedSchema);
       const genRows = await refreshGenerated(resolvedSchema);
-      applyTablesSelection(tablesList, genRows || []);
+      applyTablesSelection(tablesList, genRows || [], resolvedSchema);
       patchWorkbenchCatalog(id, {
         schemas: list,
         fetchedAt,
@@ -284,7 +334,7 @@ export default function Workbench() {
       if (!r.success) throw new Error(r.error || '刷新 Schema 失败');
       const list = ((r.data || []) as string[]).slice().sort();
       const genRows = await refreshGenerated(schemaName);
-      applyTablesSelection(list, genRows || []);
+      applyTablesSelection(list, genRows || [], schemaName);
       patchWorkbenchCatalog(id, {
         tablesBySchema: { [schemaName]: list },
         lastSchemaName: schemaName,
@@ -303,7 +353,7 @@ export default function Workbench() {
       return;
     }
     setSchemaName(name);
-    setShowUngeneratedOnly(false);
+    setTableListFilter('all');
     setSchemaSearch('');
     setSchemaPickerOpen(false);
     patchWorkbenchCatalog(id, { lastSchemaName: name });
@@ -356,14 +406,16 @@ export default function Workbench() {
   );
   const visibleTables = React.useMemo(() => {
     return tables.filter((t) => {
-      if (showUngeneratedOnly && generatedSet.has(t)) return false;
-      return matchesTableSearch(t);
+      if (!matchesTableSearch(t)) return false;
+      if (tableListFilter === 'all') return true;
+      return getTableCategory(t, generatedSet, tableOutcomes) === tableListFilter;
     });
-  }, [tables, showUngeneratedOnly, generatedSet, matchesTableSearch]);
-  const ungeneratedCount = React.useMemo(
-    () => tables.filter((t) => !generatedSet.has(t)).length,
-    [tables, generatedSet],
+  }, [tables, tableListFilter, generatedSet, tableOutcomes, matchesTableSearch]);
+  const tableCategoryCounts = React.useMemo(
+    () => countTablesByCategory(tables, generatedSet, tableOutcomes),
+    [tables, generatedSet, tableOutcomes],
   );
+  const tableListFilterLabel = TABLE_LIST_FILTERS.find((f) => f.id === tableListFilter)?.label || '全览';
   const schemaSearchNeedle = schemaSearch.trim().toLowerCase();
   const schemasWithTables = React.useMemo(() => usableSchemas(schemas), [schemas]);
   const filteredSchemas = React.useMemo(() => {
@@ -555,6 +607,11 @@ export default function Workbench() {
         ...prev,
         ...buildGenDetail(generatedCount, completedTables, skippedTables, fullTableNames.length, ''),
       } : null);
+      setTableOutcomes((prev) => {
+        const next = mergeTableOutcomes(prev, skippedTables, completedTables);
+        saveTableOutcomes(id, runSchemaName, next);
+        return next;
+      });
     };
 
     const mergeSlowFromSummary = (tableName: string, summary: any, elapsedMs: number) => {
@@ -956,43 +1013,57 @@ export default function Workbench() {
             <span className="text-xs text-text-secondary">
               {loadingTables
                 ? '加载中…'
-                : showUngeneratedOnly
-                  ? tableSearchNeedle
-                    ? `${visibleTables.length} / ${ungeneratedCount} 张（未生成 · 已筛选）`
-                    : `${visibleTables.length} / ${tables.length} 张（仅未生成）`
-                  : tableSearchNeedle
-                    ? `${visibleTables.length} / ${tables.length} 张（已筛选）`
-                    : `${tables.length} 张`}
+                : tableSearchNeedle
+                  ? `${visibleTables.length} / ${tableCategoryCounts[tableListFilter === 'all' ? 'all' : tableListFilter]} 张（${tableListFilterLabel} · 已筛选）`
+                  : tableListFilter === 'all'
+                    ? `${tables.length} 张`
+                    : `${visibleTables.length} / ${tables.length} 张（${tableListFilterLabel}）`}
             </span>
           </div>
           <input className="input mb-3" placeholder="搜索表名" value={search} onChange={(e) => setSearch(e.target.value)} />
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {TABLE_LIST_FILTERS.map((filter) => (
+              <Button
+                key={filter.id}
+                variant="neutral"
+                className={cn(
+                  'px-2 py-1 text-xs',
+                  tableListFilter === filter.id && 'border-brand text-brand',
+                )}
+                disabled={controlsLocked}
+                onClick={() => {
+                  setTableListFilter(filter.id);
+                  if (controlsLocked || filter.id === 'all' || filter.id === 'completed') return;
+                  setSelected(new Set(
+                    tables.filter((t) => (
+                      matchesTableSearch(t) && getTableCategory(t, generatedSet, tableOutcomes) === filter.id
+                    )),
+                  ));
+                }}
+              >
+                {filter.label}
+                <span className="ml-1 text-text-tertiary">{tableCategoryCounts[filter.id]}</span>
+              </Button>
+            ))}
+          </div>
           <div className="mb-3 flex gap-2">
             <Button
               variant="neutral"
               className="px-2 py-1 text-xs"
               disabled={controlsLocked}
               onClick={() => {
-                setShowUngeneratedOnly(false);
+                setTableListFilter('all');
                 setSelected(new Set(tables.filter(matchesTableSearch)));
               }}
             >
               全选
             </Button>
-            <Button
-              variant="neutral"
-              className={cn('px-2 py-1 text-xs', showUngeneratedOnly && 'border-brand text-brand')}
-              disabled={controlsLocked}
-              onClick={() => {
-                setShowUngeneratedOnly(true);
-                setSelected(new Set(tables.filter((t) => !generatedSet.has(t) && matchesTableSearch(t))));
-              }}
-            >
-              仅未生成
-            </Button>
             <Button variant="neutral" className="px-2 py-1 text-xs" disabled={controlsLocked} onClick={() => setSelected(new Set())}>清空</Button>
           </div>
           <div className="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-y-contain text-sm text-text-primary">
-            {visibleTables.map((t) => (
+            {visibleTables.map((t) => {
+              const category = getTableCategory(t, generatedSet, tableOutcomes);
+              return (
               <label key={t} className="flex items-center gap-2">
                 <input
                   type="checkbox"
@@ -1006,20 +1077,27 @@ export default function Workbench() {
                   })}
                 />
                 <span className="truncate">{t}</span>
-                {generatedSet.has(t) && <span className="ml-auto text-xs text-brand">✓</span>}
+                {category === 'completed' && <span className="ml-auto text-xs text-brand">✓</span>}
+                {category === 'empty' && (
+                  <span className="ml-auto text-xs text-text-tertiary" title={tableOutcomes[t]?.error || '空表'}>空</span>
+                )}
+                {category === 'failed' && (
+                  <span className="ml-auto text-xs text-red-400" title={tableOutcomes[t]?.error || '生成失败'}>失败</span>
+                )}
               </label>
-            ))}
+              );
+            })}
             {!loadingTables && visibleTables.length === 0 && (
               <div className="py-6 text-center text-text-tertiary">
-                {showUngeneratedOnly ? '暂无未生成的表' : '无匹配表'}
+                {tableListFilter === 'all' ? '无匹配表' : `暂无${tableListFilterLabel}表`}
               </div>
             )}
           </div>
         </div>
 
-        <div className="flex h-[39rem] flex-col rounded-lg border border-border-light bg-surface-primary p-4">
+        <div className="flex h-[39rem] flex-col overflow-hidden rounded-lg border border-border-light bg-surface-primary p-4">
           <div className="mb-3 shrink-0 font-medium text-text-primary">生成 LightSchema</div>
-          <div className="flex min-h-0 flex-1 flex-col gap-3">
+          <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
             <div className="shrink-0 space-y-3">
             <label className="block text-sm text-text-secondary">
               采样数量
@@ -1093,6 +1171,7 @@ export default function Workbench() {
               </Button>
             </div>
             </div>
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-y-contain">
             {(generating || genDetail) && (
               <div className="shrink-0 space-y-2.5 rounded-md border border-border-light bg-surface-secondary px-3 py-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1197,7 +1276,7 @@ export default function Workbench() {
               </div>
             )}
             {(slowTables.length > 0 || showSlowTables) && (
-              <div className="min-h-0 shrink-0 rounded-md border border-amber-500/30 bg-amber-950/20 px-3 py-2">
+              <div className="shrink-0 rounded-md border border-amber-500/30 bg-amber-950/20 px-3 py-2">
                 <button
                   type="button"
                   className="flex w-full items-center justify-between text-left text-xs font-medium text-amber-100"
@@ -1222,7 +1301,8 @@ export default function Workbench() {
                 )}
               </div>
             )}
-            <p className="mt-auto shrink-0 border-t border-border-light pt-3 text-xs leading-relaxed text-text-tertiary">
+            </div>
+            <p className="shrink-0 border-t border-border-light pt-3 text-xs leading-relaxed text-text-tertiary">
               「跳过当前表」仅放弃等待并继续下一张，服务端 JDBC 查询可能仍在后台执行直至超时；连续跳过多张慢表可能短暂堆积并发。
               「终止生成」在当前表完成后停止整批。
               {tableTimeoutMinutes > 0 ? ` 单表超过 ${tableTimeoutMinutes} 分钟将自动跳过。` : ''}

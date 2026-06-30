@@ -1940,7 +1940,7 @@ export default function DataSourcePreprocessing({
 
   const handleDeleteCellTable = async (tableName: string): Promise<boolean> => {
     try {
-      const res = await (dataService as any).deleteCellsByTable(dataSourceId, tableName);
+      const res = await dataService.deleteCellsByTable(dataSourceId, tableName);
       if (!res?.success) {
         showToast({ message: `删除失败: ${res?.error || '未知错误'}`, status: 'error' });
         return false;
