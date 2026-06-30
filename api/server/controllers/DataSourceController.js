@@ -1609,9 +1609,12 @@ async function deleteLightSchemaHandler(req, res) {
     }
 
     const { vectorDB } = await getSharedServices();
-    await vectorDB.deleteLightSchemas(String(dataSource._id), [tableName]);
-    logger.info(`[deleteLightSchemaHandler] Deleted light schema for table: ${tableName}, datasource: ${id}`);
-    return res.json({ success: true, tableName });
+    const deletedCount = await vectorDB.deleteLightSchemas(String(dataSource._id), [tableName]);
+    if (deletedCount === 0) {
+      return res.status(404).json({ success: false, error: `未找到表 ${tableName} 的 Light Schema`, deletedCount: 0 });
+    }
+    logger.info(`[deleteLightSchemaHandler] Deleted light schema for table: ${tableName}, datasource: ${id}, rows: ${deletedCount}`);
+    return res.json({ success: true, tableName, deletedCount });
   } catch (error) {
     logger.error('[deleteLightSchemaHandler] Error:', error.message);
     return res.status(500).json({ success: false, error: error.message || '删除 Light Schema 失败' });
@@ -1805,9 +1808,12 @@ async function deleteCellsByTableHandler(req, res) {
     }
 
     const { vectorDB } = await getSharedServices();
-    await vectorDB.deleteCells(String(dataSource._id), [tableName]);
-    logger.info(`[deleteCellsByTableHandler] Deleted cell vectors for table: ${tableName}, datasource: ${id}`);
-    return res.json({ success: true, tableName });
+    const deletedCount = await vectorDB.deleteCells(String(dataSource._id), [tableName]);
+    if (deletedCount === 0) {
+      return res.status(404).json({ success: false, error: `未找到表 ${tableName} 的 Cell 向量`, deletedCount: 0 });
+    }
+    logger.info(`[deleteCellsByTableHandler] Deleted cell vectors for table: ${tableName}, datasource: ${id}, rows: ${deletedCount}`);
+    return res.json({ success: true, tableName, deletedCount });
   } catch (error) {
     logger.error('[deleteCellsByTableHandler] Error:', error.message);
     return res.status(500).json({ success: false, error: error.message || '删除 Cell 向量失败' });

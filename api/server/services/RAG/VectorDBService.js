@@ -776,17 +776,19 @@ class VectorDBService {
    */
   async deleteLightSchemas(datasourceId, tableNames = null) {
     if (!this.initialized) await this.initialize();
+    let result;
     if (tableNames && tableNames.length > 0) {
-      await this.pool.query(
+      result = await this.pool.query(
         `DELETE FROM light_schema_vectors WHERE datasource_id = $1 AND table_name = ANY($2)`,
         [datasourceId, tableNames],
       );
     } else {
-      await this.pool.query(
+      result = await this.pool.query(
         `DELETE FROM light_schema_vectors WHERE datasource_id = $1`,
         [datasourceId],
       );
     }
+    return result.rowCount ?? 0;
   }
 
   /**
@@ -886,17 +888,19 @@ class VectorDBService {
    */
   async deleteCells(datasourceId, tableNames = null) {
     if (!this.initialized) await this.initialize();
+    let result;
     if (tableNames && tableNames.length > 0) {
-      await this.pool.query(
+      result = await this.pool.query(
         `DELETE FROM cell_vectors WHERE datasource_id = $1 AND table_name = ANY($2)`,
         [datasourceId, tableNames],
       );
     } else {
-      await this.pool.query(
+      result = await this.pool.query(
         `DELETE FROM cell_vectors WHERE datasource_id = $1`,
         [datasourceId],
       );
     }
+    return result.rowCount ?? 0;
   }
 
   /**

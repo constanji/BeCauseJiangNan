@@ -496,16 +496,20 @@ function CellVectorViewer({
     initialAppliedRef.current = true;
   }, [initialSelectedTable, tableGroups]);
 
-  // 过滤后当前表不存在时，回退到第一张表
+  // 过滤后当前表不存在时，回退（有 tableSearch 时优先选中仍在筛选内的表）
   useEffect(() => {
     if (tableGroups.length === 0) {
       setSelectedTable(null);
       return;
     }
-    if (!selectedTable || !tableGroups.some((g) => g.tableName === selectedTable)) {
-      setSelectedTable(tableGroups[0].tableName);
-    }
-  }, [tableGroups, selectedTable]);
+    if (selectedTable && tableGroups.some((g) => g.tableName === selectedTable)) return;
+
+    const q = tableSearch.trim().toLowerCase();
+    const inFilter = q
+      ? tableGroups.filter((g) => g.tableName.toLowerCase().includes(q))
+      : tableGroups;
+    setSelectedTable(inFilter[0]?.tableName ?? tableGroups[0].tableName);
+  }, [tableGroups, selectedTable, tableSearch]);
 
   // 选中列时同步当前表
   useEffect(() => {
@@ -569,14 +573,7 @@ function CellVectorViewer({
     if (!window.confirm(`确定删除「${tableName}」的全部 Cell 向量吗？此操作无法撤销。`)) return;
     setDeletingTable(tableName);
     try {
-      const ok = await onDeleteTable(tableName);
-      if (ok) {
-        if (selectedTable === tableName) {
-          const remaining = tableGroups.filter((g) => g.tableName !== tableName);
-          setSelectedTable(remaining[0]?.tableName ?? null);
-          setSelectedKey(null);
-        }
-      }
+      await onDeleteTable(tableName);
     } finally {
       setDeletingTable(null);
     }
@@ -743,7 +740,10 @@ function CellVectorViewer({
                       </button>
                       <button
                         type="button"
-                        onClick={() => handleDeleteTable(group.tableName)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteTable(group.tableName);
+                        }}
                         disabled={deletingTable === group.tableName}
                         title={`删除 ${group.tableName}`}
                         aria-label={`删除 ${group.tableName}`}
@@ -1051,12 +1051,20 @@ function SchemaViewer({
     initialAppliedRef.current = true;
   }, [initialSelectedTable, schemas]);
 
-  // 表被删除后，若当前选中已不存在则回退到第一张
+  // 表被删除后，若当前选中已不存在则回退（有搜索词时优先选中仍在筛选内的表）
   useEffect(() => {
-    if (schemas.length > 0 && selected && !schemas.some((s) => s.tableName === selected)) {
-      setSelected(schemas[0]?.tableName ?? '');
+    if (schemas.length === 0) {
+      if (selected) setSelected('');
+      return;
     }
-  }, [schemas, selected]);
+    if (selected && schemas.some((s) => s.tableName === selected)) return;
+
+    const q = search.trim().toLowerCase();
+    const inFilter = q
+      ? schemas.filter((s) => s.tableName.toLowerCase().includes(q))
+      : schemas;
+    setSelected(inFilter[0]?.tableName ?? schemas[0]?.tableName ?? '');
+  }, [schemas, selected, search]);
 
   const current = schemas.find((s) => s.tableName === selected) ?? null;
 
@@ -1115,11 +1123,7 @@ function SchemaViewer({
     if (!window.confirm(`确定删除「${tableName}」的 Light Schema 吗？此操作无法撤销。`)) return;
     setDeletingTable(tableName);
     try {
-      const ok = await onDeleteTable(tableName);
-      if (ok && selected === tableName) {
-        const remaining = schemas.filter((s) => s.tableName !== tableName);
-        setSelected(remaining[0]?.tableName ?? '');
-      }
+      await onDeleteTable(tableName);
     } finally {
       setDeletingTable(null);
     }
@@ -1251,7 +1255,10 @@ function SchemaViewer({
                       </button>
                       <button
                         type="button"
-                        onClick={() => handleDelete(s.tableName)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDelete(s.tableName);
+                        }}
                         disabled={deletingTable === s.tableName}
                         title={`删除 ${s.tableName}`}
                         aria-label={`删除 ${s.tableName}`}
@@ -1564,6 +1571,9 @@ export default function DataSourcePreprocessing({
   const [loadingCellEntries, setLoadingCellEntries] = useState(false);
   const [savingCellEntry, setSavingCellEntry] = useState(false);
 
+  const schemasLoadSeq = useRef(0);
+  const cellsLoadSeq = useRef(0);
+
   const cellTableNames = useMemo(
     () => [...new Set(cellEntries.map((e) => e.tableName))].sort((a, b) => a.localeCompare(b, 'zh-CN')),
     [cellEntries],
@@ -1618,28 +1628,34 @@ export default function DataSourcePreprocessing({
   };
 
   const fetchSchemas = async () => {
+    const seq = ++schemasLoadSeq.current;
     setLoadingSchemas(true);
     try {
       const res = await (dataService as any).getLightSchemas(dataSourceId);
+      if (seq !== schemasLoadSeq.current) return;
       if (res?.success) setSchemas(res.data || []);
     } catch (_) {
       // 静默
     } finally {
-      setLoadingSchemas(false);
+      if (seq === schemasLoadSeq.current) setLoadingSchemas(false);
     }
   };
 
   const fetchCellEntries = async () => {
+    const seq = ++cellsLoadSeq.current;
     setLoadingCellEntries(true);
     try {
       const res = await (dataService as any).getCells(dataSourceId, { limit: 2000 });
+      if (seq !== cellsLoadSeq.current) return;
       if (res?.success) {
         setCellEntries(res.data || []);
       }
     } catch (err: any) {
-      showToast({ message: `加载 Cell 向量结果失败: ${err?.message || err}`, status: 'error' });
+      if (seq === cellsLoadSeq.current) {
+        showToast({ message: `加载 Cell 向量结果失败: ${err?.message || err}`, status: 'error' });
+      }
     } finally {
-      setLoadingCellEntries(false);
+      if (seq === cellsLoadSeq.current) setLoadingCellEntries(false);
     }
   };
 
@@ -1653,12 +1669,14 @@ export default function DataSourcePreprocessing({
   const selectAll = () => setSelectedTables(new Set(allTables));
 
   useEffect(() => {
+    const schemasSeq = ++schemasLoadSeq.current;
     // 先拉 schema 缓存，再用缓存集合初始化选表默认值
     (async () => {
       setLoadingSchemas(true);
       let cached = new Set<string>();
       try {
         const res = await (dataService as any).getLightSchemas(dataSourceId);
+        if (schemasSeq !== schemasLoadSeq.current) return;
         if (res?.success) {
           const list: LightSchemaEntry[] = res.data || [];
           setSchemas(list);
@@ -1667,10 +1685,13 @@ export default function DataSourcePreprocessing({
       } catch (_) {
         // 静默
       } finally {
-        setLoadingSchemas(false);
+        if (schemasSeq === schemasLoadSeq.current) setLoadingSchemas(false);
       }
+      if (schemasSeq !== schemasLoadSeq.current) return;
       await fetchCellEntries();
+      if (schemasSeq !== schemasLoadSeq.current) return;
       const schemaName = await fetchDbSchemas();
+      if (schemasSeq !== schemasLoadSeq.current) return;
       await fetchTables(cached, schemaName);
     })();
   }, [dataSourceId]);
@@ -1738,17 +1759,23 @@ export default function DataSourcePreprocessing({
   const handleDeleteSchema = async (tableName: string): Promise<boolean> => {
     try {
       const res = await (dataService as any).deleteLightSchema(dataSourceId, tableName);
-      if (res?.success) {
-        setSchemas((prev) => {
-          const next = prev.filter((s) => s.tableName !== tableName);
-          if (next.length === 0) setView('main');
-          return next;
-        });
-        showToast({ message: `已删除 ${tableName} 的 Light Schema`, status: 'success' });
-        return true;
+      if (!res?.success) {
+        showToast({ message: `删除失败: ${res?.error || '未知错误'}`, status: 'error' });
+        return false;
       }
-      showToast({ message: `删除失败: ${res?.error || '未知错误'}`, status: 'error' });
-      return false;
+
+      // 作废进行中的列表拉取，避免覆盖本次删除
+      schemasLoadSeq.current += 1;
+      setSchemas((prev) => {
+        const next = prev.filter((s) => s.tableName !== tableName);
+        if (next.length === 0) setView('main');
+        return next;
+      });
+      if (schemaViewerTable === tableName) setSchemaViewerTable(null);
+
+      await fetchSchemas();
+      showToast({ message: `已删除 ${tableName} 的 Light Schema`, status: 'success' });
+      return true;
     } catch (err: any) {
       showToast({ message: `删除 Light Schema 失败: ${err?.message || err}`, status: 'error' });
       return false;
@@ -1872,17 +1899,22 @@ export default function DataSourcePreprocessing({
   const handleDeleteCellTable = async (tableName: string): Promise<boolean> => {
     try {
       const res = await (dataService as any).deleteCellsByTable(dataSourceId, tableName);
-      if (res?.success) {
-        setCellEntries((prev) => {
-          const remaining = prev.filter((e) => e.tableName !== tableName);
-          if (remaining.length === 0) setView('main');
-          return remaining;
-        });
-        showToast({ message: `已删除 ${tableName} 的全部 Cell 向量`, status: 'success' });
-        return true;
+      if (!res?.success) {
+        showToast({ message: `删除失败: ${res?.error || '未知错误'}`, status: 'error' });
+        return false;
       }
-      showToast({ message: `删除失败: ${res?.error || '未知错误'}`, status: 'error' });
-      return false;
+
+      cellsLoadSeq.current += 1;
+      setCellEntries((prev) => {
+        const remaining = prev.filter((e) => e.tableName !== tableName);
+        if (remaining.length === 0) setView('main');
+        return remaining;
+      });
+      if (cellViewerTable === tableName) setCellViewerTable(null);
+
+      await fetchCellEntries();
+      showToast({ message: `已删除 ${tableName} 的全部 Cell 向量`, status: 'success' });
+      return true;
     } catch (err: any) {
       showToast({ message: `删除 Cell 向量失败: ${err?.message || err}`, status: 'error' });
       return false;

@@ -24,6 +24,7 @@ import { useToast } from '../context/ToastProvider';
 import { buildDataSourceGroups, buildSchemaGroups } from '../lib/catalogGroups';
 import { cn } from '../lib/cn';
 import { parseLightSchemaContent } from '../lib/lightSchemaTypes';
+import { flattenReviewSidebarTables, pickNextCatalogId } from '../lib/reviewNav';
 import { CatalogDetail, CatalogItem, ExportCartItem, Tag } from '../lib/uiState';
 
 function toCartItem(item: CatalogItem): ExportCartItem {
@@ -144,7 +145,7 @@ function ReviewSchemaGroup({
 }
 
 export default function ReviewPage({ cartOnly = false }: { cartOnly?: boolean }) {
-  const { state, setReview, isInCart, toggleCart } = useUiState();
+  const { state, setReview, isInCart, toggleCart, removeFromCart } = useUiState();
   const { columnSearchQuery, hideInCart } = state.review;
   const cartCount = state.exportCart.items.length;
   const { showToast } = useToast();
@@ -207,6 +208,11 @@ export default function ReviewPage({ cartOnly = false }: { cartOnly?: boolean })
     return items.filter((item) => !hideInCart || !isInCart(item.id));
   }, [items, cartOnly, hideInCart, isInCart]);
 
+  const showDataSourceInSchema = !dataSourceId;
+  const schemaGroups = React.useMemo(() => buildSchemaGroups(visibleItems), [visibleItems]);
+  const dataSourceGroups = React.useMemo(() => buildDataSourceGroups(visibleItems), [visibleItems]);
+  const nestedSidebar = showDataSourceInSchema && dataSourceGroups.length > 1;
+
   React.useEffect(() => {
     if (!cartOnly) return;
     setItems((prev) => prev.filter((item) => isInCart(item.id)));
@@ -214,8 +220,9 @@ export default function ReviewPage({ cartOnly = false }: { cartOnly?: boolean })
 
   React.useEffect(() => {
     if (selectedId != null && visibleItems.some((row) => row.id === selectedId)) return;
-    setSelectedId(visibleItems[0]?.id ?? null);
-  }, [visibleItems, selectedId]);
+    const ordered = flattenReviewSidebarTables(visibleItems, tableSearch, nestedSidebar);
+    setSelectedId(ordered[0]?.id ?? visibleItems[0]?.id ?? null);
+  }, [visibleItems, selectedId, tableSearch, nestedSidebar]);
 
   React.useEffect(() => {
     if (!columnSearchQuery.trim()) return;
@@ -242,9 +249,6 @@ export default function ReviewPage({ cartOnly = false }: { cartOnly?: boolean })
       .finally(() => setDetailLoading(false));
   }, [selectedId]);
 
-  const showDataSourceInSchema = !dataSourceId;
-  const schemaGroups = buildSchemaGroups(visibleItems);
-  const dataSourceGroups = buildDataSourceGroups(visibleItems);
   const parsed = detail ? parseLightSchemaContent(detail.content, detail.tableName) : null;
 
   const handleSave = async (content: NonNullable<ReturnType<typeof parseLightSchemaContent>>) => {
@@ -266,11 +270,16 @@ export default function ReviewPage({ cartOnly = false }: { cartOnly?: boolean })
 
   const handleDelete = async () => {
     if (!detail) throw new Error('未选择表');
-    const res = await api.deleteCatalogItem(detail.id);
+    const deletedId = detail.id;
+    const ordered = flattenReviewSidebarTables(visibleItems, tableSearch, nestedSidebar);
+    const nextId = pickNextCatalogId(ordered, deletedId);
+
+    const res = await api.deleteCatalogItem(deletedId);
     if (!res.success) throw new Error(res.error || '删除失败');
-    const remaining = items.filter((row) => row.id !== detail.id);
-    setItems(remaining);
-    setSelectedId(remaining[0]?.id ?? null);
+
+    if (isInCart(deletedId)) removeFromCart(deletedId);
+    setItems((prev) => prev.filter((row) => row.id !== deletedId));
+    setSelectedId(nextId);
   };
 
   const toggleGroup = (key: string) => {

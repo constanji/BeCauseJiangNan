@@ -97,7 +97,11 @@ export default function SchemaViewer({
     if (!res.success) throw new Error(res.error || '删除失败');
     const remaining = items.filter((row) => (row.table_name || row.tableName) !== currentTableName);
     setItems(remaining);
-    setCurrent(remaining[0] || null);
+    const q = search.trim().toLowerCase();
+    const inFilter = q
+      ? remaining.filter((row) => String(row.table_name || row.tableName).toLowerCase().includes(q))
+      : remaining;
+    setCurrent(inFilter[0] || remaining[0] || null);
     onSchemaChanged?.();
   };
 
