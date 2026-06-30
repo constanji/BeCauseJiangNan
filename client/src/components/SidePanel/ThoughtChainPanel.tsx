@@ -10,6 +10,7 @@ import { mapAttachments } from '~/utils/map';
 import { useLocalize } from '~/hooks';
 import MarkdownLite from '~/components/Chat/Messages/Content/MarkdownLite';
 import { ChartRenderer, extractChartDataFromToolOutput } from '~/components/Chat/Messages/Content/ChartRenderer';
+import { extractBecauseSkillsCommand } from '~/utils/toolCallDisplay';
 
 const { Text } = Typography;
 
@@ -137,14 +138,29 @@ function ToolCallDetailContent({
   domain,
   function_name,
   localize,
+  isLoading,
 }: {
   args: string;
   output?: string | null;
   domain: string | null;
   function_name: string;
   localize: any;
+  isLoading: boolean;
 }) {
   const hasOutput = output != null && output.length > 0;
+  const previewArgs = useMemo(() => {
+    if (!args) return '';
+    if (!isLoading) return args;
+    if (args.length <= 1200) return args;
+    return `${args.slice(0, 1200)}\n\n...`;
+  }, [args, isLoading]);
+
+  const previewOutput = useMemo(() => {
+    if (!output) return output;
+    if (!isLoading) return output;
+    if (output.length <= 1200) return output;
+    return `${output.slice(0, 1200)}\n\n...`;
+  }, [output, isLoading]);
 
   const chartData = useMemo(
     () => (typeof output === 'string' && output.length > 0 ? extractChartDataFromToolOutput(output) : null),
@@ -160,7 +176,7 @@ function ToolCallDetailContent({
               ? localize('com_assistants_domain_info', { 0: domain })
               : localize('com_assistants_function_use', { 0: function_name })}
           </Text>
-          <OptimizedCodeBlock text={args} />
+          <OptimizedCodeBlock text={previewArgs} />
         </div>
       )}
 
@@ -173,12 +189,12 @@ function ToolCallDetailContent({
         />
       )}
 
-      {hasOutput && !chartData && (
+      {hasOutput && !chartData && previewOutput && (
         <div className="w-full overflow-hidden" style={{ maxWidth: '100%' }}>
           <Text type="secondary" className="mb-1 block text-xs">
             {localize('com_ui_result')}
           </Text>
-          <OptimizedCodeBlock text={output!} />
+          <OptimizedCodeBlock text={previewOutput} />
         </div>
       )}
     </div>
@@ -233,19 +249,6 @@ function SidePanelToolCallItem({
     };
   }, [toolCall.name]);
 
-  // BeCauseSkills / BeCauseSkills2 子工具名称映射
-  const becauseSkillsCommandMap: Record<string, string> = {
-    'database-schema': '获取数据库Schema',
-    'intent-classification': '意图识别',
-    'rag-retrieval': 'RAG检索',
-    'sql-validation': 'SQL语句验证',
-    'sql-executor': 'SQL执行',
-    'result-analysis': '归因调查',
-    'chart-generation': '可视化图表生成',
-    'reranker': '结果重排序',
-    'fluctuation-attribution': '波动归因分析',
-  };
-
   // 解析工具参数，提取 command
   const parsedArgs = useMemo(() => {
     if (typeof toolCall.args === 'string') {
@@ -263,65 +266,9 @@ function SidePanelToolCallItem({
   // 获取子工具名称（如果是 because_skills / because_skills_2）
   const subToolName = useMemo(() => {
     if (isBeCauseSkills) {
-      // 方法1: 从解析后的参数中获取（优先）
-      if (parsedArgs && typeof parsedArgs === 'object' && parsedArgs !== null) {
-        if ('command' in parsedArgs) {
-          const command = parsedArgs.command as string;
-          if (command && typeof command === 'string' && command.length > 0) {
-            return becauseSkillsCommandMap[command] || command;
-          }
-        }
-      }
-
-      // 方法2: 直接从对象格式的 args 中提取
-      if (typeof toolCall.args === 'object' && toolCall.args !== null && !Array.isArray(toolCall.args)) {
-        if ('command' in toolCall.args) {
-          const command = (toolCall.args as any).command;
-          if (command && typeof command === 'string' && command.length > 0) {
-            return becauseSkillsCommandMap[command] || command;
-          }
-        }
-      }
-
-      // 方法3: 从原始字符串中提取 command（支持流式传输中的不完整JSON）
-      if (typeof toolCall.args === 'string' && toolCall.args.length > 0) {
-        // 方法1: 尝试匹配双引号格式 "command":"value"
-        let commandMatch = toolCall.args.match(/"command"\s*:\s*"([^"]+)"/);
-        if (commandMatch && commandMatch[1]) {
-          const command = commandMatch[1];
-          if (command && command.length > 0) {
-            return becauseSkillsCommandMap[command] || command;
-          }
-        }
-
-        // 方法2: 尝试匹配单引号格式 'command':'value' (不标准但可能遇到)
-        commandMatch = toolCall.args.match(/'command'\s*:\s*'([^']+)'/);
-        if (commandMatch && commandMatch[1]) {
-          const command = commandMatch[1];
-          if (command && command.length > 0) {
-            return becauseSkillsCommandMap[command] || command;
-          }
-        }
-
-        // 方法3: 尝试匹配不带引号的格式 "command":value (value可能是字符串或标识符)
-        commandMatch = toolCall.args.match(/"command"\s*:\s*([^,}\s]+)/);
-        if (commandMatch && commandMatch[1]) {
-          let command = commandMatch[1].replace(/^["']|["']$/g, ''); // 移除首尾引号
-          if (command && command.length > 0) {
-            return becauseSkillsCommandMap[command] || command;
-          }
-        }
-
-        // 方法4: 尝试部分匹配（流式传输中可能只有部分内容）
-        // 查找 "command" 后面的内容，即使JSON不完整
-        const partialMatch = toolCall.args.match(/"command"\s*:\s*"([^"]*)/);
-        if (partialMatch && partialMatch[1] && partialMatch[1].length > 0) {
-          const command = partialMatch[1];
-          // 只返回有效的命令（在映射表中或至少3个字符）
-          if (command.length >= 3) {
-            return becauseSkillsCommandMap[command] || command;
-          }
-        }
+      const command = extractBecauseSkillsCommand(parsedArgs) || extractBecauseSkillsCommand(toolCall.args);
+      if (command) {
+        return command;
       }
     }
     return null;
@@ -344,7 +291,7 @@ function SidePanelToolCallItem({
   const error =
     typeof toolCall.output === 'string' &&
     toolCall.output.toLowerCase().includes('error processing tool');
-  const isLoading = !hasOutput && isSubmitting;
+  const isLoading = !hasOutput && (isSubmitting || toolCall.progress == null || toolCall.progress < 1);
   const cancelled = !isSubmitting && !hasOutput && !error;
 
   // 获取状态 - ThoughtChain 支持 'success' | 'error' | 'loading' 等
@@ -371,55 +318,18 @@ function SidePanelToolCallItem({
   const getTitle = () => {
     // 如果是 because_skills/because_skills_2，优先使用子工具名称
     let displayName = subToolName;
-    
+
     // 如果 subToolName 为空，且是 because_skills/because_skills_2，尝试实时提取
     if (!displayName && isBeCauseSkills) {
-      // 方法1: 从解析后的对象中提取（优先）
-      if (parsedArgs && typeof parsedArgs === 'object' && parsedArgs !== null) {
-        if ('command' in parsedArgs) {
-          const command = parsedArgs.command as string;
-          if (command && typeof command === 'string' && command.length > 0) {
-            displayName = becauseSkillsCommandMap[command] || command;
-          }
-        }
-      }
-      
-      // 方法2: 从原始字符串中提取（流式传输中可能只有部分内容）
-      if (!displayName && typeof toolCall.args === 'string' && toolCall.args.length > 0) {
-        // 尝试多种格式匹配
-        let commandMatch = toolCall.args.match(/"command"\s*:\s*"([^"]+)"/);
-        if (!commandMatch) {
-          commandMatch = toolCall.args.match(/"command"\s*:\s*"([^"]*)/); // 部分匹配
-        }
-        if (!commandMatch) {
-          commandMatch = toolCall.args.match(/'command'\s*:\s*'([^']+)'/); // 单引号
-        }
-        if (!commandMatch) {
-          commandMatch = toolCall.args.match(/"command"\s*:\s*([^,}\s]+)/); // 无引号
-        }
-        
-        if (commandMatch && commandMatch[1]) {
-          let command = commandMatch[1].replace(/^["']|["']$/g, ''); // 移除首尾引号
-          if (command && command.length >= 3) { // 至少3个字符才认为是有效命令
-            displayName = becauseSkillsCommandMap[command] || command;
-          }
-        }
-      }
-      
-      // 方法3: 从对象格式的 args 中直接提取
-      if (!displayName && typeof toolCall.args === 'object' && toolCall.args !== null) {
-        if ('command' in toolCall.args) {
-          const command = (toolCall.args as any).command;
-          if (command && typeof command === 'string' && command.length > 0) {
-            displayName = becauseSkillsCommandMap[command] || command;
-          }
-        }
-      }
+      displayName =
+        extractBecauseSkillsCommand(parsedArgs) ||
+        extractBecauseSkillsCommand(toolCall.args) ||
+        null;
     }
-    
-    // 如果还是没有提取到，使用 function_name（但避免显示原始工具 key）
+
+    // 兜底：尽量显示函数名，避免回退成泛化文案
     if (!displayName) {
-      displayName = isBeCauseSkills ? null : function_name;
+      displayName = function_name || null;
     }
     
     if (isLoading) {
@@ -464,6 +374,7 @@ function SidePanelToolCallItem({
           domain={domain}
           function_name={function_name}
           localize={localize}
+          isLoading={status === 'loading'}
         />
       ) : undefined,
     },
@@ -785,4 +696,3 @@ const ThoughtChainPanel = memo(function ThoughtChainPanel({
 ThoughtChainPanel.displayName = 'ThoughtChainPanel';
 
 export default ThoughtChainPanel;
-

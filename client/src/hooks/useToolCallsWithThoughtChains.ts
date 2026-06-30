@@ -12,7 +12,7 @@ export function useToolCallsWithThoughtChains(): {
 } {
   const { getMessages } = useChatContext();
   const [toolCallsByMessage, setToolCallsByMessage] = useState<MessageToolCalls[]>([]);
-  const lastMessagesRef = useRef<string>('');
+  const lastMessagesHashRef = useRef<string>('');
   const lastToolCallsByMessageHashRef = useRef<string>('');
 
   // 用于检测工具调用的消息更新轮询
@@ -24,7 +24,7 @@ export function useToolCallsWithThoughtChains(): {
           if (toolCallsByMessage.length > 0) {
             setToolCallsByMessage([]);
             lastToolCallsByMessageHashRef.current = '';
-            lastMessagesRef.current = '';
+            lastMessagesHashRef.current = '';
           }
           return;
         }
@@ -36,15 +36,63 @@ export function useToolCallsWithThoughtChains(): {
             contentLength: m.content?.length || 0,
             lastContentType: m.content?.[m.content.length - 1]?.type,
             unfinished: m.unfinished,
+            contentSignature: m.content
+              ?.map((part: any) => {
+                if (!part) return null;
+                if (part.type !== 'tool_call' && part.type !== 'think' && part.type !== 'text') {
+                  return part.type;
+                }
+
+                const toolCall = part.tool_call ?? part.tool_call?.tool_call ?? null;
+                if (part.type === 'tool_call' && toolCall) {
+                  return {
+                    t: 'tool_call',
+                    id: toolCall.id ?? null,
+                    name: toolCall.name ?? null,
+                    argsLen:
+                      typeof toolCall.args === 'string'
+                        ? toolCall.args.length
+                        : toolCall.args && typeof toolCall.args === 'object'
+                          ? JSON.stringify(toolCall.args).length
+                          : 0,
+                    outputLen: typeof toolCall.output === 'string' ? toolCall.output.length : 0,
+                    progress: toolCall.progress ?? null,
+                  };
+                }
+
+                if (part.type === 'think') {
+                  return {
+                    t: 'think',
+                    textLen:
+                      typeof part.think === 'string'
+                        ? part.think.length
+                        : part.think?.value?.length ?? 0,
+                  };
+                }
+
+                if (part.type === 'text') {
+                  return {
+                    t: 'text',
+                    textLen:
+                      typeof part.text === 'string'
+                        ? part.text.length
+                        : part.text?.value?.length ?? 0,
+                    toolCallIds: part.tool_call_ids?.length ?? 0,
+                  };
+                }
+
+                return null;
+              })
+              .filter(Boolean),
           })),
         );
 
         // 如果消息没有变化，跳过解析
-        if (messagesHash === lastMessagesRef.current) {
+        if (messagesHash === lastMessagesHashRef.current) {
           return;
         }
 
-        lastMessagesRef.current = messagesHash;
+        lastMessagesHashRef.current = messagesHash;
 
         const extracted = extractToolCallsByMessage(messages);
 
@@ -53,21 +101,35 @@ export function useToolCallsWithThoughtChains(): {
           extracted.map((item) => ({
             messageId: item.messageId,
             messageIndex: item.messageIndex,
-            toolCount: item.toolCalls.length,
             isStreaming: item.isStreaming,
+            toolCalls: item.toolCalls.map((toolCall) => ({
+              id: toolCall.toolCall.id ?? null,
+              name: toolCall.toolCall.name ?? null,
+              argsLen:
+                typeof toolCall.toolCall.args === 'string'
+                  ? toolCall.toolCall.args.length
+                  : toolCall.toolCall.args && typeof toolCall.toolCall.args === 'object'
+                    ? JSON.stringify(toolCall.toolCall.args).length
+                    : 0,
+              outputLen:
+                typeof toolCall.toolCall.output === 'string' ? toolCall.toolCall.output.length : 0,
+              progress: toolCall.toolCall.progress ?? null,
+            })),
           })),
         );
 
-        if (extractedHash !== lastToolCallsByMessageHashRef.current) {
-          lastToolCallsByMessageHashRef.current = extractedHash;
-          setToolCallsByMessage(extracted);
+        if (extractedHash === lastToolCallsByMessageHashRef.current) {
+          return;
         }
+
+        lastToolCallsByMessageHashRef.current = extractedHash;
+        setToolCallsByMessage(extracted);
       } catch (error) {
         console.warn('Error extracting tool calls:', error);
         if (toolCallsByMessage.length > 0) {
           setToolCallsByMessage([]);
           lastToolCallsByMessageHashRef.current = '';
-          lastMessagesRef.current = '';
+          lastMessagesHashRef.current = '';
         }
       }
     };
@@ -85,4 +147,3 @@ export function useToolCallsWithThoughtChains(): {
     toolCallsByMessage,
   };
 }
-
