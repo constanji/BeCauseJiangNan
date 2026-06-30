@@ -1568,6 +1568,27 @@ async function getLightSchemasHandler(req, res) {
 }
 
 /**
+ * GET /data-sources/:id/cells/summary
+ * 按表聚合 Cell 向量统计（列表展示用，不受明细 LIMIT 影响）
+ */
+async function getCellSummaryHandler(req, res) {
+  const { id } = req.params;
+  try {
+    const dataSource = await getDataSourceById(id);
+    if (!dataSource) {
+      return res.status(404).json({ success: false, error: '数据源不存在' });
+    }
+
+    const { vectorDB } = await getSharedServices();
+    const summary = await vectorDB.getCellSummary(String(dataSource._id));
+    return res.json({ success: true, data: summary });
+  } catch (error) {
+    logger.error('[getCellSummaryHandler] Error:', error);
+    return res.status(500).json({ success: false, error: error.message || '查询 Cell 向量统计失败' });
+  }
+}
+
+/**
  * GET /data-sources/:id/cells
  * 查询已存储的 Cell 向量列表
  */
@@ -2025,6 +2046,7 @@ module.exports = {
   vectorizeCellsHandler,
   getLightSchemasHandler,
   getCellsHandler,
+  getCellSummaryHandler,
   deleteLightSchemaHandler,
   updateLightSchemaHandler,
   createCellHandler,

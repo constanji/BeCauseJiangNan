@@ -46,6 +46,7 @@ const {
   vectorizeCellsHandler,
   getLightSchemasHandler,
   getCellsHandler,
+  getCellSummaryHandler,
   deleteLightSchemaHandler,
   updateLightSchemaHandler,
   createCellHandler,
@@ -314,6 +315,7 @@ router.post('/data-sources/:id/generate-semantic-model', requireJwtAuth, checkAd
 router.post('/data-sources/:id/light-schema/generate', requireJwtAuth, checkAdmin, generateLightSchemaHandler);
 router.post('/data-sources/:id/cells/vectorize', requireJwtAuth, checkAdmin, vectorizeCellsHandler);
 router.get('/data-sources/:id/light-schema', requireJwtAuth, getLightSchemasHandler);
+router.get('/data-sources/:id/cells/summary', requireJwtAuth, getCellSummaryHandler);
 router.get('/data-sources/:id/cells', requireJwtAuth, getCellsHandler);
 router.post('/data-sources/:id/cells', requireJwtAuth, checkAdmin, createCellHandler);
 router.put('/data-sources/:id/cells/:cellId', requireJwtAuth, checkAdmin, updateCellHandler);

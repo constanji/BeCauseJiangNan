@@ -55,6 +55,19 @@ interface CellVectorEntry {
   createdAt: string;
 }
 
+interface CellTableSummary {
+  tableName: string;
+  valueCount: number;
+  columnCount: number;
+}
+
+interface CellSummary {
+  totalValues: number;
+  totalTables: number;
+  totalColumns: number;
+  tables: CellTableSummary[];
+}
+
 interface ColumnCellSummary {
   key: string;
   tableName: string;
@@ -435,11 +448,13 @@ function parsedToColDraft(col: LightSchemaColumn): ColDraft {
 function CellVectorViewer({
   entries,
   schemas,
+  tableSummaries,
   loading,
   saving,
   initialSelectedTable,
   onBack,
   onRefresh,
+  onEnsureTableLoaded,
   onCreate,
   onUpdate,
   onDelete,
@@ -447,11 +462,13 @@ function CellVectorViewer({
 }: {
   entries: CellVectorEntry[];
   schemas: LightSchemaEntry[];
+  tableSummaries?: CellTableSummary[];
   loading: boolean;
   saving: boolean;
   initialSelectedTable?: string;
   onBack: () => void;
   onRefresh: () => void;
+  onEnsureTableLoaded?: (tableName: string) => Promise<void>;
   onCreate: (payload: { tableName: string; columnName: string; cellValue: string }) => Promise<boolean>;
   onUpdate: (id: number, payload: { tableName: string; columnName: string; cellValue: string }) => Promise<boolean>;
   onDelete: (id: number) => Promise<boolean>;
@@ -484,7 +501,18 @@ function CellVectorViewer({
   });
 
   const columnRows = buildColumnSummaries(filteredEntries, columnMeta);
-  const tableGroups = useMemo(() => buildTableGroups(columnRows), [columnRows]);
+  const tableGroups = useMemo(() => {
+    if (tableSummaries && tableSummaries.length > 0) {
+      return tableSummaries
+        .map((summary) => ({
+          tableName: summary.tableName,
+          columns: columnRows.filter((row) => row.tableName === summary.tableName),
+          valueCount: summary.valueCount,
+        }))
+        .sort((a, b) => a.tableName.localeCompare(b.tableName, 'zh-CN'));
+    }
+    return buildTableGroups(columnRows);
+  }, [tableSummaries, columnRows]);
   const activeTable =
     selectedTable && tableGroups.some((g) => g.tableName === selectedTable)
       ? selectedTable
@@ -576,7 +604,10 @@ function CellVectorViewer({
 
   const resetCreateDraft = () => setDraft({ tableName: '', columnName: '', cellValue: '' });
 
-  const handleSelectTable = (tableName: string) => {
+  const handleSelectTable = async (tableName: string) => {
+    if (onEnsureTableLoaded) {
+      await onEnsureTableLoaded(tableName);
+    }
     setSelectedTable(tableName);
     if (selectedKey) {
       const row = columnRows.find((r) => r.key === selectedKey);
@@ -1598,20 +1629,16 @@ export default function DataSourcePreprocessing({
   const [vectorizing, setVectorizing] = useState(false);
   const [cellResult, setCellResult] = useState<{ count: number } | null>(null);
   const [cellEntries, setCellEntries] = useState<CellVectorEntry[]>([]);
+  const [cellSummary, setCellSummary] = useState<CellSummary | null>(null);
   const [loadingCellEntries, setLoadingCellEntries] = useState(false);
+  const [loadingCellSummary, setLoadingCellSummary] = useState(false);
   const [savingCellEntry, setSavingCellEntry] = useState(false);
 
   const schemasLoadSeq = useRef(0);
   const cellsLoadSeq = useRef(0);
 
-  const cellTableNames = useMemo(
-    () => [...new Set(cellEntries.map((e) => e.tableName))].sort((a, b) => a.localeCompare(b, 'zh-CN')),
-    [cellEntries],
-  );
-  const cellColumnCount = useMemo(
-    () => new Set(cellEntries.map((e) => `${e.tableName}::${e.columnName}`)).size,
-    [cellEntries],
-  );
+  const cellEntriesTruncated =
+    cellSummary != null && cellSummary.totalValues > cellEntries.length;
 
 
   const fetchTables = async (cachedSet?: Set<string>, schemaName = selectedSchemaName) => {
@@ -1676,15 +1703,44 @@ export default function DataSourcePreprocessing({
     return [];
   };
 
-  const fetchCellEntries = async (): Promise<CellVectorEntry[]> => {
+  const fetchCellSummary = async (): Promise<CellSummary | null> => {
+    setLoadingCellSummary(true);
+    try {
+      const res = await dataService.getCellSummary(dataSourceId);
+      if (res?.success && res.data) {
+        setCellSummary(res.data);
+        return res.data;
+      }
+    } catch (_) {
+      // 静默
+    } finally {
+      setLoadingCellSummary(false);
+    }
+    return null;
+  };
+
+  const fetchCellEntries = async (opts?: { tableName?: string; merge?: boolean }): Promise<CellVectorEntry[]> => {
     const seq = ++cellsLoadSeq.current;
     setLoadingCellEntries(true);
     try {
-      const res = await (dataService as any).getCells(dataSourceId, { limit: 2000 });
+      const res = await dataService.getCells(dataSourceId, {
+        tableName: opts?.tableName,
+        limit: 5000,
+      });
       if (seq !== cellsLoadSeq.current) return [];
       if (res?.success) {
         const list: CellVectorEntry[] = res.data || [];
-        setCellEntries(list);
+        if (opts?.merge && opts.tableName) {
+          setCellEntries((prev) => {
+            const others = prev.filter((e) => e.tableName !== opts.tableName);
+            return [...others, ...list].sort((a, b) => {
+              const t = a.tableName.localeCompare(b.tableName, 'zh-CN');
+              return t !== 0 ? t : a.columnName.localeCompare(b.columnName, 'zh-CN');
+            });
+          });
+        } else {
+          setCellEntries(list);
+        }
         return list;
       }
     } catch (err: any) {
@@ -1695,6 +1751,38 @@ export default function DataSourcePreprocessing({
       if (seq === cellsLoadSeq.current) setLoadingCellEntries(false);
     }
     return [];
+  };
+
+  const refreshCellData = async () => {
+    const seq = ++cellsLoadSeq.current;
+    setLoadingCellSummary(true);
+    setLoadingCellEntries(true);
+    try {
+      const [summaryRes, entriesRes] = await Promise.all([
+        dataService.getCellSummary(dataSourceId),
+        dataService.getCells(dataSourceId, { limit: 5000 }),
+      ]);
+      if (seq !== cellsLoadSeq.current) return;
+      if (summaryRes?.success && summaryRes.data) setCellSummary(summaryRes.data);
+      if (entriesRes?.success) setCellEntries(entriesRes.data || []);
+    } catch (err: any) {
+      if (seq === cellsLoadSeq.current) {
+        showToast({ message: `加载 Cell 向量结果失败: ${err?.message || err}`, status: 'error' });
+      }
+    } finally {
+      if (seq === cellsLoadSeq.current) {
+        setLoadingCellSummary(false);
+        setLoadingCellEntries(false);
+      }
+    }
+  };
+
+  const ensureCellTableLoaded = async (tableName: string) => {
+    const expected = cellSummary?.tables.find((t) => t.tableName === tableName)?.valueCount ?? 0;
+    const loaded = cellEntries.filter((e) => e.tableName === tableName).length;
+    if (expected > 0 && loaded < expected) {
+      await fetchCellEntries({ tableName, merge: true });
+    }
   };
 
   // 快捷：选所有未生成的表（增量模式）
@@ -1726,7 +1814,7 @@ export default function DataSourcePreprocessing({
         if (schemasSeq === schemasLoadSeq.current) setLoadingSchemas(false);
       }
       if (schemasSeq !== schemasLoadSeq.current) return;
-      await fetchCellEntries();
+      await refreshCellData();
       if (schemasSeq !== schemasLoadSeq.current) return;
       const schemaName = await fetchDbSchemas();
       if (schemasSeq !== schemasLoadSeq.current) return;
@@ -1858,7 +1946,7 @@ export default function DataSourcePreprocessing({
       if (res?.success) {
         setCellResult({ count: res.count });
         showToast({ message: `成功写入 ${res.count} 条 Cell 向量`, status: 'success' });
-        await fetchCellEntries();
+        await refreshCellData();
       } else {
         showToast({ message: `向量化失败: ${res?.error || '未知错误'}`, status: 'error' });
       }
@@ -1879,7 +1967,7 @@ export default function DataSourcePreprocessing({
       const res = await (dataService as any).createCell(dataSourceId, payload);
       if (res?.success) {
         showToast({ message: 'Cell 向量已新增', status: 'success' });
-        await fetchCellEntries();
+        await refreshCellData();
         return true;
       }
       showToast({ message: `新增失败: ${res?.error || '未知错误'}`, status: 'error' });
@@ -1905,7 +1993,7 @@ export default function DataSourcePreprocessing({
       const res = await (dataService as any).updateCell(dataSourceId, id, payload);
       if (res?.success) {
         showToast({ message: 'Cell 向量已更新', status: 'success' });
-        await fetchCellEntries();
+        await refreshCellData();
         return true;
       }
       showToast({ message: `更新失败: ${res?.error || '未知错误'}`, status: 'error' });
@@ -1925,7 +2013,7 @@ export default function DataSourcePreprocessing({
       const res = await (dataService as any).deleteCell(dataSourceId, id);
       if (res?.success) {
         showToast({ message: 'Cell 向量已删除', status: 'success' });
-        await fetchCellEntries();
+        await refreshCellData();
         return true;
       }
       showToast({ message: `删除失败: ${res?.error || '未知错误'}`, status: 'error' });
@@ -1947,18 +2035,16 @@ export default function DataSourcePreprocessing({
       }
 
       cellsLoadSeq.current += 1;
-      setCellEntries((prev) => {
-        const remaining = prev.filter((e) => e.tableName !== tableName);
-        if (remaining.length === 0) setView('main');
-        return remaining;
-      });
+      setCellEntries((prev) => prev.filter((e) => e.tableName !== tableName));
       if (cellViewerTable === tableName) setCellViewerTable(null);
 
-      const list = await fetchCellEntries();
-      if (list.some((e) => e.tableName === tableName)) {
+      const summary = await fetchCellSummary();
+      if (summary?.tables.some((t) => t.tableName === tableName)) {
         showToast({ message: `删除未生效：${tableName} 仍存在`, status: 'error' });
+        await refreshCellData();
         return false;
       }
+      if ((summary?.totalValues ?? 0) === 0) setView('main');
       showToast({ message: `已删除 ${tableName} 的全部 Cell 向量`, status: 'success' });
       return true;
     } catch (err: any) {
@@ -1999,14 +2085,16 @@ export default function DataSourcePreprocessing({
         key={`${dataSourceId}-${cellViewerTable ?? '__default__'}`}
         entries={cellEntries}
         schemas={schemas}
-        loading={loadingCellEntries}
+        tableSummaries={cellSummary?.tables}
+        loading={loadingCellEntries || loadingCellSummary}
         saving={savingCellEntry}
         initialSelectedTable={cellViewerTable ?? undefined}
         onBack={() => {
           setCellViewerTable(null);
           setView('main');
         }}
-        onRefresh={fetchCellEntries}
+        onRefresh={refreshCellData}
+        onEnsureTableLoaded={ensureCellTableLoaded}
         onCreate={handleCreateCellEntry}
         onUpdate={handleUpdateCellEntry}
         onDelete={handleDeleteCellEntry}
@@ -2290,14 +2378,14 @@ export default function DataSourcePreprocessing({
 
             <div className="flex items-center justify-between">
               <p className="text-sm text-text-secondary">
-                {loadingCellEntries
+                {loadingCellSummary || loadingCellEntries
                   ? '加载中…'
-                  : cellEntries.length > 0
-                  ? `已存储 ${cellEntries.length} 条向量 · ${cellTableNames.length} 张表 · ${cellColumnCount} 字段`
+                  : (cellSummary?.totalValues ?? 0) > 0
+                  ? `已存储 ${cellSummary!.totalValues} 条向量 · ${cellSummary!.totalTables} 张表 · ${cellSummary!.totalColumns} 字段${cellEntriesTruncated ? '（明细预览已截断）' : ''}`
                   : '暂无 Cell 向量，请先执行向量化'}
               </p>
               <div className="flex items-center gap-2">
-                {cellEntries.length > 0 && (
+                {(cellSummary?.totalValues ?? 0) > 0 && (
                   <button
                     onClick={() => {
                       setCellViewerTable(null);
@@ -2310,27 +2398,28 @@ export default function DataSourcePreprocessing({
                   </button>
                 )}
                 <button
-                  onClick={fetchCellEntries}
-                  disabled={loadingCellEntries}
+                  onClick={refreshCellData}
+                  disabled={loadingCellEntries || loadingCellSummary}
                   className="flex items-center gap-1 text-xs text-text-secondary hover:text-green-400 disabled:opacity-50 transition-colors"
                 >
-                  <RefreshCw className={`h-3 w-3 ${loadingCellEntries ? 'animate-spin' : ''}`} />
+                  <RefreshCw className={`h-3 w-3 ${(loadingCellEntries || loadingCellSummary) ? 'animate-spin' : ''}`} />
                   刷新
                 </button>
               </div>
             </div>
-            {cellTableNames.length > 0 && (
+            {(cellSummary?.tables.length ?? 0) > 0 && (
               <ul className="flex flex-wrap gap-2">
-                {cellTableNames.map((name) => (
-                  <li key={name}>
+                {cellSummary!.tables.map((table) => (
+                  <li key={table.tableName}>
                     <button
                       onClick={() => {
-                        setCellViewerTable(name);
+                        setCellViewerTable(table.tableName);
                         setView('cell-viewer');
                       }}
                       className="rounded-md border border-green-700/40 bg-green-900/20 px-2 py-0.5 text-xs text-green-300 hover:border-green-500 hover:bg-green-800/30 hover:text-green-200 transition-colors"
+                      title={`${table.valueCount} 值 · ${table.columnCount} 字段`}
                     >
-                      {name}
+                      {table.tableName}
                     </button>
                   </li>
                 ))}

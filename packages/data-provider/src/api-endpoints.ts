@@ -246,6 +246,7 @@ export const dataSources = {
   vectorizeCells: (id: string) => `${BASE_URL}/api/config/data-sources/${id}/cells/vectorize`,
   getLightSchemas: (id: string) => `${BASE_URL}/api/config/data-sources/${id}/light-schema`,
   getCells: (id: string) => `${BASE_URL}/api/config/data-sources/${id}/cells`,
+  getCellSummary: (id: string) => `${BASE_URL}/api/config/data-sources/${id}/cells/summary`,
   cellById: (id: string, cellId: string | number) => `${BASE_URL}/api/config/data-sources/${id}/cells/${cellId}`,
   deleteCellsByTable: (id: string, tableName: string) =>
     `${BASE_URL}/api/config/data-sources/${id}/cells/by-table/${encodeURIComponent(tableName)}`,

@@ -686,6 +686,21 @@ export const getCells = (
   return request.get(url);
 };
 
+export const getCellSummary = (
+  id: string,
+): Promise<{
+  success: boolean;
+  data?: {
+    totalValues: number;
+    totalTables: number;
+    totalColumns: number;
+    tables: Array<{ tableName: string; valueCount: number; columnCount: number }>;
+  };
+  error?: string;
+}> => {
+  return request.get(endpoints.dataSources.getCellSummary(id));
+};
+
 export const createCell = (
   id: string,
   body: { tableName: string; columnName: string; cellValue: string },

@@ -904,6 +904,49 @@ class VectorDBService {
   }
 
   /**
+   * 按表聚合 Cell 向量统计（不受明细 LIMIT 影响）
+   * @param {string} datasourceId
+   * @returns {Promise<{ totalValues: number, totalTables: number, totalColumns: number, tables: Array<{ tableName: string, valueCount: number, columnCount: number }> }>}
+   */
+  async getCellSummary(datasourceId) {
+    if (!this.initialized) await this.initialize();
+
+    const totalsResult = await this.pool.query(
+      `SELECT
+         COUNT(*)::int AS total_values,
+         COUNT(DISTINCT table_name)::int AS total_tables,
+         COUNT(DISTINCT (table_name, column_name))::int AS total_columns
+       FROM cell_vectors
+       WHERE datasource_id = $1`,
+      [datasourceId],
+    );
+
+    const tablesResult = await this.pool.query(
+      `SELECT
+         table_name,
+         COUNT(*)::int AS value_count,
+         COUNT(DISTINCT column_name)::int AS column_count
+       FROM cell_vectors
+       WHERE datasource_id = $1
+       GROUP BY table_name
+       ORDER BY table_name`,
+      [datasourceId],
+    );
+
+    const totals = totalsResult.rows[0] || {};
+    return {
+      totalValues: totals.total_values || 0,
+      totalTables: totals.total_tables || 0,
+      totalColumns: totals.total_columns || 0,
+      tables: tablesResult.rows.map((r) => ({
+        tableName: r.table_name,
+        valueCount: r.value_count,
+        columnCount: r.column_count,
+      })),
+    };
+  }
+
+  /**
    * 查询指定数据源下的 cell 向量记录
    * @param {string} datasourceId
    * @param {{ tableName?: string, columnName?: string, limit?: number }} [options]
