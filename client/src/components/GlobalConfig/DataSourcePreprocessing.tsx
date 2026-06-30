@@ -144,6 +144,21 @@ function buildTableGroups(rows: ColumnCellSummary[]): TableCellGroup[] {
     .sort((a, b) => a.tableName.localeCompare(b.tableName, 'zh-CN'));
 }
 
+function orderedSchemaTableNames(schemas: LightSchemaEntry[], search: string): string[] {
+  const q = search.trim().toLowerCase();
+  return schemas
+    .filter((s) => !q || s.tableName.toLowerCase().includes(q))
+    .map((s) => s.tableName);
+}
+
+function pickNextTableName(tableNames: string[], removed: string): string {
+  const idx = tableNames.indexOf(removed);
+  const remaining = tableNames.filter((n) => n !== removed);
+  if (remaining.length === 0) return '';
+  if (idx === -1) return remaining[0] ?? '';
+  return remaining[Math.min(idx, remaining.length - 1)] ?? '';
+}
+
 // ─── TablePickerModal ─────────────────────────────────────────────────────────
 
 function TablePickerModal({
@@ -496,7 +511,7 @@ function CellVectorViewer({
     initialAppliedRef.current = true;
   }, [initialSelectedTable, tableGroups]);
 
-  // 过滤后当前表不存在时，回退（有 tableSearch 时优先选中仍在筛选内的表）
+  // 过滤后当前表不存在时，顺延回退（有 tableSearch 时在筛选结果内顺延）
   useEffect(() => {
     if (tableGroups.length === 0) {
       setSelectedTable(null);
@@ -505,10 +520,10 @@ function CellVectorViewer({
     if (selectedTable && tableGroups.some((g) => g.tableName === selectedTable)) return;
 
     const q = tableSearch.trim().toLowerCase();
-    const inFilter = q
-      ? tableGroups.filter((g) => g.tableName.toLowerCase().includes(q))
-      : tableGroups;
-    setSelectedTable(inFilter[0]?.tableName ?? tableGroups[0].tableName);
+    const ordered = tableGroups
+      .filter((g) => !q || g.tableName.toLowerCase().includes(q))
+      .map((g) => g.tableName);
+    setSelectedTable(ordered[0] ?? tableGroups[0].tableName);
   }, [tableGroups, selectedTable, tableSearch]);
 
   // 选中列时同步当前表
@@ -571,9 +586,19 @@ function CellVectorViewer({
 
   const handleDeleteTable = async (tableName: string) => {
     if (!window.confirm(`确定删除「${tableName}」的全部 Cell 向量吗？此操作无法撤销。`)) return;
+    const q = tableSearch.trim().toLowerCase();
+    const ordered = tableGroups
+      .filter((g) => !q || g.tableName.toLowerCase().includes(q))
+      .map((g) => g.tableName);
+    const nextTable = pickNextTableName(ordered, tableName);
     setDeletingTable(tableName);
     try {
-      await onDeleteTable(tableName);
+      const ok = await onDeleteTable(tableName);
+      if (!ok) return;
+      if (activeTable === tableName) {
+        setSelectedTable(nextTable || null);
+        setSelectedKey(null);
+      }
     } finally {
       setDeletingTable(null);
     }
@@ -1051,7 +1076,7 @@ function SchemaViewer({
     initialAppliedRef.current = true;
   }, [initialSelectedTable, schemas]);
 
-  // 表被删除后，若当前选中已不存在则回退（有搜索词时优先选中仍在筛选内的表）
+  // 表被删除后，若当前选中已不存在则顺延回退（有搜索词时在筛选结果内顺延）
   useEffect(() => {
     if (schemas.length === 0) {
       if (selected) setSelected('');
@@ -1059,11 +1084,8 @@ function SchemaViewer({
     }
     if (selected && schemas.some((s) => s.tableName === selected)) return;
 
-    const q = search.trim().toLowerCase();
-    const inFilter = q
-      ? schemas.filter((s) => s.tableName.toLowerCase().includes(q))
-      : schemas;
-    setSelected(inFilter[0]?.tableName ?? schemas[0]?.tableName ?? '');
+    const ordered = orderedSchemaTableNames(schemas, search);
+    setSelected(ordered[0] ?? schemas[0]?.tableName ?? '');
   }, [schemas, selected, search]);
 
   const current = schemas.find((s) => s.tableName === selected) ?? null;
@@ -1121,9 +1143,17 @@ function SchemaViewer({
 
   const handleDelete = async (tableName: string) => {
     if (!window.confirm(`确定删除「${tableName}」的 Light Schema 吗？此操作无法撤销。`)) return;
+    const ordered = orderedSchemaTableNames(schemas, search);
+    const nextTable = pickNextTableName(ordered, tableName);
     setDeletingTable(tableName);
     try {
-      await onDeleteTable(tableName);
+      const ok = await onDeleteTable(tableName);
+      if (!ok) return;
+      if (selected === tableName) {
+        setSelected(nextTable);
+        setActiveTab('columns');
+        cancelEdit();
+      }
     } finally {
       setDeletingTable(null);
     }
@@ -1627,28 +1657,35 @@ export default function DataSourcePreprocessing({
     return selectedSchemaName;
   };
 
-  const fetchSchemas = async () => {
+  const fetchSchemas = async (): Promise<LightSchemaEntry[]> => {
     const seq = ++schemasLoadSeq.current;
     setLoadingSchemas(true);
     try {
       const res = await (dataService as any).getLightSchemas(dataSourceId);
-      if (seq !== schemasLoadSeq.current) return;
-      if (res?.success) setSchemas(res.data || []);
+      if (seq !== schemasLoadSeq.current) return [];
+      if (res?.success) {
+        const list: LightSchemaEntry[] = res.data || [];
+        setSchemas(list);
+        return list;
+      }
     } catch (_) {
       // 静默
     } finally {
       if (seq === schemasLoadSeq.current) setLoadingSchemas(false);
     }
+    return [];
   };
 
-  const fetchCellEntries = async () => {
+  const fetchCellEntries = async (): Promise<CellVectorEntry[]> => {
     const seq = ++cellsLoadSeq.current;
     setLoadingCellEntries(true);
     try {
       const res = await (dataService as any).getCells(dataSourceId, { limit: 2000 });
-      if (seq !== cellsLoadSeq.current) return;
+      if (seq !== cellsLoadSeq.current) return [];
       if (res?.success) {
-        setCellEntries(res.data || []);
+        const list: CellVectorEntry[] = res.data || [];
+        setCellEntries(list);
+        return list;
       }
     } catch (err: any) {
       if (seq === cellsLoadSeq.current) {
@@ -1657,6 +1694,7 @@ export default function DataSourcePreprocessing({
     } finally {
       if (seq === cellsLoadSeq.current) setLoadingCellEntries(false);
     }
+    return [];
   };
 
   // 快捷：选所有未生成的表（增量模式）
@@ -1773,7 +1811,11 @@ export default function DataSourcePreprocessing({
       });
       if (schemaViewerTable === tableName) setSchemaViewerTable(null);
 
-      await fetchSchemas();
+      const list = await fetchSchemas();
+      if (list.some((s) => s.tableName === tableName)) {
+        showToast({ message: `删除未生效：${tableName} 仍存在`, status: 'error' });
+        return false;
+      }
       showToast({ message: `已删除 ${tableName} 的 Light Schema`, status: 'success' });
       return true;
     } catch (err: any) {
@@ -1912,7 +1954,11 @@ export default function DataSourcePreprocessing({
       });
       if (cellViewerTable === tableName) setCellViewerTable(null);
 
-      await fetchCellEntries();
+      const list = await fetchCellEntries();
+      if (list.some((e) => e.tableName === tableName)) {
+        showToast({ message: `删除未生效：${tableName} 仍存在`, status: 'error' });
+        return false;
+      }
       showToast({ message: `已删除 ${tableName} 的全部 Cell 向量`, status: 'success' });
       return true;
     } catch (err: any) {

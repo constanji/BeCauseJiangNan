@@ -8,13 +8,37 @@ function parseContent(content) {
   }
 }
 
+function columnSearchParts(col) {
+  const name = String(col.name || '').trim();
+  const desc = String(col.description || '').trim();
+  return [name, desc].filter(Boolean);
+}
+
 function buildColumnSearchText(content) {
   const obj = parseContent(content);
   if (!obj?.columns) return '';
   return obj.columns
-    .map((c) => String(c.description || '').trim())
-    .filter(Boolean)
+    .flatMap(columnSearchParts)
     .join(' ');
+}
+
+function columnMatchesQuery(col, query) {
+  const needle = String(query || '').trim().toLowerCase();
+  if (!needle) return false;
+  return columnSearchParts(col).some((part) => part.toLowerCase().includes(needle));
+}
+
+function buildColumnMatchSnippet(col, query) {
+  const needle = String(query || '').trim().toLowerCase();
+  const desc = String(col.description || '');
+  const name = String(col.name || '');
+  if (desc.toLowerCase().includes(needle)) return buildSnippet(desc, query);
+  if (name.toLowerCase().includes(needle)) return buildSnippet(name, query);
+  return buildSnippet(desc || name, query);
+}
+
+function normalizeSearchLike(query) {
+  return `%${String(query || '').trim().toLowerCase()}%`;
 }
 
 function getColumnCount(content) {
@@ -41,4 +65,7 @@ module.exports = {
   buildColumnSearchText,
   getColumnCount,
   buildSnippet,
+  columnMatchesQuery,
+  buildColumnMatchSnippet,
+  normalizeSearchLike,
 };

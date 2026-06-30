@@ -408,14 +408,14 @@ export default function ReviewPage({ cartOnly = false }: { cartOnly?: boolean })
         />
         <div className="flex flex-col gap-3 md:flex-row md:items-center">
           <label className="min-w-0 flex-1 text-sm">
-            <span className="mb-1 block text-text-secondary">列注释搜索</span>
+            <span className="mb-1 block text-text-secondary">列名 / 列注释搜索</span>
             <div className="relative">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-tertiary" />
               <input
                 className="input py-2 pl-8 pr-8"
                 value={columnSearchQuery}
                 onChange={(e) => setReview({ columnSearchQuery: e.target.value })}
-                placeholder="搜索列注释，例如：账户ID"
+                placeholder="搜索列名或列注释，例如：account_id、账户"
               />
               {columnSearchQuery && (
                 <button

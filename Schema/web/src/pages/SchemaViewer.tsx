@@ -4,6 +4,7 @@ import LightSchemaEditor from '../components/LightSchemaEditor';
 import StatusBanner from '../components/StatusBanner';
 import { cn } from '../lib/cn';
 import { parseLightSchemaContent } from '../lib/lightSchemaTypes';
+import { pickNextTableName } from '../lib/reviewNav';
 
 export default function SchemaViewer({
   dataSourceId,
@@ -93,15 +94,20 @@ export default function SchemaViewer({
 
   const handleDelete = async () => {
     if (!currentTableName) throw new Error('未选择表');
+    const orderedNames = filtered.map((row) => String(row.table_name || row.tableName));
+    const nextTableName = pickNextTableName(orderedNames, currentTableName);
+
     const res = await api.deleteLightSchema(dataSourceId, currentTableName, schemaName);
-    if (!res.success) throw new Error(res.error || '删除失败');
+    if (!res.success || res.deleted === false) {
+      throw new Error(res.error || '删除未生效');
+    }
     const remaining = items.filter((row) => (row.table_name || row.tableName) !== currentTableName);
     setItems(remaining);
-    const q = search.trim().toLowerCase();
-    const inFilter = q
-      ? remaining.filter((row) => String(row.table_name || row.tableName).toLowerCase().includes(q))
-      : remaining;
-    setCurrent(inFilter[0] || remaining[0] || null);
+    setCurrent(
+      nextTableName
+        ? remaining.find((row) => (row.table_name || row.tableName) === nextTableName) ?? null
+        : null,
+    );
     onSchemaChanged?.();
   };
 

@@ -14,9 +14,40 @@ import {
   patchWorkbenchCatalog,
   type WorkbenchSchemaEntry,
 } from '../lib/workbenchCatalogCache';
+import {
+  clearGenJob,
+  fetchWithTableTimeout,
+  formatElapsed,
+  loadGenJob,
+  markGenJobInterrupted,
+  pendingTableNames,
+  processedTableNames,
+  saveGenJob,
+  type SkippedTableRecord,
+  type SlowTableRecord,
+  type TableTimeoutMinutes,
+  type WorkbenchGenJob,
+} from '../lib/workbenchGenJob';
 import SchemaViewer from './SchemaViewer';
 
-type SkippedTable = { tableName: string; error: string; reason?: string };
+type SkippedTable = SkippedTableRecord;
+
+const TABLE_TIMEOUT_OPTIONS: Array<{ value: TableTimeoutMinutes; label: string }> = [
+  { value: 0, label: '不限制' },
+  { value: 5, label: '5 分钟' },
+  { value: 10, label: '10 分钟' },
+  { value: 20, label: '20 分钟' },
+];
+
+function slowReasonLabel(reason: SlowTableRecord['reason']) {
+  switch (reason) {
+    case 'timeout': return '超时跳过';
+    case 'skipped_by_user': return '手动跳过';
+    case 'slow_success': return '慢表(已成功)';
+    case 'generate_failed': return '生成失败';
+    default: return reason;
+  }
+}
 
 function schemaHasTables(entry: WorkbenchSchemaEntry) {
   if (entry.tableCount == null) return true;
@@ -57,11 +88,30 @@ export default function Workbench() {
   const [sampleLimit, setSampleLimit] = React.useState(5);
   const [sampleScope, setSampleScope] = React.useState<'text_only' | 'all_columns'>('text_only');
   const [skipEmptyTables, setSkipEmptyTables] = React.useState(false);
+  const [tableTimeoutMinutes, setTableTimeoutMinutes] = React.useState<TableTimeoutMinutes>(10);
   const [loadingSchemas, setLoadingSchemas] = React.useState(false);
   const [loadingTables, setLoadingTables] = React.useState(false);
   const [generating, setGenerating] = React.useState(false);
   const [cancelling, setCancelling] = React.useState(false);
   const [genProgress, setGenProgress] = React.useState('');
+  const [genDetail, setGenDetail] = React.useState<{
+    generated: number;
+    processed: number;
+    total: number;
+    currentTable: string;
+    currentIndex: number;
+    failed: number;
+    skippedEmpty: number;
+    skippedTimeout: number;
+    skippedManual: number;
+  } | null>(null);
+  const [slowTables, setSlowTables] = React.useState<SlowTableRecord[]>([]);
+  const [showSlowTables, setShowSlowTables] = React.useState(false);
+  const [skippingCurrent, setSkippingCurrent] = React.useState(false);
+  const [runStartedAt, setRunStartedAt] = React.useState<number | null>(null);
+  const [tableStartedAt, setTableStartedAt] = React.useState<number | null>(null);
+  const [interruptedJob, setInterruptedJob] = React.useState<WorkbenchGenJob | null>(null);
+  const [, tick] = React.useState(0);
   const [error, setError] = React.useState<string | null>(null);
   const [warning, setWarning] = React.useState<string | null>(null);
   const [success, setSuccess] = React.useState<string | null>(null);
@@ -69,6 +119,7 @@ export default function Workbench() {
   const [viewerTable, setViewerTable] = React.useState<string | null>(null);
   const abortRef = React.useRef<AbortController | null>(null);
   const cancelRequestedRef = React.useRef(false);
+  const skipCurrentRequestedRef = React.useRef(false);
   const tablesLoadSeq = React.useRef(0);
   const schemaPickerRef = React.useRef<HTMLDivElement>(null);
   const schemaSearchRef = React.useRef<HTMLInputElement>(null);
@@ -278,6 +329,22 @@ export default function Workbench() {
     abortRef.current?.abort();
   }, []);
 
+  React.useEffect(() => {
+    const job = loadGenJob(id);
+    if (job?.status === 'running') {
+      const marked = markGenJobInterrupted(id);
+      setInterruptedJob(marked);
+    } else if (job?.status === 'interrupted') {
+      setInterruptedJob(job);
+    }
+  }, [id]);
+
+  React.useEffect(() => {
+    if (!generating) return;
+    const timer = window.setInterval(() => tick((n) => n + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [generating]);
+
   const generatedSet = React.useMemo(
     () => new Set(generated.map((g: any) => g.table_name || g.tableName)),
     [generated],
@@ -314,30 +381,108 @@ export default function Workbench() {
     [schemas, schemaName],
   );
 
-  const handleGenerate = async () => {
-    if (!schemaName) {
+  const countSkippedByReason = (list: SkippedTable[]) => ({
+    failed: list.filter((x) => x.reason !== 'empty_table' && x.reason !== 'timeout' && x.reason !== 'skipped_by_user').length,
+    skippedEmpty: list.filter((x) => x.reason === 'empty_table').length,
+    skippedTimeout: list.filter((x) => x.reason === 'timeout').length,
+    skippedManual: list.filter((x) => x.reason === 'skipped_by_user').length,
+  });
+
+  const calcProcessedCount = (completed: string[], skipped: SkippedTable[]) =>
+    new Set([...completed, ...skipped.map((s) => s.tableName)]).size;
+
+  const buildGenDetail = (
+    generated: number,
+    completed: string[],
+    skipped: SkippedTable[],
+    total: number,
+    currentTable: string,
+    currentIndex = 0,
+  ) => ({
+    generated,
+    processed: calcProcessedCount(completed, skipped),
+    total,
+    currentTable,
+    currentIndex,
+    ...countSkippedByReason(skipped),
+  });
+
+  const handleGenerate = async (resumeFrom?: WorkbenchGenJob) => {
+    const runSchemaName = resumeFrom?.schemaName || schemaName;
+    if (!runSchemaName) {
       setWarning('Schema 尚未加载完成，请稍候');
       return;
     }
-    const runSchemaName = schemaName;
-    const tableNames = [...selected];
-    if (tableNames.length === 0) {
-      setWarning('请先选择要处理的表');
+    const fullTableNames = resumeFrom?.tableNames || [...selected];
+    const pendingTables = resumeFrom
+      ? pendingTableNames(resumeFrom)
+      : fullTableNames;
+    const runSampleLimit = resumeFrom?.sampleLimit ?? sampleLimit;
+    const runSampleScope = resumeFrom?.sampleScope ?? sampleScope;
+    const runSkipEmpty = resumeFrom?.skipEmptyTables ?? skipEmptyTables;
+    const runTableTimeoutMinutes = resumeFrom?.tableTimeoutMinutes ?? tableTimeoutMinutes;
+    const runTimeoutMs = runTableTimeoutMinutes > 0 ? runTableTimeoutMinutes * 60 * 1000 : 0;
+
+    if (pendingTables.length === 0) {
+      setWarning(resumeFrom ? '剩余未处理表已全部跑完（已跳过/失败的表需手动重选后重试）' : '请先选择要处理的表');
       return;
     }
+    setInterruptedJob(null);
     abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
+    abortRef.current = null;
     cancelRequestedRef.current = false;
+    skipCurrentRequestedRef.current = false;
+    setSkippingCurrent(false);
     setCancelling(false);
     setGenerating(true);
     setError(null);
     setWarning(null);
     setSuccess(null);
-    setGenProgress(`0 / ${tableNames.length}`);
-    const skippedTables: SkippedTable[] = [];
+    setShowSlowTables(false);
+    const runStart = Date.now();
+    setRunStartedAt(runStart);
+    let generatedCount = resumeFrom?.completedTables.length ?? 0;
+    const skippedTables: SkippedTable[] = resumeFrom ? [...resumeFrom.failedTables] : [];
+    const slowTableRecords: SlowTableRecord[] = resumeFrom ? [...(resumeFrom.slowTables || [])] : [];
+    setSlowTables(slowTableRecords);
+    const completedTables = resumeFrom ? [...resumeFrom.completedTables] : [];
     const sampleWarnings: Array<{ tableName: string; column: string; error: string }> = [];
-    let generatedCount = 0;
+    setGenProgress(`${calcProcessedCount(completedTables, skippedTables)}/${fullTableNames.length}`);
+    setGenDetail(buildGenDetail(
+      generatedCount,
+      completedTables,
+      skippedTables,
+      fullTableNames.length,
+      pendingTables[0] || '',
+      fullTableNames.indexOf(pendingTables[0]) + 1,
+    ));
+
+    const persistJob = (patch: Partial<WorkbenchGenJob> & { status: WorkbenchGenJob['status'] }) => {
+      saveGenJob({
+        dataSourceId: id,
+        schemaName: runSchemaName,
+        tableNames: fullTableNames,
+        completedTables,
+        failedTables: skippedTables,
+        currentTable: patch.currentTable,
+        currentIndex: patch.currentIndex ?? completedTables.length,
+        status: patch.status,
+        startedAt: resumeFrom?.startedAt || new Date(runStart).toISOString(),
+        updatedAt: new Date().toISOString(),
+        sampleLimit: runSampleLimit,
+        sampleScope: runSampleScope,
+        skipEmptyTables: runSkipEmpty,
+        tableTimeoutMinutes: runTableTimeoutMinutes,
+        slowTables: slowTableRecords,
+        ...patch,
+      });
+    };
+
+    persistJob({
+      status: 'running',
+      currentTable: pendingTables[0],
+      currentIndex: completedTables.length + 1,
+    });
 
     const finishRun = async (opts: {
       cancelled: boolean;
@@ -351,18 +496,27 @@ export default function Workbench() {
       }
       setGenerating(false);
       setCancelling(false);
+      setSkippingCurrent(false);
+      setRunStartedAt(null);
+      setTableStartedAt(null);
       cancelRequestedRef.current = false;
+      skipCurrentRequestedRef.current = false;
       abortRef.current = null;
+      setSlowTables(slowTableRecords);
 
       const { cancelled, emptySkipped, failedSkipped } = opts;
       const warnings: string[] = [];
 
       if (cancelled) {
-        warnings.push(`已终止，已完成 ${generatedCount}/${tableNames.length} 张`);
-      } else if (generatedCount > 0) {
-        const msg = `生成成功 ${generatedCount} 张`;
-        setSuccess(msg);
-        showToast(msg);
+        persistJob({ status: 'cancelled', currentTable: undefined, currentIndex: completedTables.length });
+        warnings.push(`已终止，已完成 ${generatedCount}/${fullTableNames.length} 张`);
+      } else {
+        clearGenJob(id);
+        if (generatedCount > 0) {
+          const msg = `生成成功 ${generatedCount}/${fullTableNames.length} 张`;
+          setSuccess(msg);
+          showToast(msg);
+        }
       }
 
       if (emptySkipped.length > 0) {
@@ -376,6 +530,18 @@ export default function Workbench() {
           warnings.push(failMsg);
         }
       }
+      const timeoutSkipped = skippedTables.filter((x) => x.reason === 'timeout');
+      const manualSkipped = skippedTables.filter((x) => x.reason === 'skipped_by_user');
+      if (timeoutSkipped.length > 0) {
+        warnings.push(`超时跳过 ${timeoutSkipped.length} 张：${timeoutSkipped.map((x) => x.tableName).join('、')}`);
+      }
+      if (manualSkipped.length > 0) {
+        warnings.push(`手动跳过 ${manualSkipped.length} 张：${manualSkipped.map((x) => x.tableName).join('、')}`);
+      }
+      if (slowTableRecords.length > 0) {
+        warnings.push(`慢表记录 ${slowTableRecords.length} 张（可展开查看详情）`);
+        setShowSlowTables(true);
+      }
       if (sampleWarnings.length > 0) {
         warnings.push(`采样警告 ${sampleWarnings.length} 条`);
       }
@@ -383,45 +549,180 @@ export default function Workbench() {
         setWarning(warnings.join('；'));
       }
       setGenProgress(cancelled
-        ? `已终止 ${generatedCount}/${tableNames.length}`
-        : `完成 ${generatedCount}/${tableNames.length}`);
+        ? `已终止 ${generatedCount}/${fullTableNames.length}`
+        : `完成 ${generatedCount}/${fullTableNames.length}`);
+      setGenDetail((prev) => prev ? {
+        ...prev,
+        ...buildGenDetail(generatedCount, completedTables, skippedTables, fullTableNames.length, ''),
+      } : null);
+    };
+
+    const mergeSlowFromSummary = (tableName: string, summary: any, elapsedMs: number) => {
+      if (Array.isArray(summary?.slowTables)) {
+        for (const item of summary.slowTables) {
+          if (!slowTableRecords.some((s) => s.tableName === item.tableName && s.reason === item.reason)) {
+            slowTableRecords.push(item);
+          }
+        }
+      }
+      const slowSuccessMs = 5 * 60 * 1000;
+      if (elapsedMs >= slowSuccessMs && !slowTableRecords.some((s) => s.tableName === tableName && s.reason === 'slow_success')) {
+        slowTableRecords.push({ tableName, elapsedMs, reason: 'slow_success' });
+      }
+      setSlowTables([...slowTableRecords]);
+    };
+
+    const recordTableSkip = (tableName: string, reason: string, error: string, elapsedMs: number) => {
+      skippedTables.push({ tableName, error, reason, elapsedMs });
+      const slowReason = (reason === 'timeout' || reason === 'skipped_by_user' || reason === 'generate_failed'
+        ? reason
+        : 'generate_failed') as SlowTableRecord['reason'];
+      if (!slowTableRecords.some((s) => s.tableName === tableName && s.reason === slowReason)) {
+        slowTableRecords.push({ tableName, elapsedMs, reason: slowReason, error });
+      }
+      setSlowTables([...slowTableRecords]);
     };
 
     try {
-      for (let i = 0; i < tableNames.length; i += 1) {
+      let lastTableName = pendingTables[0] || '';
+      for (let i = 0; i < pendingTables.length; i += 1) {
         if (cancelRequestedRef.current) break;
 
-        const tableName = tableNames[i];
-        setGenProgress(`${i + 1}/${tableNames.length}：${tableName}`);
+        const tableName = pendingTables[i];
+        lastTableName = tableName;
+        const overallIndex = fullTableNames.indexOf(tableName) + 1;
+        const tableStart = Date.now();
+        setTableStartedAt(tableStart);
+        skipCurrentRequestedRef.current = false;
+        setSkippingCurrent(false);
+        const tableController = new AbortController();
+        abortRef.current = tableController;
+        setGenProgress(`${calcProcessedCount(completedTables, skippedTables)}/${fullTableNames.length} · 正在处理 ${tableName}`);
+        setGenDetail(buildGenDetail(generatedCount, completedTables, skippedTables, fullTableNames.length, tableName, overallIndex));
+        persistJob({
+          status: 'running',
+          currentTable: tableName,
+          currentIndex: overallIndex,
+          slowTables: slowTableRecords,
+        });
 
-        const res = await api.generateLightSchema(id, {
-          schemaName: runSchemaName,
-          tableNames: [tableName],
-          sampleLimit,
-          sampleScope,
-          skipEmptyTables,
-        }, controller.signal);
+        let res: Awaited<ReturnType<typeof api.generateLightSchema>>;
+        try {
+          res = await fetchWithTableTimeout(
+            (signal) => api.generateLightSchema(id, {
+              schemaName: runSchemaName,
+              tableNames: [tableName],
+              sampleLimit: runSampleLimit,
+              sampleScope: runSampleScope,
+              skipEmptyTables: runSkipEmpty,
+              tableTimeoutMs: runTimeoutMs,
+              progress: { index: overallIndex, total: fullTableNames.length },
+            }, signal),
+            runTimeoutMs,
+            `单表超时（${runTableTimeoutMinutes} 分钟）`,
+            tableController,
+          );
+        } catch (e: any) {
+          const elapsedMs = Date.now() - tableStart;
+          if (skipCurrentRequestedRef.current) {
+            recordTableSkip(tableName, 'skipped_by_user', '用户跳过', elapsedMs);
+            skipCurrentRequestedRef.current = false;
+            setSkippingCurrent(false);
+            showToast(`已跳过 ${tableName}`);
+            persistJob({
+              status: 'running',
+              currentTable: tableName,
+              currentIndex: overallIndex,
+              completedTables,
+              failedTables: skippedTables,
+              slowTables: slowTableRecords,
+            });
+            continue;
+          }
+          if (e?.reason === 'timeout' || String(e?.message || '').includes('超时')) {
+            recordTableSkip(tableName, 'timeout', e?.message || '单表超时', elapsedMs);
+            persistJob({
+              status: 'running',
+              currentTable: tableName,
+              currentIndex: overallIndex,
+              completedTables,
+              failedTables: skippedTables,
+              slowTables: slowTableRecords,
+            });
+            continue;
+          }
+          if (e?.name === 'AbortError' && cancelRequestedRef.current) {
+            break;
+          }
+          throw e;
+        }
+
+        const elapsedMs = Date.now() - tableStart;
 
         if (!res.success) {
-          skippedTables.push({ tableName, error: res.error || '生成失败', reason: 'generate_failed' });
+          recordTableSkip(tableName, 'generate_failed', res.error || '生成失败', elapsedMs);
         } else {
           if (Array.isArray(res.data) && res.data[0]) {
             generatedCount += 1;
+            completedTables.push(tableName);
+            const row = res.data[0];
+            const columnCount = row.columns?.length;
+            setGenerated((prev) => {
+              const key = row.table_name || row.tableName;
+              const without = prev.filter((g: any) => (g.table_name || g.tableName) !== key);
+              return [...without, row];
+            });
+            if (elapsedMs >= 5 * 60 * 1000) {
+              const existing = slowTableRecords.find((s) => s.tableName === tableName && s.reason === 'slow_success');
+              if (!existing) {
+                slowTableRecords.push({ tableName, elapsedMs, columnCount, reason: 'slow_success' });
+                setSlowTables([...slowTableRecords]);
+              } else if (columnCount != null) {
+                existing.columnCount = columnCount;
+              }
+            }
           }
           const summary = (res as any).summary;
+          mergeSlowFromSummary(tableName, summary, elapsedMs);
           if (Array.isArray(summary?.skippedTables)) {
-            skippedTables.push(...summary.skippedTables);
+            for (const item of summary.skippedTables) {
+              skippedTables.push({
+                ...item,
+                elapsedMs: item.elapsedMs ?? elapsedMs,
+              });
+              if (item.reason === 'timeout'
+                && !slowTableRecords.some((s) => s.tableName === item.tableName && s.reason === 'timeout')) {
+                slowTableRecords.push({
+                  tableName: item.tableName,
+                  elapsedMs: item.elapsedMs ?? elapsedMs,
+                  reason: 'timeout',
+                  error: item.error,
+                });
+              }
+            }
+            setSlowTables([...slowTableRecords]);
           }
           if (Array.isArray(summary?.sampleWarnings)) {
             sampleWarnings.push(...summary.sampleWarnings);
           }
         }
 
+        persistJob({
+          status: 'running',
+          currentTable: tableName,
+          currentIndex: overallIndex,
+          completedTables,
+          failedTables: skippedTables,
+          slowTables: slowTableRecords,
+        });
+
         if (cancelRequestedRef.current) break;
       }
 
       const emptySkipped = skippedTables.filter((x) => x.reason === 'empty_table');
-      const failedSkipped = skippedTables.filter((x) => x.reason !== 'empty_table');
+      const failedSkipped = skippedTables.filter((x) =>
+        x.reason !== 'empty_table' && x.reason !== 'timeout' && x.reason !== 'skipped_by_user',
+      );
       await finishRun({
         cancelled: cancelRequestedRef.current,
         emptySkipped,
@@ -430,21 +731,56 @@ export default function Workbench() {
     } catch (e: any) {
       if (e?.name === 'AbortError') {
         const emptySkipped = skippedTables.filter((x) => x.reason === 'empty_table');
-        const failedSkipped = skippedTables.filter((x) => x.reason !== 'empty_table');
+        const failedSkipped = skippedTables.filter((x) =>
+          x.reason !== 'empty_table' && x.reason !== 'timeout' && x.reason !== 'skipped_by_user',
+        );
         await finishRun({ cancelled: true, emptySkipped, failedSkipped });
       } else {
+        persistJob({
+          status: 'interrupted',
+          currentTable: lastTableName,
+          currentIndex: completedTables.length,
+          completedTables,
+          failedTables: skippedTables,
+          slowTables: slowTableRecords,
+        });
         try {
           await refreshGenerated(runSchemaName).then(setGenerated);
         } catch {
           // refresh 失败不覆盖原始错误
         }
+        setSlowTables(slowTableRecords);
         setError(e?.message || String(e));
         setGenerating(false);
         setCancelling(false);
+        setSkippingCurrent(false);
+        setRunStartedAt(null);
+        setTableStartedAt(null);
         cancelRequestedRef.current = false;
         abortRef.current = null;
       }
     }
+  };
+
+  const handleResumeInterrupted = () => {
+    if (!interruptedJob) return;
+    const remaining = pendingTableNames(interruptedJob);
+    setSelected(new Set(remaining));
+    setSchemaName(interruptedJob.schemaName);
+    setSampleLimit(interruptedJob.sampleLimit);
+    setSampleScope(interruptedJob.sampleScope);
+    setSkipEmptyTables(interruptedJob.skipEmptyTables);
+    setTableTimeoutMinutes(interruptedJob.tableTimeoutMinutes ?? 10);
+    setSlowTables(interruptedJob.slowTables || []);
+    void handleGenerate(interruptedJob);
+  };
+
+  const handleSkipCurrentTable = () => {
+    if (!generating || skippingCurrent || cancelling) return;
+    skipCurrentRequestedRef.current = true;
+    setSkippingCurrent(true);
+    setGenProgress((prev) => `${prev} · 正在跳过当前表…`);
+    abortRef.current?.abort();
   };
 
   const handleCancelGenerate = () => {
@@ -455,6 +791,22 @@ export default function Workbench() {
   };
 
   const controlsLocked = generating;
+
+  const genRunStatus = cancelling
+    ? '终止中'
+    : skippingCurrent
+      ? '跳过中'
+      : generating
+        ? '生成中'
+        : null;
+  const genProgressPercent = genDetail && genDetail.total > 0
+    ? Math.min(100, Math.round((genDetail.processed / genDetail.total) * 100))
+    : 0;
+  const tableElapsedMs = tableStartedAt != null ? Date.now() - tableStartedAt : 0;
+  const activeTableTimeoutMs = tableTimeoutMinutes > 0 ? tableTimeoutMinutes * 60 * 1000 : 0;
+  const tableWaitPercent = activeTableTimeoutMs > 0
+    ? Math.min(99, Math.round((tableElapsedMs / activeTableTimeoutMs) * 100))
+    : null;
 
   return (
     <div className="flex flex-col gap-4 px-4 py-4">
@@ -564,6 +916,38 @@ export default function Workbench() {
       {error && <StatusBanner tone="error" title="生成失败" message={error} />}
       {warning && <StatusBanner tone="warning" title="提示" message={warning} />}
       {success && <StatusBanner tone="success" title="完成" message={success} />}
+      {interruptedJob && !generating && (() => {
+        const processed = processedTableNames(interruptedJob).size;
+        const remaining = pendingTableNames(interruptedJob).length;
+        const skippedCount = (interruptedJob.failedTables || []).length;
+        return (
+        <StatusBanner
+          tone="warning"
+          title="检测到未完成的生成任务"
+          message={`${interruptedJob.schemaName}：已处理 ${processed}/${interruptedJob.tableNames.length} 张（成功 ${interruptedJob.completedTables.length}）${
+            skippedCount > 0 ? `，已跳过/失败 ${skippedCount} 张（续跑不会重试，需手动重选）` : ''
+          }${
+            interruptedJob.currentTable ? `；中断时正在处理 ${interruptedJob.currentTable}` : ''
+          }。刷新会中断浏览器端提交，服务端上一条请求可能仍在执行。`}
+        >
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button variant="primary" className="px-3 py-1.5 text-xs" onClick={handleResumeInterrupted}>
+              继续未处理表 ({remaining} 张)
+            </Button>
+            <Button
+              variant="neutral"
+              className="px-3 py-1.5 text-xs"
+              onClick={() => {
+                clearGenJob(id);
+                setInterruptedJob(null);
+              }}
+            >
+              忽略
+            </Button>
+          </div>
+        </StatusBanner>
+        );
+      })()}
 
       <div className="grid gap-4 lg:grid-cols-[1.1fr_1.4fr_0.9fr]">
         <div className="flex h-[39rem] flex-col rounded-lg border border-border-light bg-surface-primary p-4">
@@ -635,8 +1019,8 @@ export default function Workbench() {
 
         <div className="flex h-[39rem] flex-col rounded-lg border border-border-light bg-surface-primary p-4">
           <div className="mb-3 shrink-0 font-medium text-text-primary">生成 LightSchema</div>
-          <div className="flex min-h-0 flex-1 flex-col justify-between">
-            <div className="space-y-3">
+          <div className="flex min-h-0 flex-1 flex-col gap-3">
+            <div className="shrink-0 space-y-3">
             <label className="block text-sm text-text-secondary">
               采样数量
               <input
@@ -673,9 +1057,31 @@ export default function Workbench() {
                 disabled={controlsLocked}
               />
             </div>
-            <div className="flex gap-2">
-              <Button variant="primary" className="flex-1 px-3 py-2" disabled={generating || selected.size === 0} onClick={handleGenerate}>
-                {generating ? (cancelling ? '终止中…' : '生成中…') : `生成 (${selected.size} 张)`}
+            <label className="block text-sm text-text-secondary">
+              单表超时
+              <select
+                className="input mt-1"
+                value={tableTimeoutMinutes}
+                disabled={controlsLocked}
+                onChange={(e) => setTableTimeoutMinutes(Number(e.target.value) as TableTimeoutMinutes)}
+              >
+                {TABLE_TIMEOUT_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+              <span className="mt-1 block text-xs text-text-tertiary">超时后跳过该表并继续下一批，不中断整批任务</span>
+            </label>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="primary" className="flex-1 px-3 py-2" disabled={generating || selected.size === 0} onClick={() => void handleGenerate()}>
+                {generating ? (cancelling ? '终止中…' : skippingCurrent ? '跳过中…' : '生成中…') : `生成 (${selected.size} 张)`}
+              </Button>
+              <Button
+                variant="neutral"
+                className="px-3 py-2"
+                disabled={!generating || skippingCurrent || cancelling || !genDetail?.currentTable}
+                onClick={handleSkipCurrentTable}
+              >
+                跳过当前表
               </Button>
               <Button
                 variant="neutral"
@@ -686,13 +1092,141 @@ export default function Workbench() {
                 终止生成
               </Button>
             </div>
-            {genProgress && <div className="shrink-0 text-xs text-text-secondary">{genProgress}</div>}
-            {generating && (
-              <p className="text-xs text-text-tertiary">
-                终止后当前表仍会等其完成后停止，不会中断数据库查询。
-              </p>
-            )}
             </div>
+            {(generating || genDetail) && (
+              <div className="shrink-0 space-y-2.5 rounded-md border border-border-light bg-surface-secondary px-3 py-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {genRunStatus && (
+                      <span className={cn(
+                        'rounded px-2 py-0.5 text-xs font-medium',
+                        cancelling ? 'bg-amber-500/20 text-amber-100' : 'bg-brand/15 text-brand',
+                      )}
+                      >
+                        {genRunStatus}
+                      </span>
+                    )}
+                    {genDetail && (
+                      <span className="text-sm font-medium text-text-primary">
+                        {genDetail.processed}/{genDetail.total}
+                        <span className="ml-1 text-text-secondary">({genProgressPercent}%)</span>
+                      </span>
+                    )}
+                  </div>
+                  {runStartedAt != null && generating && (
+                    <span className="text-xs text-text-tertiary">总用时 {formatElapsed(Date.now() - runStartedAt)}</span>
+                  )}
+                </div>
+                {genDetail && (
+                  <>
+                    <div className="h-2 overflow-hidden rounded-full bg-surface-tertiary">
+                      <div
+                        className={cn(
+                          'h-full rounded-full transition-all duration-300',
+                          cancelling ? 'bg-amber-500' : 'bg-brand',
+                        )}
+                        style={{ width: `${genProgressPercent}%` }}
+                      />
+                    </div>
+                    <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-text-secondary">
+                      <span>成功 {genDetail.generated}</span>
+                      {genDetail.failed > 0 && <span>失败 {genDetail.failed}</span>}
+                      {genDetail.skippedTimeout > 0 && <span>超时 {genDetail.skippedTimeout}</span>}
+                      {genDetail.skippedManual > 0 && <span>跳过 {genDetail.skippedManual}</span>}
+                      {genDetail.skippedEmpty > 0 && <span>空表 {genDetail.skippedEmpty}</span>}
+                    </div>
+                  </>
+                )}
+                {generating && genDetail?.currentTable && (
+                  <div className="space-y-2 border-t border-border-light/60 pt-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-text-secondary">
+                      <span>
+                        当前表
+                        {genDetail.currentIndex > 0 && (
+                          <span className="ml-1 text-text-primary">
+                            第 {genDetail.currentIndex}/{genDetail.total} 张
+                          </span>
+                        )}
+                      </span>
+                      {tableStartedAt != null && (
+                        <span>
+                          已等待 {formatElapsed(tableElapsedMs)}
+                          {activeTableTimeoutMs > 0 && (
+                            <span> / {tableTimeoutMinutes} 分钟</span>
+                          )}
+                        </span>
+                      )}
+                    </div>
+                    <div className="h-1 overflow-hidden rounded-full bg-surface-tertiary">
+                      {tableWaitPercent != null ? (
+                        <div
+                          className={cn(
+                            'h-full rounded-full transition-all duration-1000',
+                            tableWaitPercent >= 80 ? 'bg-amber-500' : 'bg-brand/70',
+                          )}
+                          style={{ width: `${Math.max(4, tableWaitPercent)}%` }}
+                        />
+                      ) : (
+                        <div className="h-full w-1/3 animate-pulse rounded-full bg-brand/60" />
+                      )}
+                    </div>
+                    <p className="truncate text-sm font-medium text-text-primary" title={genDetail.currentTable}>
+                      {cancelling
+                        ? `等待当前表完成：${genDetail.currentTable}`
+                        : skippingCurrent
+                          ? `正在跳过：${genDetail.currentTable}`
+                          : `正在处理：${genDetail.currentTable}`}
+                    </p>
+                    {!cancelling && !skippingCurrent && (
+                      <p className="text-xs text-text-tertiary">
+                        拉取列元数据与采样中
+                        {tableWaitPercent == null && ' · 列多/远程库单表数分钟属正常情况'}
+                      </p>
+                    )}
+                  </div>
+                )}
+                {genProgress && (generating ? (cancelling || skippingCurrent) : true) && (
+                  <p className={cn(
+                    'text-xs',
+                    generating && (cancelling || skippingCurrent) ? 'text-amber-100/90' : 'text-text-secondary',
+                  )}
+                  >
+                    {genProgress}
+                  </p>
+                )}
+              </div>
+            )}
+            {(slowTables.length > 0 || showSlowTables) && (
+              <div className="min-h-0 shrink-0 rounded-md border border-amber-500/30 bg-amber-950/20 px-3 py-2">
+                <button
+                  type="button"
+                  className="flex w-full items-center justify-between text-left text-xs font-medium text-amber-100"
+                  onClick={() => setShowSlowTables((v) => !v)}
+                >
+                  <span>慢表 / 跳过记录 ({slowTables.length})</span>
+                  <span>{showSlowTables ? '收起' : '展开'}</span>
+                </button>
+                {showSlowTables && (
+                  <ul className="mt-2 max-h-32 space-y-1 overflow-y-auto text-xs text-amber-100/90">
+                    {slowTables.map((item) => (
+                      <li key={`${item.tableName}-${item.reason}-${item.elapsedMs}`} className="truncate" title={item.error}>
+                        {item.tableName}
+                        {' · '}
+                        {item.columnCount != null ? `${item.columnCount} 列 · ` : ''}
+                        {formatElapsed(item.elapsedMs)}
+                        {' · '}
+                        {slowReasonLabel(item.reason)}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+            <p className="mt-auto shrink-0 border-t border-border-light pt-3 text-xs leading-relaxed text-text-tertiary">
+              「跳过当前表」仅放弃等待并继续下一张，服务端 JDBC 查询可能仍在后台执行直至超时；连续跳过多张慢表可能短暂堆积并发。
+              「终止生成」在当前表完成后停止整批。
+              {tableTimeoutMinutes > 0 ? ` 单表超过 ${tableTimeoutMinutes} 分钟将自动跳过。` : ''}
+            </p>
           </div>
         </div>
 

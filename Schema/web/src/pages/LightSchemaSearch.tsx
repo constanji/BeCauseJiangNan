@@ -64,12 +64,12 @@ export default function LightSchemaSearch({ cartOnly = false }: { cartOnly?: boo
     <div className="flex h-full flex-col overflow-hidden px-4 py-4">
       <div className="mb-4">
         <h2 className="text-xl font-semibold text-text-primary">
-          {cartOnly ? '导出篮搜索' : '列注释搜索'}
+          {cartOnly ? '导出篮搜索' : '列名 / 列注释搜索'}
         </h2>
         <p className="mt-1 text-sm text-text-secondary">
           {cartOnly
-            ? '仅在导出篮内的表中搜索列备注，结果按表聚合展示'
-            : '按列备注关键词搜索，结果按表聚合展示'}
+            ? '仅在导出篮内的表中搜索列名或列备注，结果按表聚合展示'
+            : '按列名或列备注关键词搜索，结果按表聚合展示'}
         </p>
       </div>
 
@@ -81,7 +81,7 @@ export default function LightSchemaSearch({ cartOnly = false }: { cartOnly?: boo
             className="input flex-1"
             value={search.q}
             onChange={(e) => setSearch({ q: e.target.value })}
-            placeholder="搜索列注释，例如：订单金额"
+            placeholder="搜索列名或列注释，例如：account_id、订单金额"
             onKeyDown={(e) => { if (e.key === 'Enter') runSearch(); }}
           />
           <Button variant="primary" className="px-4 py-2" disabled={loading} onClick={runSearch}>
@@ -171,7 +171,7 @@ export default function LightSchemaSearch({ cartOnly = false }: { cartOnly?: boo
                         <tbody>
                           {hit.matches.map((m) => (
                             <tr key={m.columnName} className="border-t border-border-light/60">
-                              <td className="py-2 pr-3 font-medium text-text-primary">{m.columnName}</td>
+                              <td className="py-2 pr-3 font-medium text-text-primary">{highlightText(m.columnName, search.q)}</td>
                               <td className="py-2 pr-3 text-text-secondary">{m.description}</td>
                               <td className="py-2 text-text-secondary">{highlightText(m.snippet, search.q)}</td>
                             </tr>

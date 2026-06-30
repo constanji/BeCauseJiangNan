@@ -3,7 +3,9 @@ const { getDb, now } = require('../db/sqlite');
 const {
   parseContent,
   getColumnCount,
-  buildSnippet,
+  columnMatchesQuery,
+  buildColumnMatchSnippet,
+  normalizeSearchLike,
 } = require('../lib/lightSchemaIndex');
 const {
   updateLightSchemaById,
@@ -62,8 +64,8 @@ function buildListQuery(filters) {
     params.push(filters.schemaName);
   }
   if (filters.q) {
-    const like = `%${filters.q}%`;
-    clauses.push('(ls.table_name LIKE ? OR IFNULL(ls.column_search_text, \'\') LIKE ?)');
+    const like = normalizeSearchLike(filters.q);
+    clauses.push('(LOWER(ls.table_name) LIKE ? OR LOWER(IFNULL(ls.column_search_text, \'\')) LIKE ?)');
     params.push(like, like);
   }
   const tagIds = filters.tagIds || [];
@@ -136,13 +138,13 @@ router.get('/search', (req, res) => {
     tagIds: parseTagIds(req.query.tagId || req.query.tagIds),
   };
   const { where, params } = buildListQuery(filters);
-  const like = `%${q}%`;
+  const like = normalizeSearchLike(q);
   const rows = getDb().prepare(`
     SELECT ls.*, ds.name AS data_source_name
     FROM light_schemas ls
     JOIN data_sources ds ON ds.id = ls.data_source_id
     WHERE ${where}
-      AND (ls.column_search_text LIKE ? OR ls.table_name LIKE ?)
+      AND (LOWER(ls.column_search_text) LIKE ? OR LOWER(ls.table_name) LIKE ?)
     ORDER BY ds.name, ls.schema_name, ls.table_name
   `).all(...params, like, like);
 
@@ -156,12 +158,12 @@ router.get('/search', (req, res) => {
     if (!parsed?.columns) continue;
     const matches = [];
     for (const col of parsed.columns) {
+      if (!columnMatchesQuery(col, needle)) continue;
       const desc = String(col.description || '');
-      if (!desc.toLowerCase().includes(needle)) continue;
       matches.push({
         columnName: col.name,
         description: desc,
-        snippet: buildSnippet(desc, q),
+        snippet: buildColumnMatchSnippet(col, q),
       });
     }
     if (matches.length === 0 && !String(row.table_name).toLowerCase().includes(needle)) continue;

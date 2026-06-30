@@ -18,6 +18,28 @@ function hasColumn(database, table, column) {
   return rows.some((row) => row.name === column);
 }
 
+const DB_SCHEMA_VERSION = 1;
+
+function getDbSchemaVersion(database) {
+  return Number(database.pragma('user_version', { simple: true }) || 0);
+}
+
+function setDbSchemaVersion(database, version) {
+  database.pragma(`user_version = ${version}`);
+}
+
+function rebuildColumnSearchTextIndex(database) {
+  const rows = database.prepare('SELECT id, content FROM light_schemas').all();
+  if (rows.length === 0) return;
+  const stmt = database.prepare('UPDATE light_schemas SET column_search_text = ? WHERE id = ?');
+  const tx = database.transaction(() => {
+    for (const row of rows) {
+      stmt.run(buildColumnSearchText(row.content), row.id);
+    }
+  });
+  tx();
+}
+
 function backfillColumnSearchText(database) {
   const rows = database.prepare(`
     SELECT id, content FROM light_schemas
@@ -135,6 +157,11 @@ function migrate(database) {
   `);
 
   backfillColumnSearchText(database);
+
+  if (getDbSchemaVersion(database) < DB_SCHEMA_VERSION) {
+    rebuildColumnSearchTextIndex(database);
+    setDbSchemaVersion(database, DB_SCHEMA_VERSION);
+  }
 }
 
 function migrateCatalogSchemasNullable(database) {

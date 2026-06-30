@@ -82,7 +82,7 @@ export const api = {
       body: JSON.stringify({ content }),
     }),
   deleteLightSchema: (id: string, tableName: string, schemaName?: string) =>
-    json(`/api/data-sources/${id}/light-schema/${encodeURIComponent(tableName)}${qs({ schemaName })}`, { method: 'DELETE' }),
+    json<{ deleted?: boolean }>(`/api/data-sources/${id}/light-schema/${encodeURIComponent(tableName)}${qs({ schemaName })}`, { method: 'DELETE' }),
   exportExcel: (id: string, body: unknown, signal?: AbortSignal) => blob(`/api/data-sources/${id}/export/excel`, { method: 'POST', body: JSON.stringify(body), signal }),
 
   listTags: () => json<Tag[]>('/api/tags'),
