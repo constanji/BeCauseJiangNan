@@ -1,5 +1,6 @@
 import React from 'react';
 import { useParams } from 'react-router-dom';
+import { ChevronDown } from 'lucide-react';
 import { api } from '../api/client';
 import Button from '../components/Button';
 import StatusBanner from '../components/StatusBanner';
@@ -44,6 +45,7 @@ export default function Workbench() {
   const [schemasReady, setSchemasReady] = React.useState(false);
   const [schemas, setSchemas] = React.useState<WorkbenchSchemaEntry[]>([]);
   const [schemaSearch, setSchemaSearch] = React.useState('');
+  const [schemaPickerOpen, setSchemaPickerOpen] = React.useState(false);
   const [catalogFetchedAt, setCatalogFetchedAt] = React.useState('');
   const [refreshingCatalog, setRefreshingCatalog] = React.useState(false);
   const [refreshingSchema, setRefreshingSchema] = React.useState(false);
@@ -68,6 +70,8 @@ export default function Workbench() {
   const abortRef = React.useRef<AbortController | null>(null);
   const cancelRequestedRef = React.useRef(false);
   const tablesLoadSeq = React.useRef(0);
+  const schemaPickerRef = React.useRef<HTMLDivElement>(null);
+  const schemaSearchRef = React.useRef<HTMLInputElement>(null);
   const { showToast } = useToast();
 
   const refreshGenerated = React.useCallback(async (sn: string) => {
@@ -90,6 +94,7 @@ export default function Workbench() {
     setSchemasReady(false);
     setSchemaName('');
     setSchemaSearch('');
+    setSchemaPickerOpen(false);
     setTables([]);
     setGenerated([]);
     setShowUngeneratedOnly(false);
@@ -242,11 +247,32 @@ export default function Workbench() {
   };
 
   const handleSelectSchema = (name: string) => {
-    if (generating || name === schemaName) return;
+    if (generating || name === schemaName) {
+      setSchemaPickerOpen(false);
+      return;
+    }
     setSchemaName(name);
     setShowUngeneratedOnly(false);
+    setSchemaSearch('');
+    setSchemaPickerOpen(false);
     patchWorkbenchCatalog(id, { lastSchemaName: name });
   };
+
+  React.useEffect(() => {
+    if (!schemaPickerOpen) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (schemaPickerRef.current?.contains(event.target as Node)) return;
+      setSchemaPickerOpen(false);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    return () => document.removeEventListener('mousedown', onPointerDown);
+  }, [schemaPickerOpen]);
+
+  React.useEffect(() => {
+    if (schemaPickerOpen) {
+      schemaSearchRef.current?.focus();
+    }
+  }, [schemaPickerOpen]);
 
   React.useEffect(() => () => {
     abortRef.current?.abort();
@@ -283,6 +309,10 @@ export default function Workbench() {
     }
     return list;
   }, [schemasWithTables, schemaSearchNeedle, schemaName]);
+  const currentSchemaEntry = React.useMemo(
+    () => schemas.find((s) => s.schemaName === schemaName),
+    [schemas, schemaName],
+  );
 
   const handleGenerate = async () => {
     if (!schemaName) {
@@ -433,75 +463,101 @@ export default function Workbench() {
         <p className="mt-1 text-sm text-text-secondary">选择表并生成 LightSchema，支持预览与 Excel 导出</p>
       </div>
 
-      <div className="rounded-lg border border-border-light bg-surface-primary p-4">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-              <div className="text-lg font-semibold text-text-primary">{dataSource?.name || '数据源'}</div>
-              {catalogFetchedAt && !loadingSchemas && (
-                <span className="text-xs text-text-tertiary">
-                  目录缓存 {formatCatalogFetchedAt(catalogFetchedAt)}
+      <div className="rounded-lg border border-border-light bg-surface-primary px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+          <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">
+            <span className="text-lg font-semibold text-text-primary">{dataSource?.name || '数据源'}</span>
+            {catalogFetchedAt && !loadingSchemas && (
+              <span className="text-xs text-text-tertiary">
+                目录缓存 {formatCatalogFetchedAt(catalogFetchedAt)}
+              </span>
+            )}
+            <span className="text-xs text-text-secondary">
+              {dataSource?.host}:{dataSource?.port} / {dataSource?.database}
+            </span>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative" ref={schemaPickerRef}>
+              <button
+                type="button"
+                disabled={loadingSchemas || controlsLocked}
+                className={cn(
+                  'input flex min-w-[9rem] max-w-[14rem] items-center justify-between gap-2 py-1.5 text-left text-sm',
+                  schemaPickerOpen && 'border-brand',
+                )}
+                onClick={() => {
+                  if (loadingSchemas || controlsLocked) return;
+                  setSchemaPickerOpen((open) => !open);
+                }}
+              >
+                <span className="truncate">
+                  {loadingSchemas
+                    ? '加载 Schema…'
+                    : schemaName
+                      ? `${schemaName} (${currentSchemaEntry?.tableCount ?? '?'})`
+                      : '选择 Schema'}
                 </span>
-              )}
-            </div>
-            <div className="text-xs text-text-secondary">{dataSource?.host}:{dataSource?.port} / {dataSource?.database}</div>
-          </div>
-          <div className="flex min-w-[12rem] max-w-xs flex-1 flex-col gap-2 lg:max-w-sm">
-            <input
-              className="input w-full"
-              placeholder="搜索 Schema…"
-              value={schemaSearch}
-              disabled={loadingSchemas || controlsLocked}
-              onChange={(e) => setSchemaSearch(e.target.value)}
-            />
-            <div className="max-h-36 overflow-y-auto overscroll-y-contain rounded-md border border-border-light text-sm">
-              {loadingSchemas ? (
-                <div className="px-3 py-2 text-text-tertiary">加载 Schema…</div>
-              ) : filteredSchemas.length === 0 ? (
-                <div className="px-3 py-2 text-text-tertiary">无匹配 Schema</div>
-              ) : (
-                filteredSchemas.map((s) => {
-                  const active = s.schemaName === schemaName;
-                  return (
-                    <button
-                      key={s.schemaName}
-                      type="button"
+                <ChevronDown className={cn('h-4 w-4 shrink-0 text-text-secondary transition-transform', schemaPickerOpen && 'rotate-180')} />
+              </button>
+              {schemaPickerOpen && (
+                <div className="absolute right-0 top-full z-20 mt-1 w-56 rounded-md border border-border-light bg-surface-primary shadow-lg">
+                  <div className="border-b border-border-light p-2">
+                    <input
+                      ref={schemaSearchRef}
+                      className="input w-full py-1 text-sm"
+                      placeholder="搜索 Schema…"
+                      value={schemaSearch}
                       disabled={controlsLocked}
-                      className={cn(
-                        'block w-full truncate px-3 py-1.5 text-left transition-colors',
-                        active
-                          ? 'list-item-active text-text-primary'
-                          : 'text-text-primary hover:bg-surface-tertiary',
-                      )}
-                      onClick={() => handleSelectSchema(s.schemaName)}
-                    >
-                      {s.schemaName}
-                      <span className="ml-1 text-text-tertiary">({s.tableCount ?? '?'})</span>
-                    </button>
-                  );
-                })
+                      onChange={(e) => setSchemaSearch(e.target.value)}
+                    />
+                  </div>
+                  <div className="max-h-48 overflow-y-auto overscroll-y-contain text-sm">
+                    {filteredSchemas.length === 0 ? (
+                      <div className="px-3 py-2 text-text-tertiary">无匹配 Schema</div>
+                    ) : (
+                      filteredSchemas.map((s) => {
+                        const active = s.schemaName === schemaName;
+                        return (
+                          <button
+                            key={s.schemaName}
+                            type="button"
+                            disabled={controlsLocked}
+                            className={cn(
+                              'block w-full truncate px-3 py-1.5 text-left transition-colors',
+                              active
+                                ? 'list-item-active text-text-primary'
+                                : 'text-text-primary hover:bg-surface-tertiary',
+                            )}
+                            onClick={() => handleSelectSchema(s.schemaName)}
+                          >
+                            {s.schemaName}
+                            <span className="ml-1 text-text-tertiary">({s.tableCount ?? '?'})</span>
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
               )}
             </div>
-            <div className="flex flex-wrap gap-2">
-              <Button
-                variant="neutral"
-                className="px-2 py-1 text-xs"
-                disabled={loadingSchemas || refreshingCatalog || controlsLocked}
-                onClick={handleRefreshCatalog}
-              >
-                {refreshingCatalog ? '刷新中…' : '刷新目录'}
-              </Button>
-              <Button
-                variant="neutral"
-                className="px-2 py-1 text-xs"
-                disabled={loadingTables || refreshingSchema || controlsLocked || !schemaName}
-                onClick={handleRefreshCurrentSchema}
-              >
-                {refreshingSchema ? '刷新中…' : '刷新当前 Schema'}
-              </Button>
-            </div>
+            <Button
+              variant="neutral"
+              className="px-2 py-1 text-xs"
+              disabled={loadingSchemas || refreshingCatalog || controlsLocked}
+              onClick={handleRefreshCatalog}
+            >
+              {refreshingCatalog ? '刷新中…' : '刷新目录'}
+            </Button>
+            <Button
+              variant="neutral"
+              className="px-2 py-1 text-xs"
+              disabled={loadingTables || refreshingSchema || controlsLocked || !schemaName}
+              onClick={handleRefreshCurrentSchema}
+            >
+              {refreshingSchema ? '刷新中…' : '刷新当前 Schema'}
+            </Button>
+            <span className="text-sm text-text-secondary">已生成 {generated.length} 张</span>
           </div>
-          <div className="shrink-0 text-sm text-text-secondary">当前 Schema 已生成 {generated.length} 张</div>
         </div>
       </div>
 

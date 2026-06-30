@@ -114,10 +114,12 @@ export default function LightSchemaEditor({
     setError(null);
     try {
       await onDelete();
+      setEditing(false);
       showToast('删除成功');
     } catch (err: any) {
       setError(err?.message || String(err));
       showToast(err?.message || '删除失败', 'error');
+    } finally {
       setSaving(false);
     }
   };

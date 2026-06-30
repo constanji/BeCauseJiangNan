@@ -5,6 +5,7 @@
 
 const { spawn } = require('child_process');
 const path = require('path');
+const logger = require('./logger');
 
 const BRIDGE_DIR = path.join(__dirname, '../../drivers/gaussdb-jdbc');
 const DEFAULT_JAR = path.join(__dirname, '../../drivers/lib/gsjdbc4-1.0.jar');
@@ -65,6 +66,11 @@ function gaussdbJdbcQuery(sql, params = [], dataSource, password) {
 
     const previewSql = String(sql || '').replace(/\s+/g, ' ').slice(0, 180);
     const startedAt = Date.now();
+    logger.debug('gaussdb jdbc query start', {
+      host: dataSource.host,
+      database: dataSource.database,
+      sql: previewSql,
+    });
     let finished = false;
     let stdout = '';
     let stderr = '';
@@ -100,6 +106,12 @@ function gaussdbJdbcQuery(sql, params = [], dataSource, password) {
 
       try {
         const payload = JSON.parse(stdout);
+        logger.debug('gaussdb jdbc query ok', {
+          host: dataSource.host,
+          database: dataSource.database,
+          rowCount: payload.rows?.length || 0,
+          elapsedMs: elapsed,
+        });
         resolve(payload.rows || []);
       } catch (err) {
         reject(new Error(`GaussDB JDBC 返回解析失败: ${err.message}; stdout=${stdout.slice(0, 500)}`));

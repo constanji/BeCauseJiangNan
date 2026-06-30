@@ -5,6 +5,7 @@ const { getTableSchema, isTableEmpty } = require('../services/DatabaseService');
 const { buildColumnSearchText } = require('../lib/lightSchemaIndex');
 const { updateLightSchemaById, deleteLightSchemaById } = require('../lib/lightSchemaContent');
 const { toConnectionConfig } = require('../lib/dataSourceConfig');
+const logger = require('../lib/logger');
 
 const router = express.Router({ mergeParams: true });
 
@@ -39,6 +40,18 @@ router.post('/generate', async (req, res) => {
   const out = [];
   const skipped = [];
   const sampleWarnings = [];
+  const startedAt = Date.now();
+  logger.info('light-schema generate start', {
+    dataSourceId: source.id,
+    dataSourceName: source.name,
+    dbType: dataSource.type,
+    schemaName,
+    tableCount: tableNames.length,
+    sampleLimit,
+    sampleScope,
+    skipEmptyTables,
+    tables: tableNames,
+  });
   const stmt = getDb().prepare(`
     INSERT INTO light_schemas (data_source_id, schema_name, table_name, content, ddl_text, column_search_text, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -47,14 +60,28 @@ router.post('/generate', async (req, res) => {
       column_search_text = excluded.column_search_text, updated_at = excluded.updated_at
   `);
   for (const tableName of tableNames) {
+    const tableStartedAt = Date.now();
     if (skipEmptyTables) {
       try {
         if (await isTableEmpty(dataSource, password, schemaName, tableName)) {
           skipped.push({ tableName, error: '空表', reason: 'empty_table' });
+          logger.info('light-schema generate skip empty table', {
+            dataSourceId: source.id,
+            schemaName,
+            tableName,
+            elapsedMs: Date.now() - tableStartedAt,
+          });
           continue;
         }
       } catch (error) {
         skipped.push({ tableName, error: error.message, reason: 'row_count_failed' });
+        logger.warn('light-schema generate row count failed', {
+          dataSourceId: source.id,
+          schemaName,
+          tableName,
+          error: error.message,
+          elapsedMs: Date.now() - tableStartedAt,
+        });
         continue;
       }
     }
@@ -66,10 +93,33 @@ router.post('/generate', async (req, res) => {
       if (Array.isArray(schema.sampleWarnings) && schema.sampleWarnings.length > 0) {
         sampleWarnings.push(...schema.sampleWarnings.map((item) => ({ tableName, ...item })));
       }
+      logger.info('light-schema generate ok', {
+        dataSourceId: source.id,
+        schemaName,
+        tableName,
+        columnCount: schema.columns?.length || 0,
+        sampleWarnings: schema.sampleWarnings?.length || 0,
+        elapsedMs: Date.now() - tableStartedAt,
+      });
     } catch (error) {
       skipped.push({ tableName, error: error.message, reason: 'generate_failed' });
+      logger.error('light-schema generate failed', {
+        dataSourceId: source.id,
+        schemaName,
+        tableName,
+        error: error.message,
+        elapsedMs: Date.now() - tableStartedAt,
+      });
     }
   }
+  logger.info('light-schema generate done', {
+    dataSourceId: source.id,
+    schemaName,
+    requested: tableNames.length,
+    generated: out.length,
+    skipped: skipped.length,
+    elapsedMs: Date.now() - startedAt,
+  });
   res.json({
     success: true,
     data: out,

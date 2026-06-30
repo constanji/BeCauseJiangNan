@@ -147,6 +147,7 @@ export default function SchemaViewer({
             <div className="text-sm text-text-secondary">LightSchema 数据损坏或为空</div>
           ) : (
             <LightSchemaEditor
+              key={currentTableName}
               content={parsed}
               ddlText={ddlText}
               showSamples

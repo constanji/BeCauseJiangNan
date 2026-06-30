@@ -2,6 +2,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const express = require('express');
 const cors = require('cors');
+const logger = require('./lib/logger');
 const dataSources = require('./routes/dataSources');
 const catalog = require('./routes/catalog');
 const lightSchema = require('./routes/lightSchema');
@@ -17,6 +18,15 @@ const webDist = path.resolve(__dirname, '../../web/dist');
 
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: '8mb' }));
+
+app.use((req, res, next) => {
+  if (!req.path.startsWith('/api') || req.path === '/api/health') return next();
+  const startedAt = Date.now();
+  res.on('finish', () => {
+    logger.info(`${req.method} ${req.originalUrl} ${res.statusCode} ${Date.now() - startedAt}ms`);
+  });
+  next();
+});
 
 app.get('/api/health', (req, res) => res.json({ success: true, ok: true }));
 app.use('/api/tags', tags);
@@ -37,5 +47,9 @@ if (fs.existsSync(webDist)) {
 }
 
 app.listen(port, host, () => {
-  console.log(`[Schema] listening on http://localhost:${port}`);
+  logger.info(`listening on http://${host}:${port}`, {
+    nodeEnv: process.env.NODE_ENV || 'development',
+    dataDir: process.env.SCHEMA_DATA_DIR || '(default)',
+    logLevel: process.env.SCHEMA_LOG_LEVEL || 'info',
+  });
 });

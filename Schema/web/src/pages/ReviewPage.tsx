@@ -8,6 +8,7 @@ import {
   FolderOpen,
   Search,
   ShoppingCart,
+  Tags,
   X,
 } from 'lucide-react';
 import { api } from '../api/client';
@@ -17,12 +18,13 @@ import { HideInCartToggle } from '../components/ToggleSwitch';
 import LightSchemaEditor from '../components/LightSchemaEditor';
 import StatusBanner from '../components/StatusBanner';
 import TagBadge from '../components/TagBadge';
+import TagPicker from '../components/TagPicker';
 import { useUiState } from '../context/UiStateProvider';
 import { useToast } from '../context/ToastProvider';
 import { buildDataSourceGroups, buildSchemaGroups } from '../lib/catalogGroups';
 import { cn } from '../lib/cn';
 import { parseLightSchemaContent } from '../lib/lightSchemaTypes';
-import { CatalogDetail, CatalogItem, ExportCartItem } from '../lib/uiState';
+import { CatalogDetail, CatalogItem, ExportCartItem, Tag } from '../lib/uiState';
 
 function toCartItem(item: CatalogItem): ExportCartItem {
   return {
@@ -157,6 +159,15 @@ export default function ReviewPage({ cartOnly = false }: { cartOnly?: boolean })
   const [loading, setLoading] = React.useState(true);
   const [detailLoading, setDetailLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [tagEditOpen, setTagEditOpen] = React.useState(false);
+  const [editTagIds, setEditTagIds] = React.useState<number[]>([]);
+  const [allTags, setAllTags] = React.useState<Tag[]>([]);
+
+  React.useEffect(() => {
+    api.listTags().then((r) => {
+      if (r.success) setAllTags(r.data || []);
+    });
+  }, []);
 
   const reload = React.useCallback(() => {
     if (cartOnly && cartCount === 0) {
@@ -270,6 +281,29 @@ export default function ReviewPage({ cartOnly = false }: { cartOnly?: boolean })
     const inCart = isInCart(item.id);
     toggleCart(toCartItem(item));
     showToast(inCart ? '已移出导出篮' : '已加入导出篮');
+  };
+
+  const openTagEdit = () => {
+    if (!detail) return;
+    setEditTagIds(detail.tags.map((t) => t.id));
+    setTagEditOpen(true);
+  };
+
+  const saveTags = async () => {
+    if (!detail) return;
+    const res = await api.setCatalogTags(detail.id, editTagIds);
+    if (!res.success) {
+      setError(res.error || '保存标签失败');
+      showToast(res.error || '保存标签失败', 'error');
+      return;
+    }
+    const newTags = allTags.filter((tag) => editTagIds.includes(tag.id));
+    setDetail((prev) => (prev ? { ...prev, tags: newTags } : prev));
+    setItems((prev) => prev.map((item) => (
+      item.id === detail.id ? { ...item, tags: newTags } : item
+    )));
+    setTagEditOpen(false);
+    showToast('标签保存成功');
   };
 
   const renderSidebarGroups = () => {
@@ -453,13 +487,29 @@ export default function ReviewPage({ cartOnly = false }: { cartOnly?: boolean })
               <div className="shrink-0 border-b border-border-light bg-surface-secondary px-6 py-4">
                 <div className="flex items-start justify-between gap-4">
                   <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-3">
+                    <div className="flex flex-wrap items-center gap-3">
                       <h3 className="truncate text-xl font-semibold text-text-primary">
                         {detail.dataSourceName} / {detail.schemaName}.{detail.tableName}
                       </h3>
-                      {detail.tags.map((tag) => (
-                        <TagBadge key={tag.id} tag={tag} />
-                      ))}
+                      {detail.tags.length > 0 ? (
+                        detail.tags.map((tag) => (
+                          <button
+                            key={tag.id}
+                            type="button"
+                            className="inline-flex cursor-pointer border-0 bg-transparent p-0 transition-opacity hover:opacity-80"
+                            title="点击编辑标签"
+                            aria-label={`编辑标签 ${tag.name}`}
+                            onClick={openTagEdit}
+                          >
+                            <TagBadge tag={tag} />
+                          </button>
+                        ))
+                      ) : (
+                        <Button variant="neutral" className="px-2 py-1 text-xs" onClick={openTagEdit}>
+                          <Tags className="h-3.5 w-3.5" />
+                          标签
+                        </Button>
+                      )}
                     </div>
                     <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-text-secondary">
                       <span>{parsed.columns.length} 列</span>
@@ -483,6 +533,7 @@ export default function ReviewPage({ cartOnly = false }: { cartOnly?: boolean })
               </div>
               <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-6 pb-4 pt-4">
                 <LightSchemaEditor
+                  key={detail.id}
                   content={parsed}
                   ddlText={detail.ddlText}
                   showSamples
@@ -496,6 +547,30 @@ export default function ReviewPage({ cartOnly = false }: { cartOnly?: boolean })
           )}
         </main>
       </div>
+
+      {tagEditOpen && detail && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setTagEditOpen(false)}
+        >
+          <div
+            className="w-full max-w-lg rounded-xl border border-border-light bg-surface-primary p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-lg font-semibold text-text-primary">编辑标签</h3>
+            <p className="mt-1 text-sm text-text-secondary">
+              {detail.schemaName}.{detail.tableName} · 点击标签切换选中，保存后立即显示
+            </p>
+            <div className="mt-4">
+              <TagPicker tags={allTags} value={editTagIds} onChange={setEditTagIds} />
+            </div>
+            <div className="mt-6 flex justify-end gap-2">
+              <Button variant="neutral" onClick={() => setTagEditOpen(false)}>取消</Button>
+              <Button variant="primary" onClick={saveTags}>保存</Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
