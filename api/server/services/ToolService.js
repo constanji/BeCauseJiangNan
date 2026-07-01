@@ -579,6 +579,19 @@ async function loadAgentTools({ req, res, agent, signal, tool_resources, openAIA
     };
   }
 
+  // ESB 等无前端数据源选择时：使用 Agent 绑定的 data_source_id
+  if (agent?.data_source_id) {
+    if (!conversation) {
+      conversation = {
+        conversationId: req.body?.conversationId || null,
+        project_id: req.body?.project_id || req.body?.endpointOption?.project_id || null,
+      };
+    }
+    if (!conversation.data_source_id) {
+      conversation.data_source_id = String(agent.data_source_id);
+    }
+  }
+
   const { loadedTools, toolContextMap } = await loadTools({
     agent,
     signal,

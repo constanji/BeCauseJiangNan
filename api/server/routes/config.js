@@ -58,6 +58,7 @@ const {
   deleteExcelFileHandler,
   getExcelFileRowsHandler,
   searchExcelCellsHandler,
+  bindDataSourceAgentsHandler,
 } = require('~/server/controllers/DataSourceController');
 const {
   generateSemanticModelHandler,
@@ -303,6 +304,7 @@ router.get('/data-sources', requireJwtAuth, getDataSourcesHandler);
 router.get('/data-sources/:id', requireJwtAuth, checkAdmin, getDataSourceHandler);
 router.post('/data-sources', requireJwtAuth, checkAdmin, createDataSourceHandler);
 router.put('/data-sources/:id', requireJwtAuth, checkAdmin, updateDataSourceHandler);
+router.put('/data-sources/:id/agent-bindings', requireJwtAuth, checkAdmin, bindDataSourceAgentsHandler);
 router.delete('/data-sources/:id', requireJwtAuth, checkAdmin, deleteDataSourceHandler);
 router.post('/data-sources/:id/test', requireJwtAuth, checkAdmin, testDataSourceConnectionHandler);
 router.post('/data-sources/test', requireJwtAuth, checkAdmin, testConnectionHandler);

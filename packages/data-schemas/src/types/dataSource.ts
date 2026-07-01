@@ -29,6 +29,8 @@ export interface IDataSource extends Document {
   ssl?: IDataSourceSSL;
   status?: 'active' | 'inactive';
   isPublic?: boolean;
+  /** 绑定到此数据源的智能体 ID 列表（同步写入各 Agent.data_source_id） */
+  agentIds?: string[];
   lastTestedAt?: Date;
   lastTestResult?: 'success' | 'failed';
   lastTestError?: string;

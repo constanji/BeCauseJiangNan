@@ -9,11 +9,13 @@ import {
   useDeleteDataSourceMutation,
   useTestDataSourceConnectionMutation,
 } from '~/data-provider/DataSources';
+import { useListAgentsQuery } from '~/data-provider';
 import type { DataSource, DataSourceCreateParams } from '@because/data-provider';
-import { Plus, Edit, Trash2, TestTube, CheckCircle2, XCircle, Clock, Database, Eye, EyeOff, Sparkles } from 'lucide-react';
+import { Plus, Edit, Trash2, TestTube, CheckCircle2, XCircle, Clock, Database, Eye, EyeOff, Sparkles, Bot } from 'lucide-react';
 import DataSourceEditor from './DataSourceEditor';
 import SemanticModelConfig from './SemanticModelConfig';
 import DataSourcePreprocessing from './DataSourcePreprocessing';
+import DataSourceAgentBindingModal from './DataSourceAgentBindingModal';
 
 export default function DataSourceManagement() {
   const localize = useLocalize();
@@ -23,9 +25,18 @@ export default function DataSourceManagement() {
   const [testingIds, setTestingIds] = useState<Set<string>>(new Set());
   const [semanticModelDataSourceId, setSemanticModelDataSourceId] = useState<string | null>(null);
   const [preprocessingDataSource, setPreprocessingDataSource] = useState<DataSource | null>(null);
+  const [bindingDataSource, setBindingDataSource] = useState<DataSource | null>(null);
 
   const { data: dataSourcesResponse, isLoading, refetch } = useListDataSourcesQuery();
+  const { data: agentsResponse } = useListAgentsQuery();
   const dataSources = dataSourcesResponse?.data || [];
+  const agentNameById = React.useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const agent of agentsResponse?.data || []) {
+      map[agent.id] = agent.name || agent.id;
+    }
+    return map;
+  }, [agentsResponse?.data]);
 
   const createMutation = useCreateDataSourceMutation();
   const updateMutation = useUpdateDataSourceMutation();
@@ -278,6 +289,22 @@ export default function DataSourceManagement() {
                         )}
                       </div>
                     )}
+                    {(dataSource.agentIds?.length ?? 0) > 0 && (
+                      <div className="mt-3">
+                        <span className="text-xs text-text-secondary">已绑定智能体:</span>
+                        <div className="mt-1 flex flex-wrap gap-1.5">
+                          {dataSource.agentIds!.map((agentId) => (
+                            <span
+                              key={agentId}
+                              className="inline-flex items-center rounded-full bg-blue-500/10 px-2 py-0.5 text-xs text-blue-700 dark:text-blue-300"
+                              title={agentId}
+                            >
+                              {agentNameById[agentId] || agentId}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                   <div className="flex gap-2 ml-4">
                     {/* 是否展示给用户 */}
@@ -308,6 +335,14 @@ export default function DataSourceManagement() {
                         <EyeOff className="h-5 w-5" />
                       )}
                     </button>
+                    <Button
+                      onClick={() => setBindingDataSource(dataSource)}
+                      className="btn btn-neutral border-token-border-light relative flex items-center gap-2 rounded-lg px-3 py-2"
+                      title="绑定智能体（ESB 通过 agentId 自动解析数据源）"
+                    >
+                      <Bot className="h-4 w-4" />
+                      绑定智能体
+                    </Button>
                     <Button
                       onClick={() => setSemanticModelDataSourceId(dataSource._id)}
                       className="btn btn-neutral border-token-border-light relative flex items-center gap-2 rounded-lg px-3 py-2"
@@ -354,6 +389,13 @@ export default function DataSourceManagement() {
           </div>
         )}
       </div>
+
+      <DataSourceAgentBindingModal
+        dataSource={bindingDataSource}
+        open={!!bindingDataSource}
+        onClose={() => setBindingDataSource(null)}
+        onSaved={() => refetch()}
+      />
     </div>
   );
 }

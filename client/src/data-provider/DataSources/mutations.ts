@@ -6,6 +6,7 @@ import type {
   DataSourceCreateParams,
   DataSourceUpdateParams,
   DataSourceResponse,
+  DataSourceListResponse,
   DataSourceTestResponse,
 } from '@because/data-provider';
 
@@ -81,6 +82,30 @@ export const useUpdateDataSourceMutation = (): UseMutationResult<
 };
 
 /**
+ * 绑定智能体到数据源（可多选）
+ */
+export const useUpdateDataSourceAgentBindingsMutation = (): UseMutationResult<
+  DataSourceResponse,
+  Error,
+  { id: string; agentIds: string[] }
+> => {
+  const queryClient = useQueryClient();
+  return useMutation(
+    ({ id, agentIds }: { id: string; agentIds: string[] }) =>
+      dataService.updateDataSourceAgentBindings({ id, agentIds }),
+    {
+      onSuccess: (response) => {
+        queryClient.invalidateQueries([QueryKeys.dataSources]);
+        queryClient.invalidateQueries([QueryKeys.agents]);
+        if (response?.data?._id) {
+          queryClient.invalidateQueries([QueryKeys.dataSource, response.data._id]);
+        }
+      },
+    },
+  );
+};
+
+/**
  * Delete a data source
  */
 export const useDeleteDataSourceMutation = (): UseMutationResult<
@@ -124,4 +149,3 @@ export const useTestConnectionMutation = (): UseMutationResult<
 > => {
   return useMutation((data: DataSourceCreateParams) => dataService.testConnection(data));
 };
-

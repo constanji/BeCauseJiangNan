@@ -638,6 +638,16 @@ export const updateDataSource = ({
   return request.put(endpoints.dataSources.update(id), data);
 };
 
+export const updateDataSourceAgentBindings = ({
+  id,
+  agentIds,
+}: {
+  id: string;
+  agentIds: string[];
+}): Promise<d.DataSourceResponse> => {
+  return request.put(endpoints.dataSources.updateAgentBindings(id), { agentIds });
+};
+
 export const deleteDataSource = ({ id }: { id: string }): Promise<{ success: boolean; message?: string }> => {
   return request.delete(endpoints.dataSources.delete(id));
 };

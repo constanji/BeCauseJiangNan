@@ -95,6 +95,11 @@ const dataSourceSchema = new Schema<IDataSource>(
       default: false,
       index: true,
     },
+    agentIds: {
+      type: [String],
+      default: [],
+      index: true,
+    },
     lastTestedAt: {
       type: Date,
     },

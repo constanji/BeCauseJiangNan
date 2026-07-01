@@ -61,6 +61,7 @@ class BeCauseSkillsTool2 extends Tool {
     this.req = fields.req;
     this.projectRoot = fields.projectRoot || process.cwd();
     this.conversation = fields.conversation;
+    this.dataSourceId = fields.dataSourceId || null;
 
     // 基准测试模式：仅暴露允许的子命令
     const allowed = fields.req?.body?._benchmarkAllowedCommands;
@@ -77,6 +78,7 @@ class BeCauseSkillsTool2 extends Tool {
         userId: this.userId,
         req: this.req,
         conversation: this.conversation,
+        agentDataSourceId: this.dataSourceId,
       }),
       'light-schema': new BeCauseSkills2.LightSchemaTool({
         userId: this.userId,

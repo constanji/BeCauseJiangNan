@@ -33,7 +33,17 @@ function loadProjectModel() {
 
 function cleanId(id) {
   if (!id) return null;
-  return String(id).replace(/^ObjectId\("(.+)"\)$/, '$1').trim();
+  if (typeof id === 'object') {
+    const raw = id._id || id.id || (typeof id.toString === 'function' ? id.toString() : null);
+    if (raw && String(raw) !== '[object Object]') {
+      return cleanId(raw);
+    }
+  }
+  let s = String(id).replace(/^ObjectId\("(.+)"\)$/, '$1').trim();
+  while ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+    s = s.slice(1, -1).trim();
+  }
+  return s || null;
 }
 
 /**
@@ -73,18 +83,26 @@ class KnowledgeDiscoveryTool extends Tool {
       .optional()
       .default(0.4)
       .describe('向量检索最低相似度阈值，默认0.4'),
+    data_source_id: z
+      .string()
+      .optional()
+      .describe('数据源 ID，不提供则自动从当前会话绑定的数据源获取'),
   });
 
   constructor(fields = {}) {
     super();
     this.userId = fields.userId || 'system';
     this.entityId = fields.entityId || null;
+    this.agentDataSourceId = fields.agentDataSourceId || null;
     this.req = fields.req;
     this.conversation = fields.conversation;
   }
 
   /**
    * 从 conversation / req 中提取 entityId（数据源 ID）
+   *
+   * 优先级与 RAGRetrievalTool / 知识库 UI 一致：会话当前选中的 data_source_id
+   * 优先于 project 默认绑定，避免「项目绑 A 源、Excel 上传到 B 源」时检索为空。
    */
   async getEntityId(input = {}) {
     if (this.entityId) return cleanId(this.entityId);
@@ -93,33 +111,48 @@ class KnowledgeDiscoveryTool extends Tool {
 
     const conv = this.conversation;
 
+    // 会话级数据源（含 ToolService 从 req.body 注入的值）优先于 project 默认
+    if (conv?.data_source_id) return cleanId(conv.data_source_id);
+
+    const body = this.req?.body;
+    if (body?.data_source_id) return cleanId(body.data_source_id);
+    if (body?.endpointOption?.data_source_id) return cleanId(body.endpointOption.data_source_id);
+
+    const agentOptions = conv?.agentOptions || conv?.model_parameters || {};
+    const fromAgentOpts = cleanId(
+      agentOptions.data_source_id ||
+        agentOptions.dataSourceId ||
+        agentOptions.datasource_id,
+    );
+    if (fromAgentOpts) return fromAgentOpts;
+
+    if (this.agentDataSourceId) return cleanId(this.agentDataSourceId);
+
     if (conv?.project_id) {
       try {
         const getProjectByIdFn = loadProjectModel();
         const project = await getProjectByIdFn(cleanId(conv.project_id));
         if (project?.data_source_id) {
-          return String(project.data_source_id);
+          return cleanId(project.data_source_id);
         }
       } catch (e) {
         logger.warn('[KnowledgeDiscoveryTool] 从 project_id 获取数据源失败:', e.message);
       }
     }
 
-    if (conv?.data_source_id) return cleanId(conv.data_source_id);
-
-    if (this.req?.body?.data_source_id) return cleanId(this.req.body.data_source_id);
-    if (this.req?.body?.project_id) {
+    if (body?.project_id || body?.endpointOption?.project_id) {
       try {
         const getProjectByIdFn = loadProjectModel();
-        const project = await getProjectByIdFn(cleanId(this.req.body.project_id));
-        if (project?.data_source_id) return String(project.data_source_id);
+        const projectId = cleanId(body.project_id || body.endpointOption?.project_id);
+        const project = await getProjectByIdFn(projectId);
+        if (project?.data_source_id) return cleanId(project.data_source_id);
       } catch (e) {
         logger.warn('[KnowledgeDiscoveryTool] 从 req.body.project_id 获取数据源失败:', e.message);
       }
     }
 
-    const opts = conv?.agentOptions || conv?.model_parameters || {};
-    return cleanId(opts.entityId || opts.entity_id || conv?.entityId) || null;
+    // entityId 常为 Agent ID，不能当作数据源 ID
+    return null;
   }
 
   async _call(input) {
@@ -151,8 +184,9 @@ class KnowledgeDiscoveryTool extends Tool {
         return JSON.stringify({
           success: true,
           query,
+          entityId,
           results: [],
-          summary: `未在结构化知识文件中找到与「${query}」相关的数据行。`,
+          summary: `未在数据源 ${entityId} 的结构化知识文件中找到与「${query}」相关的数据行。`,
         });
       }
 
@@ -179,6 +213,7 @@ class KnowledgeDiscoveryTool extends Tool {
       return JSON.stringify({
         success: true,
         query,
+        entityId,
         total: formatted.length,
         summary,
         results: formatted,

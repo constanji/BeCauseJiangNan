@@ -25,6 +25,7 @@ export interface DataSource {
   username: string;
   status?: 'active' | 'inactive';
   isPublic?: boolean;
+  agentIds?: string[];
   connectionPool?: DataSourceConnectionPool;
   ssl?: DataSourceSSL;
   lastTestedAt?: string;
@@ -61,6 +62,10 @@ export interface DataSourceUpdateParams {
   ssl?: DataSourceSSL;
   status?: 'active' | 'inactive';
   isPublic?: boolean;
+}
+
+export interface DataSourceAgentBindingsParams {
+  agentIds: string[];
 }
 
 export interface DataSourceListResponse {

@@ -1,4 +1,4 @@
-import React, { useMemo, useCallback, useState } from 'react';
+import React, { useMemo, useCallback, useState, useEffect } from 'react';
 import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { Bot, Database, CheckCircle2, Info } from 'lucide-react';
@@ -70,8 +70,28 @@ export default function AgentsList({ toggleNav }: AgentsListProps) {
 
   const agents = useMemo(() => agentsResponse?.data ?? [], [agentsResponse]);
 
+  // 从 URL 进入带 agent_id 的会话时，同步绑定数据源到业务列表
+  useEffect(() => {
+    const urlAgentId = searchParams.get('agent_id');
+    if (!urlAgentId) {
+      return;
+    }
+    const matched = agents.find((a) => a.id === urlAgentId);
+    if (matched?.data_source_id && matched.data_source_id !== selectedDataSourceId) {
+      setSelectedDataSourceId(matched.data_source_id);
+    }
+  }, [searchParams, agents, selectedDataSourceId, setSelectedDataSourceId]);
+
   const handleAgentClick = useCallback(
     (agent: Agent) => {
+      // 若该智能体已在数据源管理中绑定，自动同步左侧「业务列表」选中项
+      if (agent.data_source_id) {
+        setSelectedDataSourceId(agent.data_source_id);
+      } else {
+        // 没有关联数据源时，清掉上一次选择，避免沿用旧业务列表
+        setSelectedDataSourceId(null);
+      }
+
       // 清除当前对话的消息缓存，避免影响历史对话
       clearMessagesCache(queryClient, conversation?.conversationId);
       queryClient.invalidateQueries([QueryKeys.messages]);
@@ -101,7 +121,7 @@ export default function AgentsList({ toggleNav }: AgentsListProps) {
         toggleNav();
       }
     },
-    [navigate, toggleNav, newConversation, queryClient, conversation],
+    [navigate, toggleNav, newConversation, queryClient, conversation, setSelectedDataSourceId],
   );
 
 
@@ -251,4 +271,3 @@ function AgentListItem({ agent, isActive, onClick }: AgentListItemProps) {
     </button>
   );
 }
-

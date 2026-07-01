@@ -41,6 +41,7 @@ async function getDataSources(filter = {}) {
       return {
         ...ds,
         isPublic: ds.isPublic !== undefined ? Boolean(ds.isPublic) : false,
+        agentIds: Array.isArray(ds.agentIds) ? ds.agentIds : [],
       };
     });
     return dataSources;
@@ -65,6 +66,7 @@ async function getDataSourceById(dataSourceId) {
     return {
       ...dataSource,
       isPublic: dataSource.isPublic !== undefined ? Boolean(dataSource.isPublic) : false,
+      agentIds: Array.isArray(dataSource.agentIds) ? dataSource.agentIds : [],
     };
   } catch (error) {
     logger.error('[getDataSourceById] Error:', error);

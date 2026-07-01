@@ -2029,6 +2029,48 @@ async function searchExcelCellsHandler(req, res) {
   }
 }
 
+/**
+ * PUT /data-sources/:id/agent-bindings
+ * 绑定智能体到数据源（可多选），并同步 Agent.data_source_id
+ */
+async function bindDataSourceAgentsHandler(req, res) {
+  try {
+    const { id } = req.params;
+    const { id: userId } = req.user;
+    const { agentIds } = req.body;
+
+    const dataSource = await getDataSourceById(id);
+    if (!dataSource) {
+      return res.status(404).json({ success: false, error: '数据源不存在' });
+    }
+
+    if (dataSource.createdBy.toString() !== userId && req.user.role !== SystemRoles.ADMIN) {
+      return res.status(403).json({ success: false, error: '无权修改此数据源' });
+    }
+
+    const { syncDataSourceAgentBindings } = require('~/server/services/DataSourceAgentBindingService');
+    const updated = await syncDataSourceAgentBindings(id, agentIds || []);
+    const { password: _, ...rest } = updated;
+    const sanitized = {
+      ...rest,
+      isPublic: rest.isPublic !== undefined ? Boolean(rest.isPublic) : false,
+      agentIds: rest.agentIds || [],
+    };
+
+    return res.status(200).json({
+      success: true,
+      data: sanitized,
+      message: '智能体绑定已更新',
+    });
+  } catch (error) {
+    logger.error('[bindDataSourceAgentsHandler] Error:', error.message, error.stack);
+    return res.status(500).json({
+      success: false,
+      error: error.message || '更新智能体绑定失败',
+    });
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -2058,6 +2100,7 @@ module.exports = {
   deleteExcelFileHandler,
   getExcelFileRowsHandler,
   searchExcelCellsHandler,
+  bindDataSourceAgentsHandler,
   getDatabaseSchema,
   decryptPassword,
   encryptPassword,

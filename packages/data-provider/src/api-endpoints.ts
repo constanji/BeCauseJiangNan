@@ -235,6 +235,7 @@ export const dataSources = {
   get: (id: string) => `${BASE_URL}/api/config/data-sources/${id}`,
   create: () => `${BASE_URL}/api/config/data-sources`,
   update: (id: string) => `${BASE_URL}/api/config/data-sources/${id}`,
+  updateAgentBindings: (id: string) => `${BASE_URL}/api/config/data-sources/${id}/agent-bindings`,
   delete: (id: string) => `${BASE_URL}/api/config/data-sources/${id}`,
   test: (id: string) => `${BASE_URL}/api/config/data-sources/${id}/test`,
   testConnection: () => `${BASE_URL}/api/config/data-sources/test`,

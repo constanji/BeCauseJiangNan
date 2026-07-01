@@ -285,6 +285,7 @@ const loadTools = async ({
       req: options.req,
       projectRoot: paths.root,
       conversation: options.conversation,
+      dataSourceId: agent?.data_source_id || null,
     },
     database_schema: {
       apiUrl: process.env.SQL_API_URL || 'http://33.114.3.59:13002',
