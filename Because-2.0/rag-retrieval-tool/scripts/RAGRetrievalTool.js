@@ -72,48 +72,78 @@ class RAGRetrievalTool extends Tool {
     this.userId = fields.userId || 'system';
     this.req = fields.req;
     this.conversation = fields.conversation; // 保存conversation信息
+    this.agentDataSourceId = fields.agentDataSourceId || null;
     this.ragService = null; // 延迟初始化
   }
 
   /**
    * 获取entityId（从conversation或input）
    */
-  async getEntityId(input) {
-    // 优先使用input中的entity_id
-    if (input.entity_id) {
-      return input.entity_id;
-    }
-
-    // 从conversation中获取数据源ID
-    if (this.conversation) {
-      // 优先使用conversation.data_source_id
-      if (this.conversation.data_source_id) {
-        return this.conversation.data_source_id;
+  async getEntityId(input = {}) {
+    const cleanId = (id) => {
+      if (!id) return null;
+      if (typeof id === 'object') {
+        const raw = id._id || id.id || (typeof id.toString === 'function' ? id.toString() : null);
+        if (raw && String(raw) !== '[object Object]') return cleanId(raw);
       }
+      let s = String(id).replace(/^ObjectId\("(.+)"\)$/, '$1').trim();
+      while ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+        s = s.slice(1, -1).trim();
+      }
+      return s || null;
+    };
 
-      // 如果conversation有project_id，从项目获取data_source_id
-      if (this.conversation.project_id) {
+    if (input.entity_id) return cleanId(input.entity_id);
+    if (input.data_source_id) return cleanId(input.data_source_id);
+
+    const conv = this.conversation;
+    if (conv?.data_source_id) return cleanId(conv.data_source_id);
+
+    const body = this.req?.body;
+    if (body?.data_source_id) return cleanId(body.data_source_id);
+    if (body?.endpointOption?.data_source_id) return cleanId(body.endpointOption.data_source_id);
+
+    const agentOptions = conv?.agentOptions || conv?.model_parameters || {};
+    const fromAgentOpts = cleanId(
+      agentOptions.data_source_id || agentOptions.dataSourceId || agentOptions.datasource_id,
+    );
+    if (fromAgentOpts) return fromAgentOpts;
+
+    if (this.agentDataSourceId) return cleanId(this.agentDataSourceId);
+
+    if (conv?.project_id) {
+      try {
+        let getProjectByIdFn = null;
         try {
-          let getProjectById = null;
-          try {
-            getProjectById = require('~/models/Project').getProjectById;
-          } catch (e) {
-            getProjectById = require(path.resolve(__dirname, '../../../api/models/Project')).getProjectById;
-          }
-          const project = await getProjectById(this.conversation.project_id);
-          if (project && project.data_source_id) {
-            return project.data_source_id.toString();
-          }
-        } catch (error) {
-          logger.warn('[RAGRetrievalTool] 获取项目数据源失败:', error.message);
+          getProjectByIdFn = require('~/models/Project').getProjectById;
+        } catch (e) {
+          getProjectByIdFn = require(path.resolve(__dirname, '../../../api/models/Project')).getProjectById;
         }
+        const project = await getProjectByIdFn(cleanId(conv.project_id));
+        if (project?.data_source_id) return cleanId(project.data_source_id);
+      } catch (error) {
+        logger.warn('[RAGRetrievalTool] 获取项目数据源失败:', error.message);
       }
     }
 
-    // 如果仍然没有获取到entityId，记录警告但不返回null
-    // 这样可以允许检索所有知识库（不进行数据源隔离）
+    if (body?.project_id || body?.endpointOption?.project_id) {
+      try {
+        let getProjectByIdFn = null;
+        try {
+          getProjectByIdFn = require('~/models/Project').getProjectById;
+        } catch (e) {
+          getProjectByIdFn = require(path.resolve(__dirname, '../../../api/models/Project')).getProjectById;
+        }
+        const projectId = cleanId(body.project_id || body.endpointOption?.project_id);
+        const project = await getProjectByIdFn(projectId);
+        if (project?.data_source_id) return cleanId(project.data_source_id);
+      } catch (error) {
+        logger.warn('[RAGRetrievalTool] 从 req.body.project_id 获取数据源失败:', error.message);
+      }
+    }
+
     logger.warn('[RAGRetrievalTool] 未找到entityId，将检索所有知识库（不进行数据源隔离）');
-    return null; // 返回null表示不进行数据源隔离，检索所有知识
+    return null;
   }
 
   /**

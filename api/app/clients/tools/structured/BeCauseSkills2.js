@@ -89,6 +89,7 @@ class BeCauseSkillsTool2 extends Tool {
         userId: this.userId,
         req: this.req,
         conversation: this.conversation,
+        agentDataSourceId: this.dataSourceId,
       }),
       'database-schema': new BeCauseSkills2.DatabaseSchemaTool({
         userId: this.userId,

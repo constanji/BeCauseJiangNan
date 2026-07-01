@@ -8,7 +8,7 @@ const becauseSkillsCommandMap: Record<string, string> = {
   'chart-generation': '可视化图表生成',
   'reranker': '结果重排序',
   'fluctuation-attribution': '波动归因分析',
-  'light-schema': 'Light Schema生成',
+  'light-schema': 'Light Schema 检索',
   'knowledge-discovery': '知识发现',
   'cell-vectorization': '单元格向量化',
 };

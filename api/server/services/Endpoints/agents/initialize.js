@@ -42,7 +42,14 @@ function createToolLoader(signal) {
    * } | undefined>}
    */
   return async function loadTools({ req, res, agentId, tools, provider, model, tool_resources }) {
-    const agent = { id: agentId, tools, provider, model };
+    let data_source_id = null;
+    try {
+      const fullAgent = await getAgent({ id: agentId });
+      data_source_id = fullAgent?.data_source_id ?? null;
+    } catch (error) {
+      logger.warn(`[loadTools] 获取 agent ${agentId} 的 data_source_id 失败:`, error.message);
+    }
+    const agent = { id: agentId, tools, provider, model, data_source_id };
     try {
       return await loadAgentTools({
         req,

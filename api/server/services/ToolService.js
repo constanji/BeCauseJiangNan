@@ -570,8 +570,14 @@ async function loadAgentTools({ req, res, agent, signal, tool_resources, openAIA
     }
   }
   
-  // 如果conversation不存在，但请求体中有data_source_id，创建一个临时conversation对象
-  if (!conversation && (req.body?.data_source_id || req.body?.endpointOption?.data_source_id)) {
+  // 如果conversation不存在，但请求体中有 data_source_id 或 project_id，创建临时 conversation
+  if (
+    !conversation &&
+    (req.body?.data_source_id ||
+      req.body?.endpointOption?.data_source_id ||
+      req.body?.project_id ||
+      req.body?.endpointOption?.project_id)
+  ) {
     conversation = {
       conversationId: req.body?.conversationId || null,
       data_source_id: req.body?.data_source_id || req.body?.endpointOption?.data_source_id || null,
@@ -579,7 +585,33 @@ async function loadAgentTools({ req, res, agent, signal, tool_resources, openAIA
     };
   }
 
-  // ESB 等无前端数据源选择时：使用 Agent 绑定的 data_source_id
+  // 补全 agent.data_source_id（部分调用路径只传 id/tools/provider/model）
+  if (!agent?.data_source_id && agent?.id) {
+    try {
+      const { getAgent } = require('~/models/Agent');
+      const fullAgent = await getAgent({ id: agent.id });
+      if (fullAgent?.data_source_id) {
+        agent.data_source_id = String(fullAgent.data_source_id);
+      }
+    } catch (error) {
+      logger.warn('[loadAgentTools] 获取 agent.data_source_id 失败:', error.message);
+    }
+  }
+
+  // 业务列表未选数据源时：从项目默认绑定解析
+  if (conversation && !conversation.data_source_id && conversation.project_id) {
+    try {
+      const { getProjectById } = require('~/models/Project');
+      const project = await getProjectById(conversation.project_id);
+      if (project?.data_source_id) {
+        conversation.data_source_id = String(project.data_source_id);
+      }
+    } catch (error) {
+      logger.warn('[loadAgentTools] 从 project 解析 data_source_id 失败:', error.message);
+    }
+  }
+
+  // 无前端数据源选择时：使用 Agent 绑定的 data_source_id
   if (agent?.data_source_id) {
     if (!conversation) {
       conversation = {
