@@ -17,6 +17,47 @@ import SemanticModelConfig from './SemanticModelConfig';
 import DataSourcePreprocessing from './DataSourcePreprocessing';
 import DataSourceAgentBindingModal from './DataSourceAgentBindingModal';
 
+function ExpandActionButton({
+  icon: Icon,
+  shortLabel,
+  fullLabel,
+  onClick,
+  disabled,
+  className,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  shortLabel: string;
+  fullLabel: string;
+  onClick: () => void;
+  disabled?: boolean;
+  className?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={fullLabel}
+      aria-label={fullLabel}
+      className={cn(
+        'group flex shrink-0 items-center overflow-hidden rounded-lg border border-border-light bg-surface-secondary px-2 py-2 text-sm text-text-primary transition-all duration-200 hover:border-border-medium hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50',
+        className,
+      )}
+    >
+      <Icon className="h-4 w-4 shrink-0" />
+      <span
+        className={cn(
+          'ml-1 inline-block overflow-hidden whitespace-nowrap transition-[max-width] duration-200 ease-out',
+          'max-w-[2em] group-hover:max-w-[7em]',
+        )}
+      >
+        <span className="group-hover:hidden">{shortLabel}</span>
+        <span className="hidden group-hover:inline">{fullLabel}</span>
+      </span>
+    </button>
+  );
+}
+
 export default function DataSourceManagement() {
   const localize = useLocalize();
   const { showToast } = useToastContext();
@@ -306,8 +347,7 @@ export default function DataSourceManagement() {
                       </div>
                     )}
                   </div>
-                  <div className="flex gap-2 ml-4">
-                    {/* 是否展示给用户 */}
+                  <div className="ml-4 flex shrink-0 flex-wrap items-center justify-end gap-1">
                     <button
                       type="button"
                       onClick={(e) => {
@@ -318,70 +358,68 @@ export default function DataSourceManagement() {
                         }
                       }}
                       disabled={updateMutation.isLoading}
-                      style={{ pointerEvents: updateMutation.isLoading ? 'none' : 'auto' }}
                       className={cn(
-                        'rounded p-2 transition-colors relative z-10 cursor-pointer',
+                        'rounded-lg p-2 transition-colors cursor-pointer',
                         (dataSource.isPublic ?? false)
-                          ? 'text-green-500 hover:bg-green-50 dark:hover:bg-green-900/20'
-                          : 'text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800',
+                          ? 'text-green-500 hover:bg-green-500/10'
+                          : 'text-text-tertiary hover:bg-surface-hover',
                         updateMutation.isLoading && 'opacity-50 cursor-not-allowed',
                       )}
                       title={(dataSource.isPublic ?? false) ? '已展示给用户（点击隐藏）' : '未展示给用户（点击显示）'}
                       aria-label={(dataSource.isPublic ?? false) ? '隐藏' : '显示'}
                     >
                       {(dataSource.isPublic ?? false) ? (
-                        <Eye className="h-5 w-5" />
+                        <Eye className="h-4 w-4" />
                       ) : (
-                        <EyeOff className="h-5 w-5" />
+                        <EyeOff className="h-4 w-4" />
                       )}
                     </button>
-                    <Button
+                    <ExpandActionButton
+                      icon={Bot}
+                      shortLabel="绑定"
+                      fullLabel="绑定智能体"
                       onClick={() => setBindingDataSource(dataSource)}
-                      className="btn btn-neutral border-token-border-light relative flex items-center gap-2 rounded-lg px-3 py-2"
-                      title="绑定智能体（ESB 通过 agentId 自动解析数据源）"
-                    >
-                      <Bot className="h-4 w-4" />
-                      绑定智能体
-                    </Button>
-                    <Button
+                    />
+                    <ExpandActionButton
+                      icon={Database}
+                      shortLabel="结构"
+                      fullLabel="数据库结构"
                       onClick={() => setSemanticModelDataSourceId(dataSource._id)}
-                      className="btn btn-neutral border-token-border-light relative flex items-center gap-2 rounded-lg px-3 py-2"
-                      title="数据库结构配置"
-                    >
-                      <Database className="h-4 w-4" />
-                      数据库结构
-                    </Button>
-                    <Button
+                    />
+                    <ExpandActionButton
+                      icon={Sparkles}
+                      shortLabel="处理"
+                      fullLabel="数据预处理"
                       onClick={() => setPreprocessingDataSource(dataSource)}
-                      className="btn btn-neutral border-token-border-light relative flex items-center gap-2 rounded-lg px-3 py-2"
-                      title="数据预处理（Light Schema + 单元格向量化）"
-                    >
-                      <Sparkles className="h-4 w-4" />
-                      数据预处理
-                    </Button>
-                    <Button
+                    />
+                    <button
+                      type="button"
                       onClick={() => handleTestConnection(dataSource._id)}
                       disabled={testingIds.has(dataSource._id)}
-                      className="btn btn-neutral border-token-border-light relative flex items-center gap-2 rounded-lg px-3 py-2"
-                      title="测试连接"
+                      title={testingIds.has(dataSource._id) ? '测试中…' : '测试连接'}
+                      aria-label="测试连接"
+                      className="rounded-lg border border-border-light bg-surface-secondary p-2 text-text-primary transition-colors hover:bg-surface-hover disabled:opacity-50"
                     >
                       <TestTube className="h-4 w-4" />
-                      {testingIds.has(dataSource._id) ? '测试中...' : '测试'}
-                    </Button>
-                    <Button
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => handleEdit(dataSource)}
-                      className="btn btn-neutral border-token-border-light relative flex items-center gap-2 rounded-lg px-3 py-2"
                       title="编辑"
+                      aria-label="编辑"
+                      className="rounded-lg border border-border-light bg-surface-secondary p-2 text-text-primary transition-colors hover:bg-surface-hover"
                     >
                       <Edit className="h-4 w-4" />
-                    </Button>
-                    <Button
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => handleDelete(dataSource._id)}
-                      className="btn btn-neutral border-token-border-light relative flex items-center gap-2 rounded-lg px-3 py-2 text-red-500 hover:text-red-600"
                       title="删除"
+                      aria-label="删除"
+                      className="rounded-lg border border-border-light bg-surface-secondary p-2 text-red-500 transition-colors hover:bg-red-500/10"
                     >
                       <Trash2 className="h-4 w-4" />
-                    </Button>
+                    </button>
                   </div>
                 </div>
               </div>
