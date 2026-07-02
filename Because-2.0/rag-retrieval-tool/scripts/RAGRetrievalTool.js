@@ -3,6 +3,21 @@ const { z } = require('zod');
 const { logger } = require('@because/data-schemas');
 const path = require('path');
 
+let resolveAgentDataSourceIdFn = null;
+function loadAgentDataSourceResolver() {
+  if (!resolveAgentDataSourceIdFn) {
+    try {
+      resolveAgentDataSourceIdFn = require('~/server/services/AgentDataSourceResolver')
+        .resolveAgentDataSourceId;
+    } catch (e) {
+      resolveAgentDataSourceIdFn = require(
+        path.resolve(__dirname, '../../../api/server/services/AgentDataSourceResolver'),
+      ).resolveAgentDataSourceId;
+    }
+  }
+  return resolveAgentDataSourceIdFn;
+}
+
 // 延迟加载RAGService，避免路径别名问题
 let RAGService = null;
 function loadRAGService() {
@@ -139,6 +154,17 @@ class RAGRetrievalTool extends Tool {
         if (project?.data_source_id) return cleanId(project.data_source_id);
       } catch (error) {
         logger.warn('[RAGRetrievalTool] 从 req.body.project_id 获取数据源失败:', error.message);
+      }
+    }
+
+    const agentId = cleanId(body?.agent_id || body?.endpointOption?.agent_id);
+    if (agentId) {
+      try {
+        const resolveFn = loadAgentDataSourceResolver();
+        const resolved = await resolveFn(agentId);
+        if (resolved) return cleanId(resolved);
+      } catch (error) {
+        logger.warn('[RAGRetrievalTool] agent 绑定数据源解析失败:', error.message);
       }
     }
 

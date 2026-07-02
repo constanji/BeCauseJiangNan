@@ -631,6 +631,8 @@ const getListAgentsByAccess = async ({
     category: 1,
     support_contact: 1,
     is_promoted: 1,
+    isPublic: 1,
+    data_source_id: 1,   // 前端 AgentsList 自动同步业务列表所需
   }).sort({ updatedAt: -1, _id: 1 });
 
   // Only apply limit if pagination is requested

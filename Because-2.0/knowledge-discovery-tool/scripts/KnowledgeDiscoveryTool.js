@@ -31,6 +31,21 @@ function loadProjectModel() {
   return getProjectById;
 }
 
+let resolveAgentDataSourceId = null;
+function loadAgentDataSourceResolver() {
+  if (!resolveAgentDataSourceId) {
+    try {
+      resolveAgentDataSourceId = require('~/server/services/AgentDataSourceResolver')
+        .resolveAgentDataSourceId;
+    } catch (e) {
+      resolveAgentDataSourceId = require(
+        path.resolve(__dirname, '../../../api/server/services/AgentDataSourceResolver'),
+      ).resolveAgentDataSourceId;
+    }
+  }
+  return resolveAgentDataSourceId;
+}
+
 function cleanId(id) {
   if (!id) return null;
   if (typeof id === 'object') {
@@ -151,7 +166,18 @@ class KnowledgeDiscoveryTool extends Tool {
       }
     }
 
-    // entityId 常为 Agent ID，不能当作数据源 ID
+    // 业务列表未选时：从 Agent 绑定或 DataSource.agentIds 反查
+    const agentId = cleanId(body?.agent_id || body?.endpointOption?.agent_id);
+    if (agentId) {
+      try {
+        const resolveFn = loadAgentDataSourceResolver();
+        const resolved = await resolveFn(agentId);
+        if (resolved) return cleanId(resolved);
+      } catch (e) {
+        logger.warn('[KnowledgeDiscoveryTool] agent 绑定数据源解析失败:', e.message);
+      }
+    }
+
     return null;
   }
 
@@ -164,7 +190,9 @@ class KnowledgeDiscoveryTool extends Tool {
     if (!entityId) {
       return JSON.stringify({
         success: false,
-        error: '未找到关联的数据源 ID（entityId），无法检索结构化知识。请确认当前会话已绑定数据源。',
+        entityId: null,
+        error:
+          '未找到关联的数据源 ID（entityId）。请在「项目管理」绑定智能体与数据源，或在左侧业务列表选择数据源。',
         results: [],
       });
     }

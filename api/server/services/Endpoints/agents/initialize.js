@@ -44,10 +44,10 @@ function createToolLoader(signal) {
   return async function loadTools({ req, res, agentId, tools, provider, model, tool_resources }) {
     let data_source_id = null;
     try {
-      const fullAgent = await getAgent({ id: agentId });
-      data_source_id = fullAgent?.data_source_id ?? null;
+      const { resolveAgentDataSourceId } = require('~/server/services/AgentDataSourceResolver');
+      data_source_id = await resolveAgentDataSourceId(agentId);
     } catch (error) {
-      logger.warn(`[loadTools] 获取 agent ${agentId} 的 data_source_id 失败:`, error.message);
+      logger.warn(`[loadTools] 解析 agent ${agentId} 的 data_source_id 失败:`, error.message);
     }
     const agent = { id: agentId, tools, provider, model, data_source_id };
     try {
