@@ -291,8 +291,10 @@ function SidePanelToolCallItem({
   const error =
     typeof toolCall.output === 'string' &&
     toolCall.output.toLowerCase().includes('error processing tool');
-  const isLoading = !hasOutput && (isSubmitting || toolCall.progress == null || toolCall.progress < 1);
+  // cancelled 优先判断：只要不在提交中且没有输出且不是错误，就视为被终止
   const cancelled = !isSubmitting && !hasOutput && !error;
+  // isLoading 只在提交中且无输出无错误时才为 true，避免终止后仍显示转圈
+  const isLoading = isSubmitting && !hasOutput && !error;
 
   // 获取状态 - ThoughtChain 支持 'success' | 'error' | 'loading' 等
   const getStatus = (): 'success' | 'error' | 'loading' => {
@@ -457,11 +459,23 @@ const ThoughtChainPanel = memo(function ThoughtChainPanel({
     .map((messageData, roundIdx) => {
       const roundKey = `round-${roundIdx}`;
       const toolCount = messageData.toolCalls.length;
-      const isStreaming = messageData.isStreaming;
+      // messageData.isStreaming 在终止后仍可能为 true（parseDatServerResponse 不感知 isSubmitting），
+      // 需要与 isSubmitting 联合判断，防止终止后轮次图标仍显示转圈
+      const isStreaming = messageData.isStreaming && isSubmitting;
 
-      const hasAnyLoading = messageData.toolCalls.some(
-        (tc) => tc.toolCall.output == null || tc.toolCall.output.length === 0,
-      );
+      // 只有在提交中时，"无输出"才代表正在加载；终止后"无输出"应视为已取消
+      const hasAnyLoading =
+        isSubmitting &&
+        messageData.toolCalls.some(
+          (tc) => tc.toolCall.output == null || tc.toolCall.output.length === 0,
+        );
+
+      // 终止后，存在无输出的工具调用 → 轮次状态标记为 error（已取消）
+      const hasAnyCancelled =
+        !isSubmitting &&
+        messageData.toolCalls.some(
+          (tc) => tc.toolCall.output == null || tc.toolCall.output.length === 0,
+        );
 
       // 构建描述文本
       const descriptionParts: string[] = [];
@@ -524,7 +538,7 @@ const ThoughtChainPanel = memo(function ThoughtChainPanel({
         key: roundKey,
         title: `第 ${messageData.messageIndex} 轮对话`,
         description,
-        status: isStreaming || hasAnyLoading ? 'loading' : 'success',
+        status: isStreaming || hasAnyLoading ? 'loading' : hasAnyCancelled ? 'error' : 'success',
         collapsible: true,
         content: renderContentItems(),
       };

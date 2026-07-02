@@ -111,6 +111,9 @@ export default function useChatHelpers(index = 0, paramId?: string) {
 
   const handleStopGenerating = (e: React.MouseEvent<HTMLButtonElement>) => {
     e.preventDefault();
+    // 立即将 isSubmitting 置为 false，避免 clearAllSubmissions 的异步延迟
+    // 导致 UI 在 SSE cancel 事件处理完成前长时间卡在加载状态
+    setIsSubmitting(false);
     stopGenerating();
   };
 

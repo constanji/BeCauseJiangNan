@@ -724,6 +724,23 @@ export default function useEventHandlers({
       const { endpoint: _endpoint, endpointType } =
         (submission.conversation as TConversation | null) ?? {};
       const endpoint = endpointType ?? _endpoint;
+
+      // 对于非 assistants 端点（如 agents），也向后端发送中止请求以终止正在运行的 Agent
+      // 使用 fire-and-forget 方式，不阻塞前端状态更新
+      if (!isAssistantsEndpoint(endpoint) && endpoint && EndpointURLs[endpoint as keyof typeof EndpointURLs]) {
+        fetch(`${EndpointURLs[endpoint as keyof typeof EndpointURLs]}/abort`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            abortKey: runAbortKey,
+            endpoint,
+          }),
+        }).catch((err) => logger.debug('[abortConversation] Backend abort request failed (non-blocking):', err));
+      }
+
       if (
         !isAssistantsEndpoint(endpoint) &&
         messages?.[messages.length - 1] != null &&
