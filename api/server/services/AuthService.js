@@ -30,6 +30,11 @@ const domains = {
 };
 
 const isProduction = process.env.NODE_ENV === 'production';
+// 允许通过 COOKIE_SECURE=false 显式关闭 secure cookie（适用于 HTTP 部署或内网环境）
+// 默认跟随 NODE_ENV：production 时开启，其他时关闭
+const secureCookie =
+  process.env.COOKIE_SECURE === 'true' ||
+  (process.env.COOKIE_SECURE !== 'false' && isProduction);
 const genericVerificationMessage = 'Please check your email to verify your email address.';
 
 /**
@@ -386,13 +391,13 @@ const setAuthTokens = async (userId, res, _session = null) => {
     res.cookie('refreshToken', refreshToken, {
       expires: new Date(refreshTokenExpires),
       httpOnly: true,
-      secure: isProduction,
+      secure: secureCookie,
       sameSite: 'strict',
     });
     res.cookie('token_provider', 'Because', {
       expires: new Date(refreshTokenExpires),
       httpOnly: true,
-      secure: isProduction,
+      secure: secureCookie,
       sameSite: 'strict',
     });
     return token;
@@ -442,19 +447,19 @@ const setOpenIDAuthTokens = (tokenset, res, userId, existingRefreshToken) => {
     res.cookie('refreshToken', refreshToken, {
       expires: expirationDate,
       httpOnly: true,
-      secure: isProduction,
+      secure: secureCookie,
       sameSite: 'strict',
     });
     res.cookie('openid_access_token', tokenset.access_token, {
       expires: expirationDate,
       httpOnly: true,
-      secure: isProduction,
+      secure: secureCookie,
       sameSite: 'strict',
     });
     res.cookie('token_provider', 'openid', {
       expires: expirationDate,
       httpOnly: true,
-      secure: isProduction,
+      secure: secureCookie,
       sameSite: 'strict',
     });
     if (userId && isEnabled(process.env.OPENID_REUSE_TOKENS)) {
@@ -465,7 +470,7 @@ const setOpenIDAuthTokens = (tokenset, res, userId, existingRefreshToken) => {
       res.cookie('openid_user_id', signedUserId, {
         expires: expirationDate,
         httpOnly: true,
-        secure: isProduction,
+        secure: secureCookie,
         sameSite: 'strict',
       });
     }
