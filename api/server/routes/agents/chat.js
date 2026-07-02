@@ -10,6 +10,7 @@ const {
   buildEndpointOption,
   canAccessAgentFromBody,
 } = require('~/server/middleware');
+const { handleAbort } = require('~/server/middleware/abortMiddleware');
 const { initializeClient } = require('~/server/services/Endpoints/agents');
 const AgentController = require('~/server/controllers/agents/request');
 const addTitle = require('~/server/services/Endpoints/agents/title');
@@ -44,6 +45,13 @@ const controller = async (req, res, next) => {
     throw error;
   }
 };
+
+/**
+ * @route POST /abort
+ * @desc Abort an ongoing agent conversation
+ * @access Public
+ */
+router.post('/abort', handleAbort());
 
 /**
  * @route POST / (regular endpoint)

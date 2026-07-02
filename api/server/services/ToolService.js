@@ -585,16 +585,20 @@ async function loadAgentTools({ req, res, agent, signal, tool_resources, openAIA
     };
   }
 
-  // 补全 agent.data_source_id（部分调用路径只传 id/tools/provider/model）
-  if (!agent?.data_source_id && agent?.id) {
+  // 补全 agent.data_source_id（Agent 字段或 DataSource.agentIds 反查）
+  const { resolveAgentDataSourceId, pickAgentId } = require('~/server/services/AgentDataSourceResolver');
+  const agentIdForBinding = pickAgentId(agent, req);
+  if (!agent?.data_source_id && agentIdForBinding) {
     try {
-      const { getAgent } = require('~/models/Agent');
-      const fullAgent = await getAgent({ id: agent.id });
-      if (fullAgent?.data_source_id) {
-        agent.data_source_id = String(fullAgent.data_source_id);
+      const resolved = await resolveAgentDataSourceId(agentIdForBinding);
+      if (resolved) {
+        agent.data_source_id = resolved;
+        logger.info(
+          `[loadAgentTools] agent=${agentIdForBinding} 解析 data_source_id=${resolved}`,
+        );
       }
     } catch (error) {
-      logger.warn('[loadAgentTools] 获取 agent.data_source_id 失败:', error.message);
+      logger.warn('[loadAgentTools] 解析 agent 绑定数据源失败:', error.message);
     }
   }
 

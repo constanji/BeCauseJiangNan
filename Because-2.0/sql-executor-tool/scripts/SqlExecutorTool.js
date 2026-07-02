@@ -36,6 +36,16 @@ function loadProjectModel() {
 const connectionPools = new Map();
 
 /**
+ * SQL 结果行数上限。
+ * 可通过环境变量 SQL_EXECUTOR_MAX_ROWS 调整，不设则默认 50。
+ * 若需临时查看更多行，可在 Because.yaml / docker-compose 中设置该变量（如 200）。
+ */
+const SQL_EXECUTOR_MAX_ROWS = (() => {
+  const v = parseInt(process.env.SQL_EXECUTOR_MAX_ROWS, 10);
+  return Number.isFinite(v) && v > 0 ? v : 50;
+})();
+
+/**
  * SQL Executor Tool - SQL执行工具（重构版）
  * 
  * 支持动态数据源切换，直接从Agent配置中获取数据源信息
@@ -63,7 +73,10 @@ class SqlExecutorTool extends Tool {
       .positive()
       .max(1000)
       .optional()
-      .describe('可选：限制返回的最大行数，默认返回全部结果（最多1000行）。'),
+      .describe(
+        `可选：限制返回的最大行数。默认上限由服务端 SQL_EXECUTOR_MAX_ROWS 环境变量控制（当前为 ${SQL_EXECUTOR_MAX_ROWS} 行）。` +
+        '如需查看更多行，请在调用时显式传入 max_rows（如 200）；但服务端会在环境变量范围内取较小值以保护性能。',
+      ),
     data_source_id: z
       .string()
       .optional()
@@ -530,9 +543,16 @@ class SqlExecutorTool extends Tool {
       // 执行查询
       let rows = await this.executeQuery(trimmedSql, pool, dataSource);
 
-      // 限制返回行数
-      if (typeof max_rows === 'number' && max_rows > 0 && rows.length > max_rows) {
-        rows = rows.slice(0, max_rows);
+      // 限制返回行数：取「模型传入值」与「服务端上限」中的较小值
+      const effectiveMax =
+        typeof max_rows === 'number' && max_rows > 0
+          ? Math.min(max_rows, SQL_EXECUTOR_MAX_ROWS)
+          : SQL_EXECUTOR_MAX_ROWS;
+      const totalRows = rows.length;
+      let truncated = false;
+      if (rows.length > effectiveMax) {
+        rows = rows.slice(0, effectiveMax);
+        truncated = true;
       }
 
       // 构建归因分析
@@ -542,6 +562,16 @@ class SqlExecutorTool extends Tool {
         success: true,
         sql: trimmedSql,
         rowCount: rows.length,
+        ...(truncated
+          ? {
+              truncated: true,
+              totalRowsInDB: totalRows,
+              truncation_hint:
+                `结果已截断：数据库共返回 ${totalRows} 行，当前仅展示前 ${effectiveMax} 行。` +
+                `如需更多行，请在调用时传入 max_rows（最大 1000），` +
+                `或由管理员在服务端设置环境变量 SQL_EXECUTOR_MAX_ROWS。`,
+            }
+          : {}),
         rows,
         attribution,
         dataSource: {

@@ -285,6 +285,7 @@ const loadTools = async ({
       req: options.req,
       projectRoot: paths.root,
       conversation: options.conversation,
+      agentId: agent?.id || options.req?.body?.agent_id || options.req?.body?.endpointOption?.agent_id || null,
       dataSourceId: agent?.data_source_id || null,
     },
     database_schema: {

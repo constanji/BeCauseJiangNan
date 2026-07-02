@@ -252,6 +252,8 @@ RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::http
     rm -rf /var/lib/apt/lists/* && \
     javac -encoding UTF-8 -cp /app/Because-2.0/drivers/lib/gsjdbc4-1.0.jar \
           /app/Because-2.0/drivers/gaussdb-jdbc/GaussJdbcQuery.java && \
+    javac -encoding UTF-8 -cp /app/Because-2.0/drivers/lib/gsjdbc4-1.0.jar \
+          /app/Because-2.0/drivers/gaussdb-jdbc/GaussJdbcServer.java && \
     java -version
 # 确保 specs、BeCauseSkills、Because-2.0 目录有正确的权限（可读）
 RUN chmod -R 755 /app/specs && find /app/specs -type f -exec chmod 644 {} \; && \
