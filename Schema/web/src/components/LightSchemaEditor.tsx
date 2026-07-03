@@ -58,16 +58,31 @@ export default function LightSchemaEditor({
 
   React.useEffect(() => {
     setColumnPage(1);
-  }, [content.tableName, editing, tab]);
+  }, [content.tableName, editing, tab, highlightQuery]);
 
   const activeContent = editing ? draft : content;
-  const totalColumnPages = Math.max(1, Math.ceil(activeContent.columns.length / COLUMN_PAGE_SIZE));
-  const pageColumns = activeContent.columns.slice(
+  const highlightQ = highlightQuery.trim();
+  const normalizedHighlightQ = highlightQ.toLowerCase();
+
+  const displayColumns = React.useMemo(() => {
+    const indexed = activeContent.columns.map((col, sourceIndex) => ({ col, sourceIndex }));
+    if (editing || !normalizedHighlightQ) return indexed;
+
+    const matched: typeof indexed = [];
+    const unmatched: typeof indexed = [];
+    for (const item of indexed) {
+      const searchable = `${item.col.name} ${item.col.description || ''}`.toLowerCase();
+      if (searchable.includes(normalizedHighlightQ)) matched.push(item);
+      else unmatched.push(item);
+    }
+    return [...matched, ...unmatched];
+  }, [activeContent.columns, editing, normalizedHighlightQ]);
+
+  const totalColumnPages = Math.max(1, Math.ceil(displayColumns.length / COLUMN_PAGE_SIZE));
+  const pageColumns = displayColumns.slice(
     (columnPage - 1) * COLUMN_PAGE_SIZE,
     columnPage * COLUMN_PAGE_SIZE,
   );
-  const pageOffset = (columnPage - 1) * COLUMN_PAGE_SIZE;
-  const highlightQ = highlightQuery.trim();
 
   const renderReadonlyText = (text: string, muted = false) => {
     if (!text) return <span className="text-text-secondary">—</span>;
@@ -229,8 +244,8 @@ export default function LightSchemaEditor({
                 </tr>
               </thead>
               <tbody>
-                {pageColumns.map((col, pageIndex) => {
-                  const index = pageOffset + pageIndex;
+                {pageColumns.map(({ col, sourceIndex }) => {
+                  const index = sourceIndex;
                   const canEditStructure = isNewColumn(index);
                   return (
                     <tr key={`${col.name}-${index}`} className="border-t border-border-light">

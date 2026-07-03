@@ -224,11 +224,15 @@ class LightSchemaTool extends Tool {
       const embeddingService = new EmbeddingService();
       await vectorDB.initialize();
 
+      const tableList = Array.isArray(tables) ? tables.filter(Boolean) : [];
+      // 指定了精确表时，语义补充只取 1 条，避免语义结果把精确表挤出上下文窗口
+      const semanticTopK = tableList.length > 0 ? 1 : topK;
+
       const bundle = await retrieveLightSchemaBundle({
         datasourceId: dataSourceId,
         queryText,
-        tables: tables || [],
-        schemaTopK: topK,
+        tables: tableList,
+        schemaTopK: semanticTopK,
         cellTopK: DEFAULT_CELL_TOP_K,
         vectorDB,
         embeddingService,
@@ -247,9 +251,22 @@ class LightSchemaTool extends Tool {
         });
       }
 
-      const semanticModels = bundle.rows
+      // 精确命中表排最前，语义/cell_boost 补充在后
+      const priorityOrder = { exact: 0, semantic: 1, cell_boost: 2 };
+      const sortedRows = [...bundle.rows].sort(
+        (a, b) => (priorityOrder[a.source] ?? 9) - (priorityOrder[b.source] ?? 9),
+      );
+
+      const semanticModels = sortedRows
         .map((r) => this.contentToSemanticModel(r.content))
         .filter(Boolean);
+
+      // 统计指定表中未命中索引的表名
+      const missedTables = tableList.filter(
+        (t) => !bundle.exactTableNames.some(
+          (e) => e === t || e.endsWith(`.${t}`) || t.endsWith(`.${e}`),
+        ),
+      );
 
       let instruction =
         'Extract the "semantic_models" array from this response and use it as the ' +
@@ -267,6 +284,11 @@ class LightSchemaTool extends Tool {
           cell_table_boost: bundle.cellTableBoost,
           cell_matches: bundle.cellMatches,
           total: semanticModels.length,
+          ...(missedTables.length > 0 && {
+            not_indexed: missedTables,
+            not_indexed_hint: `以下指定表在 Light Schema 索引中未找到（可能表名有误或尚未索引）：${missedTables.join(', ')}。` +
+              '建议改用 sql-executor 查 information_schema.columns 获取实时结构。',
+          }),
         },
         format: 'semantic',
         instruction,
