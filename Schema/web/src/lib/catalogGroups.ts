@@ -37,6 +37,27 @@ export function buildSchemaGroups(items: CatalogItem[]): SchemaGroup[] {
   });
 }
 
+export function compareCatalogItemsForDisplay(
+  a: CatalogItem,
+  b: CatalogItem,
+  isInCart: (id: number) => boolean,
+): number {
+  const priority = (item: CatalogItem) => {
+    const inCart = isInCart(item.id);
+    const hasTags = item.tags.length > 0;
+    return (inCart ? 2 : 0) + (hasTags ? 1 : 0);
+  };
+  const diff = priority(b) - priority(a);
+  return diff !== 0 ? diff : a.tableName.localeCompare(b.tableName);
+}
+
+export function sortCatalogItemsForDisplay(
+  items: CatalogItem[],
+  isInCart: (id: number) => boolean,
+): CatalogItem[] {
+  return [...items].sort((a, b) => compareCatalogItemsForDisplay(a, b, isInCart));
+}
+
 export function buildDataSourceGroups(items: CatalogItem[]): DataSourceGroup[] {
   const map = new Map<string, DataSourceGroup>();
   for (const item of items) {

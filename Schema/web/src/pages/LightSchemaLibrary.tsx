@@ -18,6 +18,7 @@ import TagBadge from '../components/TagBadge';
 import TagPicker from '../components/TagPicker';
 import { useUiState } from '../context/UiStateProvider';
 import { useToast } from '../context/ToastProvider';
+import { sortCatalogItemsForDisplay } from '../lib/catalogGroups';
 import { cn } from '../lib/cn';
 import { CatalogDetail, CatalogItem, ExportCartItem, GroupMode } from '../lib/uiState';
 
@@ -251,10 +252,7 @@ function SchemaGroupCard({
       {expanded && (
         <div className="border-t border-border-light bg-surface-primary px-4 py-3 pl-8">
           <div className="space-y-2">
-            {group.items
-              .slice()
-              .sort((a, b) => a.tableName.localeCompare(b.tableName))
-              .map((item) => (
+            {sortCatalogItemsForDisplay(group.items, isInCart).map((item) => (
                 <CatalogTableRow
                   key={item.id}
                   item={item}
@@ -393,8 +391,12 @@ export default function LightSchemaLibrary() {
   };
 
   const showDataSourceInSchema = !library.dataSourceId;
-  const schemaGroups = buildSchemaGroups(items);
-  const dataSourceGroups = buildDataSourceGroups(items);
+  const sortedItems = React.useMemo(
+    () => sortCatalogItemsForDisplay(items, isInCart),
+    [items, isInCart],
+  );
+  const schemaGroups = buildSchemaGroups(sortedItems);
+  const dataSourceGroups = buildDataSourceGroups(sortedItems);
 
   const rowProps = {
     isInCart,
@@ -465,7 +467,7 @@ export default function LightSchemaLibrary() {
           <div className="flex h-48 items-center justify-center text-text-secondary">暂无已生成的 LightSchema</div>
         ) : library.groupMode === 'flat' ? (
           <div className="space-y-3">
-            {items.map((item) => (
+            {sortedItems.map((item) => (
               <div key={item.id} className="rounded-lg border border-border-light bg-surface-primary p-4">
                 <CatalogTableRow item={item} showSource {...rowProps} />
               </div>
