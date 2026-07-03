@@ -2,6 +2,9 @@
 
 本目录用于在服务器上部署独立的 **Schema / GaussDB LightSchema** 服务（Web UI + API + SQLite）。
 
+> **前置条件**：服务器已安装 Docker（含 `docker compose` 或 `docker-compose`）。  
+> 离线环境请使用 [`Docker安装.md`](./Docker安装.md)（`docker-29.0.4.tgz` + Compose 插件）。
+
 ---
 
 ## 目录结构
