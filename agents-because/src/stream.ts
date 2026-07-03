@@ -173,19 +173,30 @@ export class ChatModelStreamHandler implements t.EventHandler {
     }
     this.handleReasoning(chunk, agentContext);
     let hasToolCalls = false;
-    if (
-      chunk.tool_calls &&
-      chunk.tool_calls.length > 0 &&
-      chunk.tool_calls.every(
+
+    if (chunk.tool_calls && chunk.tool_calls.length > 0) {
+      // 过滤有效 tool_calls（必须有非空的 id 和 name）
+      const validToolCalls = chunk.tool_calls.filter(
         (tc) =>
           tc.id != null &&
           tc.id !== '' &&
           (tc as Partial<ToolCall>).name != null &&
           tc.name !== ''
-      )
-    ) {
-      hasToolCalls = true;
-      await handleToolCalls(chunk.tool_calls, metadata, graph);
+      );
+
+      // 记录无效项（帮助诊断 DashScope / OpenAI-compatible 等供应商问题）
+      if (validToolCalls.length !== chunk.tool_calls.length) {
+        const invalidCount = chunk.tool_calls.length - validToolCalls.length;
+        console.log(
+          `[Stream] Provider: ${agentContext.provider}, filtered out ${invalidCount} invalid tool_calls` +
+          ` (missing id or name), processing ${validToolCalls.length} valid ones`
+        );
+      }
+
+      if (validToolCalls.length > 0) {
+        hasToolCalls = true;
+        await handleToolCalls(validToolCalls, metadata, graph);
+      }
     }
 
     const hasToolCallChunks =
@@ -210,6 +221,12 @@ export class ChatModelStreamHandler implements t.EventHandler {
 
     const stepKey = graph.getStepKey(metadata);
 
+    // Ensure message_id is registered BEFORE handleToolCallChunks so that
+    // if handleToolCallChunks creates a TOOL_CALLS step, getMessageId
+    // returns undefined on subsequent calls and does NOT trigger a
+    // MESSAGE_CREATION dispatch that would shadow the TOOL_CALLS step.
+    const message_id = getMessageId(stepKey, graph) ?? '';
+
     if (
       hasToolCallChunks &&
       chunk.tool_call_chunks &&
@@ -228,8 +245,12 @@ export class ChatModelStreamHandler implements t.EventHandler {
       return;
     }
 
-    const message_id = getMessageId(stepKey, graph) ?? '';
-    if (message_id) {
+    // Only dispatch MESSAGE_CREATION for non-tool-call text chunks.
+    // When tool_call_chunks are present, handleToolCallChunks already
+    // created/updated the appropriate step; dispatching a new
+    // MESSAGE_CREATION here would shadow the TOOL_CALLS step, causing
+    // tool call content to leak to the frontend as text.
+    if (message_id && !hasToolCallChunks) {
       await graph.dispatchRunStep(
         stepKey,
         {
@@ -549,17 +570,38 @@ export function createContentAggregator(): t.ContentAggregatorResult {
       // Consolidate with any previously accumulated args from chunks
       const hasValidName = incomingName != null && incomingName !== '';
 
-      // Only process if incoming has a valid name (complete tool call)
-      // or if we're doing a final update with complete data
-      if (!hasValidName && !finalUpdate) {
-        return;
-      }
-
       const existingContent = contentParts[index] as
         | (Omit<t.ToolCallContent, 'tool_call'> & {
             tool_call?: t.ToolCallPart;
           })
         | undefined;
+
+      // Allow processing if:
+      // 1. Has a valid name (complete tool call or first chunk)
+      // 2. Is a final update
+      // 3. Has existing content to append args to (subsequent args-only chunks, e.g. DashScope / OpenAI-compatible)
+      // 4. Has args to store even without a name yet (args-only chunk that precedes the name/id chunk)
+      const hasExistingToolCall = existingContent?.tool_call != null;
+      const hasArgsToAppend = toolCallArgs != null && toolCallArgs !== '';
+
+      if (!hasValidName && !finalUpdate && !hasExistingToolCall && !hasArgsToAppend) {
+        return;
+      }
+
+      // If we have args but no existing tool call and no name, initialize a temporary slot.
+      // This handles edge cases where args arrive before the name/id chunk.
+      if (!hasExistingToolCall && !hasValidName && hasArgsToAppend) {
+        contentParts[index] = {
+          type: ContentTypes.TOOL_CALL,
+          tool_call: {
+            id: incomingId ?? '',
+            name: '',
+            args: toolCallArgs,
+            type: ToolCallTypes.TOOL_CALL,
+          },
+        };
+        return;
+      }
 
       /** When args are a valid object, they are likely already invoked */
       let args =
@@ -765,12 +807,20 @@ export function createContentAggregator(): t.ContentAggregatorResult {
         runStepDelta.delta.tool_calls.forEach((toolCallDelta) => {
           const toolCallId = toolCallIdMap.get(runStepDelta.id);
 
+          // Preserve existing name/id when this delta carries only args
+          // (handles DashScope / OpenAI-compatible APIs that stream args separately)
+          const existingContent = contentParts[runStep.index] as
+            | (Omit<t.ToolCallContent, 'tool_call'> & {
+                tool_call?: t.ToolCallPart;
+              })
+            | undefined;
+
           const contentPart: t.MessageContentComplex = {
             type: ContentTypes.TOOL_CALL,
             tool_call: {
               args: toolCallDelta.args ?? '',
-              name: toolCallDelta.name,
-              id: toolCallId,
+              name: toolCallDelta.name ?? existingContent?.tool_call?.name,
+              id: toolCallId ?? toolCallDelta.id ?? existingContent?.tool_call?.id,
               auth: runStepDelta.delta.auth,
               expires_at: runStepDelta.delta.expires_at,
             },
