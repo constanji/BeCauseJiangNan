@@ -1,0 +1,50 @@
+列名	备注	采样值
+data_dt	数据日期	
+card_no	卡号	
+main_card_no	主卡号	
+open_card_org_no	开卡机构	08012, 80005, 01094, 01215, 01030
+acct_no	账号	00000000000002960370, 00000000000009357136, 00000000000009339125, 00000000000009389227, 00000000000007570192
+cust_id	客户号	1012378793, 1011547743, 1014029045, 9000007008, 1011731061
+tpc_cust_id	贷记卡客户号	8008114411, 8008108930, 8007447293, 8007936667, 8002604713
+cust_ch_name	客户中文名称	
+cust_en_name	客户英文名称	
+cust_type	客户类型	1
+id_type	证件类型	1, 9
+id_no	证件号码	
+card_prod_type	卡产品类型	1021, 1051, 1011, 1000, 1202
+card_class	卡片种类	2
+card_name	卡片名称	原京东联名标准卡, 金卡, 分期购, 书香信用卡, 银联数字卡
+card_level	卡片级别	D, S, G, P
+card_status	卡片状态	O, D|PL, D|PO, L|PT, D|PT
+card_id_num	卡面标识数	1
+card_org_name	卡组织名称	ChinaunionPay BIN
+card_media	介质	03, 02
+card_staff_flag	员工卡标志	Y, N
+sub_card_flag	附属卡标志	Y, N
+active_card_flag	活动卡标志	Y, N
+sleep_card_flag	睡眠卡标志	N, Y
+cancel_card_flag	销卡标志	Y, N
+ic_card_stardard	金融IC卡标准	
+ecash_flag	电子现金标志	Y, N
+use_method	使用方式	2, 0
+year_fee_flag	年费标志	Y, N
+new_card_flag	新发卡标志	N, Y
+print_card_dt	制卡日期	20260207, 20200120, 20260512, 20250526, 20150424
+accept_dt	受理日期	20151117, 20170504, 20190622, 20240325, 20190326
+accept_staff_no	受理员工号	00006013, 00056037, 00056187, 00035160, 00057435
+open_card_dt	开卡日期	20230614, 20231212, 20190727, 20190404, 20241119
+open_card_staff_no	开卡员工号	00022006, 00043010, 00057758, 00001072, 00025023
+off_card_dt	销卡日期	20220720, 20250904, 20250819, 20190503, 20250227
+off_card_staff_no	销卡员工号	00056651, 9011, 6051, 8027, h5025
+srcsys_cd	系统来源	TPC
+active_flag	激活标志:Y是,N否	N, Y
+cb_expiry_ccyymm	失效年月	2021-08-31 00:00:00, 2026-09-30 00:00:00, 2019-06-30 00:00:00, 2024-03-31 00:00:00, 2024-06-30 00:00:00
+elec_cash_bal	电子现金余额	
+cb_cardno_replaced_ind	是否旧卡	Y, N
+sleep_card_flag_l	长睡眠户标志	N, Y
+cb_channel_type	发卡渠道	12, 07, 10, 21, 01
+cb_user_code4	网络支付标志	Y, N
+cb_product_cd	联名单位代码	
+lst_upd_time	最后更新时间	
+batch_off_card_flag	批量销卡标志	0, 1
+agrc_flag	涉农标识	1, 2

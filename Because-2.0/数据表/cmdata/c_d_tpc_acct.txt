@@ -1,0 +1,119 @@
+列名	备注	采样值
+data_dt	数据日期	
+lp_org_num	法人机构号	001028
+branch_org	所属分支机构ID	001478, 001518, 001466, 001521, 001497
+core_org	核心机构号	01336, 01083, 01238, 01210, 01085
+org_name	机构名称	西郊支行, 郑陆支行, 金江苑支行, 靖江支行营业部, 新闸支行
+fin_acct	财务账号	00000000000009393009, 00000000000009352737, 00000000000009364258, 00000000000009339510, 00000000000009360524
+acct_product_cd	账户参数代码	9001, 9005, 9021
+acct_type_name	账户类型名称	人民币账户, 京东标准卡账户, 融通分期账户, 原京东标准卡账户
+cust_id	客户ID	8008133078, 8008109482, 8008147786, 8008127269, 8008135332
+core_cust_id	核心客户号	1005540425, 1003268029, 1001914001, 1014481035, 1003321926
+five_class	五级分类1-正常类2-关注类3-次级类4-可疑类5-损失类	4, 3, 5, 2, 1
+cust_name	客户名称	
+cert_type	证件类型03  护照99  临时身份证06  警官证99  港澳居民通行证05  台湾居民通行证01  15位旧身份证01  18位新身份证99  户口簿02  军人证99  其他	D, 9, 1
+cert_num	证件号码	
+five_class_age	五级分类对应的账龄	M0, M6, M7+, M1, M4
+book_entry_curr_cd	记账货币	01
+acct_para_cd	覆盖账户参数代码	
+start_dt	覆盖开始日期	
+end_dt	覆盖结束日期	
+acct_type	账户类型0-个人0011 - 人民币本地存款人-基本存款账户0012 - 人民币本地存款人-一般存款账户0013 - 人民币本地存款人-专用存款账户0014 - 人民币本地存款人-临时存款账户1-公司C-贷记卡E-因银联、支付结算系统等国家金融基础设施及国际支付清算体系原因无法得到的数据项I-因自身业务系统，无法得到N-个例不适用	X, C, J
+auth_freq	授权频率套型	
+bil_period	账单周期	
+lock_cd_1	锁定码1	
+lock_cd_2	锁定码2	
+cardamt_ind	续卡调额标志	
+over_limit_amt	超限金额	
+over_limit_ind	超限标志0-未超限1-当前不超限本账期超限2-当前超限本账期不超限3-当前超限本账期也超限	1, 0
+over_limit_dt	超限日期	20241221, 20260429, 20251122, 20260530, 20250712
+conti_over_limit_term	连续超限期数	
+enter_coll_queue_ind	进入催收队列标志	
+dcurr_crdt_limit	本币信用额度	
+crdt_limit	信用额度	
+dcurr_temp_crdt_limit	本币临时信用额度	
+temp_crdt_limit	临时信用额度	
+near_amt_start_dt	临额开始日期	
+near_amt_end_dt	临额结束日期	
+near_amt_valid_ind	临额有效标志	N, Y
+valid_crdt_limit	有效信用额度	
+curr_bal	当前余额	
+prin_bal	本金余额	
+term_begin_bal	期初余额	
+cash_bal	取现余额	
+amort_pay_bal	分期付款余额	
+amort_pay_frz_amt	分期付款冻结金额	
+crdt_amt	贷方金额	
+highest_acct_bal	最高账户余额	
+repay_day_bal	还款日余额	
+curr_age	当前账龄	
+cho_age	冲销账龄	
+monitor_cd	监控代码 正常0无需监控1普通帐户2报警帐户 3信用催收帐户 4首次提醒帐户5高风险客户6暂停帐户7破产帐户8被其他方宣布破产帐户9极高风险帐户	M5
+status_cd	状态代码   有效/开放B  被银行宣布破产C  预销户D  持卡人已逝/公司停业F  因诈骗取消L  取消 - 法律程序O  被其他方宣布破产 R  冲正/核销S  暂停V  自动关闭Z  冻结	SR|SD|M5, SC|SR|M5, SV|SR|M5,  , SZ
+last_status_cd	上次状态代码	
+auto_tran_repay_type	自动转账还款类型00-无自动还款01-最小额还款02-全额还款	02, 01, 00
+auto_exch_repay_type	自动购汇还款类型05-储蓄账户最小额自动购汇06-储蓄账户全额自动购汇15-信用卡最小额自动购汇16-信用卡全额自动购汇	
+setup_dt	创建日期	20250422, 20260309, 20220629, 20230703, 20251011
+bil_start_dt	账单开始日期	20250819, 20250227, 20250514, 20250323, 20251223
+bil_out_dt	账单输出日期	20250410, 20251115, 20250820, 20260415, 20250515
+last_repay_day	最后还款日	20251210, 20251104, 20260609, 20260209, 20260404
+last_repay_dt	上次还款日期	20240616, 20260207, 20260512, 20250526, 20250720
+enter_coll_queue_dt	进入催收队列日期	
+quit_coll_queue_dt	退出催收队列日期	
+defer_fee_coll_dt	滞纳金收取日期	20250422, 20250207, 20250417, 99991231, 20250117
+min_repay_amt	最小还款额	
+age_circl_dt	账龄循环日期	20250620, 20251010, 20260220, 20260615, 20250920
+status_date	账户状态代码更新日期	
+monitor_date	监控代码更新日期	
+collector_id	催收人员ID	 
+times_in_coll	进入催收队列次数	
+last_crbal_stmt_date	上期贷方余额账单输出日期	
+acct_class	账户等级	S, G, P
+acct_level	账户级别	H, M, L
+acct_opr_id	账户级别维护人员ID	topcard,  
+acct_opr_date	账户级别维护日期	20220806, 20220603, 20220718, 20220712, 20220616
+installment_flag	分期标志	1, 0
+last_tx_dt	最后交易日期	20230614, 20231212, 20241119, 20230515, 20260518
+cash_draw_amt	取现金额	
+cons_amt	消费金额	
+cash_ovd_amt	透支金额	
+ovdue_type	逾期类型	306, 305, 300, 303, 307
+year_fee_amt	年费收入	
+cash_draw_line	现金支取额度	
+int_amt	利息收入	
+brokerage_amt	佣金收入	
+cash_fee_amt	预借现金手续费收入	
+other_amt	其它收入	
+installment_fee_amt	分期收入	
+period_ovdue_int_amt	当前透支利息	
+over_dept_bal	溢缴款余额	
+od_fine_amt	滞纳金收入	
+bank_card_amt	发卡方收入	
+cb_id_expired_date	身份证件到期日	20290429, 20361221, 20290106, 20341203, 20310623
+cb_sex	存款人性别	M, F
+cb_home_zip	存款人邮编	210046, 310000, 213102, 213254, 214200
+cb_home_addr	存款人地址	
+cb_mobile_no	联系方式	
+cb_nationality	国籍	156, CHN, 1
+loss_prep_bal	损失准备余额	
+sa_unbill_bal	未出账单透支余额	
+sa_billed_bal	已出账单透支余额	
+ovdue_bat	逾期本金	
+last_stmt_date	上期账单输出日期	20260510, 20251015, 20260210, 20250315, 20260310
+cash_amt		
+expense_amt		
+overdraft_amt		
+overdraft_intr_amt		
+amt_mid	中长期贷款余额,for人行大集中	
+fse_c_mid	中长期贷款贷方月初到当日的发生额,for人行大集中	
+fse_d_mid	中长期贷款借方月初到当日的发生额,for人行大集中	
+byljtzje	本月累计透支金额	
+by_stages_cash	现金分期 	
+by_stages_car	购车分期 	
+overamt1		
+overamt2		
+core_org_1		01075, 01111, 01098, 01213, 01061
+ab_bal		
+closed_date		2025-07-24 00:00:00, 2025-11-24 00:00:00, 2022-10-07 00:00:00, 2024-05-11 00:00:00, 2026-05-28 00:00:00
+interest_amt	应收利息	
+ovdue_int	逾期利息	
