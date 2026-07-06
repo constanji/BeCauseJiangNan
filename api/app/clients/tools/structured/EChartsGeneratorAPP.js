@@ -3,6 +3,84 @@ const { z } = require('zod');
 const { logger } = require('@because/data-schemas');
 
 /**
+ * 部分模型会把 charts 整段序列化成 JSON 字符串（常见前缀 \\n\\n），
+ * 或在 because_skills_2 的 arguments 习惯影响下误传 string。
+ * 在 Zod 校验前尽量还原为数组，避免 Expected array, received string。
+ */
+function parseChartsInput(value) {
+  if (Array.isArray(value)) {
+    return value;
+  }
+  if (typeof value !== 'string') {
+    return value;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return value;
+  }
+
+  const tryParse = (text) => {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return undefined;
+    }
+  };
+
+  let parsed = tryParse(trimmed);
+  if (parsed == null) {
+    const arrayMatch = trimmed.match(/\[[\s\S]*\]/);
+    if (arrayMatch) {
+      parsed = tryParse(arrayMatch[0]);
+    }
+  }
+
+  if (Array.isArray(parsed)) {
+    return parsed;
+  }
+  if (parsed && typeof parsed === 'object' && Array.isArray(parsed.charts)) {
+    return parsed.charts;
+  }
+
+  return value;
+}
+
+const chartItemSchema = z.object({
+  id: z
+    .string()
+    .describe(
+      '图表唯一标识，用于前端解析匹配（如 chart_1, chart_2 等），对应 markdown 中的 @ec@type:id@ec@ 标记',
+    ),
+  title: z
+    .string()
+    .describe(
+      '图表标题，需具备业务洞察力，如"二线城市是本月销售下滑的重灾区"而非"各地区销售数据"',
+    ),
+  echartsOption: z
+    .union([z.string(), z.record(z.any())])
+    .describe(
+      '完整的 ECharts Option JSON 配置（可以是 JSON 字符串或对象）。' +
+        '必须包含 series（系列数据数组）以及对应的 xAxis/yAxis 或其它坐标系配置。',
+    ),
+  analysisType: z
+    .enum([
+      'dimension_compare',
+      'trend_analysis',
+      'combined_analysis',
+      'composition_distribution',
+      'general',
+    ])
+    .optional()
+    .describe(
+      '归因分析场景类型（可选）：' +
+        'dimension_compare=多维度对比分析, trend_analysis=同比/环比趋势分析, ' +
+        'combined_analysis=多维度+时间轴组合归因, composition_distribution=指标构成/分布归因, ' +
+        'general=通用图表',
+    ),
+});
+
+/**
  * EChartsGeneratorAPP Tool - ECharts 多图生成工具
  *
  * 接收 LLM 生成的 ECharts Option JSON 配置数组，验证后返回配置供前端按 @ec@ 标记内联渲染。
@@ -13,7 +91,8 @@ class EChartsGeneratorAPP extends Tool {
   description =
     'ECharts 图表生成工具。传入 charts 数组（每项含 id、title、echartsOption）生成交互式图表，' +
     '前端根据 id 匹配正文中的 @ec@type:id@ec@ 标记位置渲染。\n\n' +
-    '支持类型：柱状图、折线图、面积图、饼图/环图、散点图、雷达图、热力图、漏斗图、仪表盘、瀑布图、箱线图、桑基图、旭日图、地图等。\n\n' +
+    '**参数格式**：charts 必须是 JSON 数组（[{id,title,echartsOption},...]），不要传 JSON 字符串。\n\n' +
+    '支持类型：柱状图、折线图、面积图、饼图/环图，但最好只用柱状图和折线图。\n\n' +
     '## 图表生成规则（强制执行，违反任何一条视为违规）\n\n' +
     '### 1. 何时必须画图（按顺序判断，命中即执行）\n' +
     '- 数据有 ≥2 行且存在维度字段（brchna/地区/渠道等）有 ≥2 个不同值 → 必须画图\n' +
@@ -37,44 +116,12 @@ class EChartsGeneratorAPP extends Tool {
 
   schema = z.object({
     charts: z
-      .array(
-        z.object({
-          id: z
-            .string()
-            .describe(
-              '图表唯一标识，用于前端解析匹配（如 chart_1, chart_2 等），对应 markdown 中的 @ec@type:id@ec@ 标记',
-            ),
-          title: z
-            .string()
-            .describe(
-              '图表标题，需具备业务洞察力，如"二线城市是本月销售下滑的重灾区"而非"各地区销售数据"',
-            ),
-          echartsOption: z
-            .union([z.string(), z.record(z.any())])
-            .describe(
-              '完整的 ECharts Option JSON 配置（可以是 JSON 字符串或对象）。' +
-                '必须包含 series（系列数据数组）以及对应的 xAxis/yAxis 或其它坐标系配置。',
-            ),
-          analysisType: z
-            .enum([
-              'dimension_compare',
-              'trend_analysis',
-              'combined_analysis',
-              'composition_distribution',
-              'general',
-            ])
-            .optional()
-            .describe(
-              '归因分析场景类型（可选）：' +
-                'dimension_compare=多维度对比分析, trend_analysis=同比/环比趋势分析, ' +
-                'combined_analysis=多维度+时间轴组合归因, composition_distribution=指标构成/分布归因, ' +
-                'general=通用图表',
-            ),
-        }),
-      )
-      .min(1)
+      .union([
+        chartItemSchema.array().min(1),
+        z.string().min(1),
+      ])
       .describe(
-        '图表配置数组，每个图表配置包含 id、title、echartsOption，前端根据 id 匹配对应的图表位置',
+        '图表配置数组，每个图表配置包含 id、title、echartsOption。兼容少数模型误把数组序列化成 JSON 字符串的情况。',
       ),
   });
 
@@ -173,10 +220,17 @@ class EChartsGeneratorAPP extends Tool {
       logger.info('[EChartsGeneratorAPP] ========== 开始调用 ==========');
       logger.info(`[EChartsGeneratorAPP] 输入参数: ${JSON.stringify(input, null, 2)}`);
 
-      const { charts } = input;
+      const charts = parseChartsInput(input?.charts);
 
       if (!charts || !Array.isArray(charts) || charts.length === 0) {
-        return JSON.stringify({ success: false, error: '缺少图表配置数组（charts）' }, null, 2);
+        return JSON.stringify(
+          {
+            success: false,
+            error: '缺少图表配置数组（charts），charts 必须是数组，或可解析为数组的 JSON 字符串',
+          },
+          null,
+          2,
+        );
       }
 
       const processedCharts = [];
@@ -219,3 +273,4 @@ class EChartsGeneratorAPP extends Tool {
 }
 
 module.exports = EChartsGeneratorAPP;
+module.exports.parseChartsInput = parseChartsInput;

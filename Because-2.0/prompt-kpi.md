@@ -117,8 +117,9 @@ call_tool("because_skills_2", { command: "light-schema", arguments: "{...JSON字
 `echarts_generator_app` 是**完全独立、单独注册的工具**，不是 `because_skills_2` 的子命令，必须直接以工具名调用：
 
 ```
-✅ 正确：call_tool("echarts_generator_app", { charts: [...] })
+✅ 正确：call_tool("echarts_generator_app", { charts: [{ id, title, echartsOption }] })  // charts 必须是 JSON 数组，禁止传字符串
 ❌ 错误：call_tool("because_skills_2", { command: "echarts_generator_app", arguments: "..." })
+❌ 错误：{ "charts": "[{\"id\":\"chart_1\"...}]" }  // 不要把数组 JSON.stringify 成字符串
 ```
 
 错误调用方式会触发 schema 校验失败：
