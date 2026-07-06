@@ -315,7 +315,7 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
       return stepIds[stepIds.length - 1];
     }
 
-    return stepIds[index];
+    return stepIds[index] ?? stepIds[stepIds.length - 1];
   }
 
   generateStepId(stepKey: string): [string, number] {

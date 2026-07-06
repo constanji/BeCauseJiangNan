@@ -70,6 +70,44 @@ function parseThinkingContent(content: string): {
   };
 }
 
+/**
+ * Resolve the step ID for `stepKey`, self-healing by creating a new
+ * MESSAGE_CREATION step when one was never registered for this key.
+ *
+ * `stepKey` is derived from mutable graph state (e.g. `invokedToolIds.size`),
+ * so it can legitimately be recomputed to a different value between the
+ * moment a step is dispatched and the moment a later streamed chunk looks
+ * it up (a race between concurrent tool invocations / interleaved chunks).
+ * Previously `graph.getStepIdByKey` would throw in that situation and abort
+ * the entire response with "No step IDs found for stepKey ...". Instead,
+ * mirror the recovery pattern already used in `handleToolCallChunks` and
+ * create a fresh step on demand so streaming can continue.
+ */
+async function getOrCreateStepId(
+  graph: StandardGraph,
+  stepKey: string,
+  metadata?: Record<string, unknown>
+): Promise<string> {
+  try {
+    return graph.getStepIdByKey(stepKey);
+  } catch {
+    console.warn(
+      `[Stream] No step IDs found for stepKey "${stepKey}", creating a recovery MESSAGE_CREATION step instead of failing the run.`
+    );
+    const message_id = getMessageId(stepKey, graph, true) ?? '';
+    return graph.dispatchRunStep(
+      stepKey,
+      {
+        type: StepTypes.MESSAGE_CREATION,
+        message_creation: {
+          message_id,
+        },
+      },
+      metadata
+    );
+  }
+}
+
 function getNonEmptyValue(possibleValues: string[]): string | undefined {
   for (const value of possibleValues) {
     if (value && value.trim() !== '') {
@@ -242,7 +280,7 @@ export class ChatModelStreamHandler implements t.EventHandler {
       );
     }
 
-    const stepId = graph.getStepIdByKey(stepKey);
+    const stepId = await getOrCreateStepId(graph, stepKey, metadata);
     const runStep = graph.getRunStep(stepId);
     if (!runStep) {
       console.warn(`\n
@@ -309,7 +347,7 @@ hasToolCallChunks: ${hasToolCallChunks}
             metadata
           );
 
-          const newStepId = graph.getStepIdByKey(newStepKey);
+          const newStepId = await getOrCreateStepId(graph, newStepKey, metadata);
           await graph.dispatchMessageDelta(newStepId, {
             content: [
               {
