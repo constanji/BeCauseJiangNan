@@ -12,6 +12,10 @@ const {
   deleteLightSchemaById,
   getLightSchemaRow,
 } = require('../lib/lightSchemaContent');
+const { decrypt } = require('../services/crypto');
+const { queryTableRows, queryDistinctColumnValues, normalizePreviewColumns } = require('../services/DatabaseService');
+const { toConnectionConfig } = require('../lib/dataSourceConfig');
+const { isSupportedType } = require('../lib/dbTypes');
 
 const router = express.Router();
 
@@ -267,6 +271,108 @@ router.delete('/:id', (req, res) => {
   } catch (error) {
     const status = error.message === '未找到 LightSchema' ? 404 : 400;
     res.status(status).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/:id/preview-rows', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ success: false, error: '无效的 ID' });
+  }
+  const row = getLightSchemaRow(id);
+  if (!row) return res.status(404).json({ success: false, error: '未找到 LightSchema' });
+
+  const parsed = parseContent(row.content);
+  if (!parsed?.columns?.length) {
+    return res.status(400).json({ success: false, error: 'LightSchema 无有效列' });
+  }
+
+  let columns;
+  try {
+    columns = normalizePreviewColumns(parsed.columns.map((col) => col.name));
+  } catch (error) {
+    return res.status(400).json({ success: false, error: error.message });
+  }
+  const columnSet = new Set(columns);
+
+  const body = req.body || {};
+  const limit = Math.max(1, Math.min(Number(body.limit || 100), 100));
+  const rawFilters = Array.isArray(body.filters) ? body.filters : [];
+  for (const filter of rawFilters) {
+    const column = String(filter?.column || '').trim();
+    if (column && !columnSet.has(column)) {
+      return res.status(400).json({ success: false, error: `无效筛选列: ${column}` });
+    }
+  }
+
+  const source = getDb().prepare('SELECT * FROM data_sources WHERE id = ?').get(row.data_source_id);
+  if (!source) return res.status(404).json({ success: false, error: '数据源不存在' });
+  const dataSource = toConnectionConfig(source);
+  if (!isSupportedType(dataSource.type)) {
+    return res.status(501).json({ success: false, error: `暂不支持的数据源类型: ${dataSource.type}` });
+  }
+
+  try {
+    const password = decrypt(source.password_enc);
+    const result = await queryTableRows(dataSource, password, {
+      schemaName: row.schema_name,
+      tableName: row.table_name,
+      columns,
+      filters: rawFilters,
+      limit,
+    });
+    res.json({ success: true, data: result });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message || String(error) });
+  }
+});
+
+router.post('/:id/preview-distinct', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ success: false, error: '无效的 ID' });
+  }
+  const row = getLightSchemaRow(id);
+  if (!row) return res.status(404).json({ success: false, error: '未找到 LightSchema' });
+
+  const parsed = parseContent(row.content);
+  if (!parsed?.columns?.length) {
+    return res.status(400).json({ success: false, error: 'LightSchema 无有效列' });
+  }
+
+  let columns;
+  try {
+    columns = normalizePreviewColumns(parsed.columns.map((col) => col.name));
+  } catch (error) {
+    return res.status(400).json({ success: false, error: error.message });
+  }
+  const columnSet = new Set(columns);
+
+  const body = req.body || {};
+  const column = String(body.column || '').trim();
+  if (!column || !columnSet.has(column)) {
+    return res.status(400).json({ success: false, error: `无效列: ${column || '(空)'}` });
+  }
+  const limit = Math.max(1, Math.min(Number(body.limit || 200), 500));
+
+  const source = getDb().prepare('SELECT * FROM data_sources WHERE id = ?').get(row.data_source_id);
+  if (!source) return res.status(404).json({ success: false, error: '数据源不存在' });
+  const dataSource = toConnectionConfig(source);
+  if (!isSupportedType(dataSource.type)) {
+    return res.status(501).json({ success: false, error: `暂不支持的数据源类型: ${dataSource.type}` });
+  }
+
+  try {
+    const password = decrypt(source.password_enc);
+    const result = await queryDistinctColumnValues(dataSource, password, {
+      schemaName: row.schema_name,
+      tableName: row.table_name,
+      column,
+      limit,
+    });
+    res.json({ success: true, data: result });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message || String(error) });
   }
 });
 

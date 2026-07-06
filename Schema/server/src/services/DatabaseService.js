@@ -34,6 +34,150 @@ function quoteIdentMySQL(name) {
   return `\`${String(name).replace(/`/g, '``')}\``;
 }
 
+const SAFE_COLUMN_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function escapeLikePattern(value) {
+  return String(value).replace(/[%_\\]/g, '\\$&');
+}
+
+function normalizePreviewColumns(columns) {
+  const unique = [];
+  const seen = new Set();
+  for (const col of columns || []) {
+    const name = String(col || '').trim();
+    if (!name || !SAFE_COLUMN_NAME.test(name) || seen.has(name)) continue;
+    seen.add(name);
+    unique.push(name);
+  }
+  if (unique.length === 0) throw new Error('无有效列');
+  return unique;
+}
+
+function normalizePreviewFilters(filters, columnSet) {
+  const normalized = [];
+  for (const item of filters || []) {
+    const column = String(item?.column || '').trim();
+    const value = String(item?.value ?? '').trim();
+    if (!value || !columnSet.has(column)) continue;
+    normalized.push({ column, value });
+  }
+  return normalized;
+}
+
+function buildPreviewWhereClause(filters, quoteCol, castType) {
+  const clauses = [];
+  const params = [];
+  for (const filter of filters) {
+    clauses.push(`CAST(${quoteCol(filter.column)} AS ${castType}) LIKE ?`);
+    params.push(`%${escapeLikePattern(filter.value)}%`);
+  }
+  return { clauses, params };
+}
+
+async function gaussQueryTableRows(config, password, schemaName, tableName, columns, filters, limit) {
+  const tableRef = `${quoteIdentPg(schemaName)}.${quoteIdentPg(tableName)}`;
+  const selectCols = columns.map((col) => quoteIdentPg(col)).join(', ');
+  const quoteCol = (name) => quoteIdentPg(name);
+  const { clauses, params } = buildPreviewWhereClause(filters, quoteCol, 'TEXT');
+  const whereSql = clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : '';
+  const sql = `SELECT ${selectCols} FROM ${tableRef}${whereSql} LIMIT ${Number(limit)}`;
+  const rows = await gaussdbJdbcQuery(sql, params, config, password);
+  return rows;
+}
+
+async function mysqlQueryTableRows(config, password, schemaName, tableName, columns, filters, limit) {
+  const mysql = loadMysql();
+  const dbName = schemaName || config.database;
+  const connection = await mysql.createConnection(mysqlConnectionConfig(config, password));
+  try {
+    const tableRef = `${quoteIdentMySQL(dbName)}.${quoteIdentMySQL(tableName)}`;
+    const selectCols = columns.map((col) => quoteIdentMySQL(col)).join(', ');
+    const quoteCol = (name) => quoteIdentMySQL(name);
+    const { clauses, params } = buildPreviewWhereClause(filters, quoteCol, 'CHAR');
+    const whereSql = clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : '';
+    const sql = `SELECT ${selectCols} FROM ${tableRef}${whereSql} LIMIT ?`;
+    const [rows] = await connection.query(sql, [...params, Number(limit)]);
+    return rows;
+  } finally {
+    await connection.end();
+  }
+}
+
+async function queryTableRows(config, password, options) {
+  const type = config.type || 'gaussdb';
+  assertSupported(type);
+  const schemaName = String(options.schemaName || '').trim();
+  const tableName = String(options.tableName || '').trim();
+  if (!schemaName || !tableName) throw new Error('schemaName 与 tableName 不能为空');
+  const columns = normalizePreviewColumns(options.columns);
+  const columnSet = new Set(columns);
+  const filters = normalizePreviewFilters(options.filters, columnSet);
+  const limit = Math.max(1, Math.min(Number(options.limit || 100), 100));
+  let rows;
+  if (type === 'gaussdb') {
+    rows = await gaussQueryTableRows(config, password, schemaName, tableName, columns, filters, limit);
+  } else if (type === 'mysql') {
+    rows = await mysqlQueryTableRows(config, password, schemaName, tableName, columns, filters, limit);
+  } else {
+    throw new UnsupportedDbTypeError(type);
+  }
+  return {
+    columns,
+    rows,
+    truncated: rows.length >= limit,
+    limit,
+    filtered: filters.length > 0,
+  };
+}
+
+async function gaussQueryDistinctValues(config, password, schemaName, tableName, column, limit) {
+  const tableRef = `${quoteIdentPg(schemaName)}.${quoteIdentPg(tableName)}`;
+  const safeCol = quoteIdentPg(column);
+  const sql = `SELECT DISTINCT CAST(${safeCol} AS TEXT) AS value FROM ${tableRef} WHERE ${safeCol} IS NOT NULL ORDER BY value LIMIT ${Number(limit)}`;
+  const rows = await gaussdbJdbcQuery(sql, [], config, password);
+  return rows.map((row) => String(row.value ?? Object.values(row)[0] ?? ''));
+}
+
+async function mysqlQueryDistinctValues(config, password, schemaName, tableName, column, limit) {
+  const mysql = loadMysql();
+  const dbName = schemaName || config.database;
+  const connection = await mysql.createConnection(mysqlConnectionConfig(config, password));
+  try {
+    const tableRef = `${quoteIdentMySQL(dbName)}.${quoteIdentMySQL(tableName)}`;
+    const safeCol = quoteIdentMySQL(column);
+    const sql = `SELECT DISTINCT CAST(${safeCol} AS CHAR) AS value FROM ${tableRef} WHERE ${safeCol} IS NOT NULL ORDER BY value LIMIT ?`;
+    const [rows] = await connection.query(sql, [Number(limit)]);
+    return rows.map((row) => String(row.value ?? Object.values(row)[0] ?? ''));
+  } finally {
+    await connection.end();
+  }
+}
+
+async function queryDistinctColumnValues(config, password, options) {
+  const type = config.type || 'gaussdb';
+  assertSupported(type);
+  const schemaName = String(options.schemaName || '').trim();
+  const tableName = String(options.tableName || '').trim();
+  const column = String(options.column || '').trim();
+  if (!schemaName || !tableName || !column) throw new Error('schemaName、tableName 与 column 不能为空');
+  if (!SAFE_COLUMN_NAME.test(column)) throw new Error(`无效列名: ${column}`);
+  const limit = Math.max(1, Math.min(Number(options.limit || 200), 500));
+  let values;
+  if (type === 'gaussdb') {
+    values = await gaussQueryDistinctValues(config, password, schemaName, tableName, column, limit);
+  } else if (type === 'mysql') {
+    values = await mysqlQueryDistinctValues(config, password, schemaName, tableName, column, limit);
+  } else {
+    throw new UnsupportedDbTypeError(type);
+  }
+  return {
+    column,
+    values,
+    truncated: values.length >= limit,
+    limit,
+  };
+}
+
 function assertSupported(type) {
   if (!isSupportedType(type)) throw new UnsupportedDbTypeError(type);
 }
@@ -339,6 +483,9 @@ module.exports = {
   listTables,
   getTableSchema,
   isTableEmpty,
+  queryTableRows,
+  queryDistinctColumnValues,
+  normalizePreviewColumns,
   toDDL,
   isTextType,
   UnsupportedDbTypeError,

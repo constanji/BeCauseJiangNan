@@ -109,6 +109,27 @@ export const api = {
   setCatalogTags: (id: number, tagIds: number[]) =>
     json(`/api/light-schemas/${id}/tags`, { method: 'PUT', body: JSON.stringify({ tagIds }) }),
 
+  previewCatalogRows: (
+    id: number,
+    body?: { filters?: Array<{ column: string; value: string }>; limit?: number },
+  ) => json<{
+    columns: string[];
+    rows: Record<string, unknown>[];
+    truncated: boolean;
+    limit: number;
+    filtered?: boolean;
+  }>(`/api/light-schemas/${id}/preview-rows`, { method: 'POST', body: JSON.stringify(body || {}) }),
+
+  previewCatalogDistinct: (
+    id: number,
+    body: { column: string; limit?: number },
+  ) => json<{
+    column: string;
+    values: string[];
+    truncated: boolean;
+    limit: number;
+  }>(`/api/light-schemas/${id}/preview-distinct`, { method: 'POST', body: JSON.stringify(body) }),
+
   getCatalogStats: () => json<{
     byDataSource: Array<{ dataSourceId: string; dataSourceName: string; count: number }>;
     bySchema: Array<{ schemaName: string; count: number }>;

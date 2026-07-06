@@ -8,6 +8,7 @@ import {
   FolderOpen,
   Search,
   ShoppingCart,
+  Table2,
   Tags,
   X,
 } from 'lucide-react';
@@ -19,6 +20,7 @@ import LightSchemaEditor from '../components/LightSchemaEditor';
 import StatusBanner from '../components/StatusBanner';
 import TagBadge from '../components/TagBadge';
 import TagPicker from '../components/TagPicker';
+import TableDataPreviewPanel from '../components/TableDataPreviewPanel';
 import { useUiState } from '../context/UiStateProvider';
 import { useToast } from '../context/ToastProvider';
 import { buildDataSourceGroups, buildSchemaGroups } from '../lib/catalogGroups';
@@ -161,6 +163,7 @@ export default function ReviewPage({ cartOnly = false }: { cartOnly?: boolean })
   const [detailLoading, setDetailLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [tagEditOpen, setTagEditOpen] = React.useState(false);
+  const [viewDataOpen, setViewDataOpen] = React.useState(false);
   const [editTagIds, setEditTagIds] = React.useState<number[]>([]);
   const [allTags, setAllTags] = React.useState<Tag[]>([]);
 
@@ -235,6 +238,7 @@ export default function ReviewPage({ cartOnly = false }: { cartOnly?: boolean })
   }, [columnSearchQuery, visibleItems]);
 
   React.useEffect(() => {
+    setViewDataOpen(false);
     if (selectedId == null) {
       setDetail(null);
       return;
@@ -530,14 +534,24 @@ export default function ReviewPage({ cartOnly = false }: { cartOnly?: boolean })
                       )}
                     </div>
                   </div>
-                  <Button
-                    variant={isInCart(detail.id) ? 'primary' : 'neutral'}
-                    className="shrink-0 px-3 py-2"
-                    onClick={() => handleToggleCart(detail)}
-                  >
-                    <ShoppingCart className="h-4 w-4" />
-                    {isInCart(detail.id) ? '移出导出篮' : '加入导出篮'}
-                  </Button>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <Button
+                      variant="neutral"
+                      className="px-3 py-2"
+                      onClick={() => setViewDataOpen(true)}
+                    >
+                      <Table2 className="h-4 w-4" />
+                      查看数据
+                    </Button>
+                    <Button
+                      variant={isInCart(detail.id) ? 'primary' : 'neutral'}
+                      className="px-3 py-2"
+                      onClick={() => handleToggleCart(detail)}
+                    >
+                      <ShoppingCart className="h-4 w-4" />
+                      {isInCart(detail.id) ? '移出导出篮' : '加入导出篮'}
+                    </Button>
+                  </div>
                 </div>
               </div>
               <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-6 pb-4 pt-4">
@@ -556,6 +570,15 @@ export default function ReviewPage({ cartOnly = false }: { cartOnly?: boolean })
           )}
         </main>
       </div>
+
+      {viewDataOpen && detail && (
+        <TableDataPreviewPanel
+          catalogId={detail.id}
+          detail={detail}
+          open={viewDataOpen}
+          onClose={() => setViewDataOpen(false)}
+        />
+      )}
 
       {tagEditOpen && detail && (
         <div
