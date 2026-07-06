@@ -98,7 +98,7 @@ AND org_code NOT IN ('00000','FR001','01001','80999','A0000')  -- 排除全行�
 | **knowledge-discovery** | 查指标编码/名称/口径/公式 | **一次只查一个**；有编码用编码（BMxxx/GMxxx/CO_BOP_xxx） |
 | **rag-retrieval** | 补业务背景、监管口径、维度含义 | 可较宽泛；`top_k:5` |
 | **sql-executor** | 执行 SELECT/WITH | 默认返回 ≤50 行；超出会附 `truncation_hint`；可传 `max_rows` 调整 |
-| **fluctuation-attribution** | 「为什么变化」且能展开维度或组成指标 | 必传 `base_data`/`current_data` 行数组 + `metric_fields`；跨机构归因加 `dimension_fields`；**单行汇总无维度时不调用**，直接读预计算列；读 `dimension_attribution` / `structured_attribution` / `next_steps` |
+| **fluctuation-attribution** | 「为什么变化」且能展开维度或组成指标 | 必传 `base_data`/`current_data` 行数组 + `metric_fields`；跨机构归因加 `dimension_fields`；**单行汇总无维度时不调用**，直接读预计算列；读 `dimension_attribution` / `structured_attribution` / `metric_attribution` / `next_steps`；默认 `compact=true`，明细可能仅 TopN，结合 `total_components` / `omitted_components` / `omitted_summary` 判断全量方向 |
 | **result-analysis** | 执行后解读异常/趋势 | `standard` / `deep` |
 | **echarts_generator_app** | 趋势/排名/对比可视化（**独立工具**） | 传入 `charts:[]` 多图；每项含 `id`、`title`、`echartsOption`；正文用 `@ec@type:id@ec@` 标记内联 |
 | ~~sql-validation~~ | **当前跳过** | |
@@ -186,7 +186,7 @@ if len(long_data) >= 2:
     goto DRAW_CHART
 
 // 触发条件 C：以上均不满足
-output("当前数据无时间对比字段，无法生成图表。")
+// 跳过 echarts_generator_app，直接输出文字；仅当用户明确要求图表时，才说明数据粒度不足
 goto OUTPUT_TEXT
 
 // ③ 调用画图工具（DRAW_CHART 入口）
@@ -419,7 +419,7 @@ ORDER BY data_dt DESC;
    FROM kpi_result_ctcx
    WHERE index_number = '{指标编码}'
      AND curr_code = 'CN'
-     AND org_code NOT '00000'
+     AND org_code NOT IN ('00000','FR001','01001','80999','A0000')
      AND data_dt = (SELECT MAX(data_dt) FROM kpi_result_ctcx
                     WHERE index_number = '{指标编码}');
    ```
@@ -438,15 +438,16 @@ ORDER BY data_dt DESC;
        { "org_code": "002", "brchna": "B分行", "index_value": 75 }
      ],
      "metric_fields": ["index_value"],
-     "dimension_fields": ["brchna"]
+     "dimension_fields": ["brchna"],
+     "compact": true
    }
    ```
 
-   > 说明：`base_data` 每行的 `index_value` 填 SQL 行中的**基期列**（如 `m_begin_value`）；`current_data` 每行的 `index_value` 填**现期列**（`index_value`）。维度字段用 `brchna` 或 `org_code`。读返回的 `dimension_attribution`（Adtributor 排名/下钻路径）和 `next_steps[].sql_hint`。
+   > 说明：`base_data` 每行的 `index_value` 填**基期列**（如 `m_begin_value`）；`current_data` 填**现期列**（`index_value`）。除调试外勿传 `compact:false`，避免高基数明细撑爆上下文。
 
    **分支 B — 有明确组成公式（加法/乘法/除法）**
 
-   当 `knowledge-discovery` 返回可分解公式时，传 `target_metric` + `component_metrics`（+ `metric_structure`）：
+   当 `knowledge-discovery` 返回可分解公式时，传 `target_metric` + `component_metrics`（+ `metric_structure`）。`component_metrics` 必须是 `base_data`/`current_data` 中真实存在的数值字段名，不能填机构名、产品名、`brchna` 取值等行维度值；跨机构贡献归因走分支 A 的 `dimension_fields`。
 
    ```json
    {
@@ -456,11 +457,14 @@ ORDER BY data_dt DESC;
      "metric_fields": ["收入", "规模", "利率"],
      "target_metric": "收入",
      "component_metrics": ["规模", "利率"],
-     "metric_structure": "multiplicative"
+     "metric_structure": "multiplicative",
+     "compact": true
    }
    ```
 
-   除法型另传 `numerator_field` / `denominator_field`；乘法型可传 `factor_order`。读返回的 `structured_attribution`。
+   除法型另传 `numerator_field` / `denominator_field`；乘法型可传 `factor_order`。
+
+   > **读返回值**：`components` / `feature_importance` / `drillPaths` 等默认 TopN；`omitted_components > 0` 时须引用 `omitted_summary` 判断省略项净方向，不得把 `components` 当全集。维度贡献读 `dimension_attribution.dimensionRanking[].topContributors`，勿用 `time_comparison.dimensionBreakdowns`。
 
    **分支 C — 仅单行汇总、无维度展开、无组成指标**
 
@@ -507,7 +511,7 @@ L2: kpi_detail（仅 7 个贷款类指标）→ organ_code + kpi_code + data_dat
 
 ## 九、SQL 铁律
 
-- **每条 kpi_result_ctcx 查询必带**：`curr_code = 'CN'` + `org_code NOT IN '00000'`
+- **每条 kpi_result_ctcx 查询必带**：`curr_code = 'CN'` + `org_code NOT IN ('00000','FR001','01001','80999','A0000')`
 - **kpi_detail 币种过滤**：`curr_type = '01'`（与 kpi_result_ctcx 的 `curr_code = 'CN'` **不同**，勿混用）
 - **日期**：用 `MAX(data_dt)` 子查询取最新快照，禁止硬编码日期
 - **同比/环比**：直接读预计算列，禁止自行 JOIN 两期数据
@@ -546,13 +550,14 @@ L2: kpi_detail（仅 7 个贷款类指标）→ organ_code + kpi_code + data_dat
 [指标、方向、幅度、同比/环比，数值标注亿元；图表标记内联在描述趋势的句子中，如："变化趋势如下图所示 @ec@line:chart_1@ec@，同比上升 X%……"]
 
 ### 分析层级
-[L1 kpi_result_ctcx 定位 → L2 kpi_detail 客户明细]
+[已使用层级：L1 kpi_result_ctcx；如需客户/账户明细，可继续下钻至 L2 kpi_detail（仅限覆盖的 7 个贷款类指标）]
 
 ### 公式归因（structured_attribution）
-[加法/乘法/除法贡献；methodology_warnings]
+[加法/乘法/除法贡献；Top贡献项；若有 omitted_components，说明省略项数量及 omitted_summary 净影响；methodology_warnings]
+不要依赖 `time_comparison.dimensionBreakdowns`；维度贡献统一读取 `dimension_attribution.dimensionRanking[].topContributors`。
 
 ### 维度归因排名
-[解释力 / 惊喜度 / 简洁性]
+[按 Adtributor 分数读取 Top维度；每个维度的 topContributors 是 Top贡献项，不代表全集]
 
 ### 关键下钻路径
 [最显著路径；下钻建议用自然语言描述，不输出 SQL]
