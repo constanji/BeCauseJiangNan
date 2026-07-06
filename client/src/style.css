@@ -2,6 +2,22 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * Root layout height: fall back to 100vh for browsers that don't support
+ * the `dvh` unit (older Chrome/Safari/Firefox, WebViews, etc.), and
+ * progressively enhance to 100dvh where supported for better mobile
+ * behavior (address bar / keyboard resizing).
+ */
+.root-main {
+  height: calc(100vh - var(--banner-height, 0px));
+}
+
+@supports (height: 100dvh) {
+  .root-main {
+    height: calc(100dvh - var(--banner-height, 0px));
+  }
+}
+
 /* Custom Variables */
 :root {
   --white: #fff;
