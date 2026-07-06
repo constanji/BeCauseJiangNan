@@ -12,7 +12,10 @@
 const StatisticsEngine = require('./statisticsEngine');
 
 class DimensionDrillDown {
+  /** 下钻搜索时允许探索/收集的路径数上限（算法内部预算，不直接影响返回体积） */
   static MAX_DRILL_PATHS = 10;
+  /** 默认返回给调用方的路径数上限（compact 模式），避免把全部搜索到的路径都塞进 JSON */
+  static OUTPUT_MAX_DRILL_PATHS = 3;
   static MIN_CONTRIBUTION_THRESHOLD = 0.01;
 
   /**
@@ -24,9 +27,10 @@ class DimensionDrillDown {
    * @param {string} params.metricField - 指标字段
    * @param {string[]} params.dimensionFields - 维度字段列表（按层级排列）
    * @param {Object} params.weights - Adtributor权重 {explanatoryPower, surprise, parsimony}
+   * @param {boolean} [params.compact=true] - true=drillPaths 只返回 Top 3（默认）；false=返回全部（最多 MAX_DRILL_PATHS，调试用）
    * @returns {Object} 归因分析结果
    */
-  static analyze({ baseData, currentData, metricField, dimensionFields, weights = {} }) {
+  static analyze({ baseData, currentData, metricField, dimensionFields, weights = {}, compact = true }) {
     const baseTotal = baseData.reduce((s, r) => s + (Number(r[metricField]) || 0), 0);
     const currentTotal = currentData.reduce((s, r) => s + (Number(r[metricField]) || 0), 0);
     const totalChange = currentTotal - baseTotal;
@@ -41,6 +45,7 @@ class DimensionDrillDown {
     const drillPaths = this._buildDrillPaths(
       baseData, currentData, metricField, dimensionFields, totalChange, weights,
     );
+    const outputLimit = compact ? this.OUTPUT_MAX_DRILL_PATHS : this.MAX_DRILL_PATHS;
 
     return {
       overview: {
@@ -52,7 +57,8 @@ class DimensionDrillDown {
         direction: totalChange > 0 ? 'increase' : totalChange < 0 ? 'decrease' : 'unchanged',
       },
       dimensionRanking: dimensionAnalyses,
-      drillPaths: drillPaths.slice(0, this.MAX_DRILL_PATHS),
+      drillPaths: drillPaths.slice(0, outputLimit),
+      total_drill_paths_found: drillPaths.length,
       summary: this._generateSummary(dimensionAnalyses, totalChange, changeRate),
     };
   }

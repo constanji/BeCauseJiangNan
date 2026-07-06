@@ -282,8 +282,10 @@ class TimeComparison {
 
   /**
    * 维度时间差异分析
+   * @param {number} [maxContributors=5] - 返回的贡献明细上限（按 |change| 降序），
+   *   防止高基数维度（机构/客户）把整段 JSON 撑爆；总数通过 total_contributors 保留
    */
-  static _dimensionTimeDiff(baseData, currentData, dimensionKey, metricKey) {
+  static _dimensionTimeDiff(baseData, currentData, dimensionKey, metricKey, maxContributors = 5) {
     const contributions = StatisticsEngine.contributionDecomposition(
       baseData, currentData, dimensionKey, metricKey,
     );
@@ -298,8 +300,12 @@ class TimeComparison {
       jsDivergence = StatisticsEngine.jsDivergence(baseDist, currentDist);
     }
 
+    // 原先未排序直接 slice，截断结果可能不是真正的 Top N；这里先按 |change| 降序排好再截断
+    const sorted = [...contributions].sort((a, b) => Math.abs(b.change) - Math.abs(a.change));
+
     return {
-      contributions: contributions.slice(0, 20),
+      contributions: sorted.slice(0, maxContributors),
+      total_contributors: contributions.length,
       jsDivergence: Number(jsDivergence.toFixed(6)),
       distributionShift: jsDivergence > 0.1 ? 'significant' : jsDivergence > 0.01 ? 'moderate' : 'minimal',
     };

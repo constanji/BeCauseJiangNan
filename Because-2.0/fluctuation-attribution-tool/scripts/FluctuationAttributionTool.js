@@ -44,7 +44,8 @@ class FluctuationAttributionTool extends Tool {
     '使用Adtributor算法计算解释力、惊喜度、简洁性。' +
     '支持同比/环比时间对比，支持多层级维度下钻（最多10条路径）。' +
     '支持加法型/乘法型/除法型三类指标结构归因，自动识别或显式指定 metric_structure。' +
-    '输入需要基期数据和现期数据，或提供带时间字段的完整数据集。';
+    '输入需要基期数据和现期数据，或提供带时间字段的完整数据集。' +
+    '默认返回精简结果（compact=true）：明细列表按贡献度降序只保留Top N，总数记录在 total_xxx/omitted_xxx 字段中，避免高基数维度（机构/客户）撑爆上下文。';
 
   schema = z.object({
     analysis_type: z
@@ -134,6 +135,14 @@ class FluctuationAttributionTool extends Tool {
         '乘法型链式分解的因子顺序（如 [dau, conversion_rate, arpu]），' +
         '应按业务漏斗逻辑排序，顺序影响各因子贡献值',
       ),
+    compact: z
+      .boolean()
+      .optional()
+      .default(true)
+      .describe(
+        '是否返回精简结果（默认true）：drillPaths/components等明细列表按贡献度降序只保留Top N，' +
+        '总数记录在 total_xxx/omitted_xxx 字段中；调试或需要完整明细时可传 false 获取全量。',
+      ),
   });
 
   async _call(input) {
@@ -143,6 +152,7 @@ class FluctuationAttributionTool extends Tool {
         metricFields: input.metric_fields,
         dimensionFields: input.dimension_fields,
         metricStructure: input.metric_structure,
+        compact: input.compact !== false,
       });
 
       let { base_data: baseData, current_data: currentData } = input;
@@ -171,13 +181,23 @@ class FluctuationAttributionTool extends Tool {
         },
       };
 
+      const compact = input.compact !== false;
+
+      // 维度归因（Adtributor）会对同一批 dimension_fields 做更完整的分析（含 Adtributor 打分 +
+      // Top5 贡献项），time_comparison.dimensionBreakdowns 对同一维度只是原始 contributionDecomposition
+      // 的低信息量重复，因此当维度归因即将计算时不再重复传 dimensionFields，避免输出两份雷同明细。
+      const willComputeDimensionAttribution =
+        (input.analysis_type === 'dimension' || input.analysis_type === 'comprehensive') &&
+        Array.isArray(input.dimension_fields) &&
+        input.dimension_fields.length > 0;
+
       // 时间对比分析
       if (input.metric_fields.length > 0) {
         result.time_comparison = TimeComparison.analyze({
           baseData,
           currentData,
           metricFields: input.metric_fields,
-          dimensionFields: input.dimension_fields || [],
+          dimensionFields: willComputeDimensionAttribution ? [] : (input.dimension_fields || []),
         });
       }
 
@@ -191,6 +211,7 @@ class FluctuationAttributionTool extends Tool {
             metricField: input.metric_fields[0],
             dimensionFields: dimFields,
             weights: input.weights || {},
+            compact,
           });
         } else {
           result.dimension_attribution = {
@@ -205,7 +226,7 @@ class FluctuationAttributionTool extends Tool {
       }
 
       // ---- 新增：三类结构化归因引擎 ----
-      const structuredResult = this._performStructuredAttribution(input, baseData, currentData);
+      const structuredResult = this._performStructuredAttribution(input, baseData, currentData, compact);
       if (structuredResult) {
         result.structured_attribution = structuredResult;
       }
@@ -216,14 +237,16 @@ class FluctuationAttributionTool extends Tool {
       // 生成后续建议（含 sql_hint）
       result.next_steps = this._generateNextSteps(result, input);
 
+      const serialized = JSON.stringify(result, null, 2);
       logger.info('[FluctuationAttributionTool] 归因分析完成:', {
         hasTimeCmp: !!result.time_comparison,
         hasDimAttr: !!result.dimension_attribution?.dimensionRanking,
         hasMetricAttr: !!result.metric_attribution,
         hasStructuredAttr: !!result.structured_attribution,
+        outputChars: serialized.length,
       });
 
-      return JSON.stringify(result, null, 2);
+      return serialized;
     } catch (error) {
       logger.error('[FluctuationAttributionTool] 归因分析失败:', error);
       return this._errorResult(`归因分析失败: ${error.message}`);
@@ -233,8 +256,9 @@ class FluctuationAttributionTool extends Tool {
   /**
    * 三类结构化归因（加法/乘法/除法）
    * 自动识别或使用显式指定的 metric_structure
+   * @param {boolean} compact - true=加法归因 components 只保留 Top10（默认）；false=返回全量（调试用）
    */
-  _performStructuredAttribution(input, baseData, currentData) {
+  _performStructuredAttribution(input, baseData, currentData, compact = true) {
     const {
       metric_fields: metricFields,
       target_metric: targetMetric,
@@ -278,6 +302,7 @@ class FluctuationAttributionTool extends Tool {
           targetMetric: primaryMetric,
           componentMetrics: componentMetrics || [],
           dimensionFields: dimensionFields || [],
+          maxComponents: compact ? undefined : Infinity,
         });
       } else if (structure === 'multiplicative') {
         if (!componentMetrics || componentMetrics.length < 2) {
