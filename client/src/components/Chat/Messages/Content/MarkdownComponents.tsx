@@ -9,6 +9,7 @@ import { useCodeBlockContext, useMessageContext } from '~/Providers';
 import { handleDoubleClick } from '~/utils';
 import { useLocalize } from '~/hooks';
 import store from '~/store';
+import EChartsChart from './EChartsChart';
 type TCodeProps = {
   inline?: boolean;
   className?: string;
@@ -187,23 +188,43 @@ export const img: React.ElementType = memo(({ src, alt, title, className, style 
 });
 
 /**
- * chart-placeholder divs in markdown text simply display a visual indicator.
- * The actual Plotly chart is rendered directly in ToolCallInfo from the tool output JSON
- * (vanna-inspired approach: no attachment chain needed).
+ * chart-placeholder: Plotly charts from chart_generation (see tool output).
+ * echarts-marker: ECharts charts from echarts_generator_app, resolved via MessageContext.
  */
 export const chart: React.ElementType = memo((props: Record<string, unknown>) => {
   const {
     className,
     'data-title': title,
+    'data-chart-id': chartId,
     children,
     ...otherProps
   } = props;
 
+  const { echartsChartsById, isSubmitting } = useMessageContext();
+
+  if (typeof className === 'string' && className.includes('echarts-marker')) {
+    const id = typeof chartId === 'string' ? chartId : '';
+    const chartData = id && echartsChartsById?.get(id);
+
+    if (chartData) {
+      return (
+        <EChartsChart title={chartData.title} echartsOption={chartData.echartsOption} />
+      );
+    }
+
+    return (
+      <div className="my-3 flex items-center gap-2 rounded-md border border-border-light bg-surface-secondary px-3 py-4 text-sm text-text-secondary">
+        <div className="h-4 w-4 animate-spin rounded-full border-2 border-border-light border-t-text-primary" />
+        <span>{isSubmitting ? '正在生成图表...' : `图表 ${id || ''} 加载中`}</span>
+      </div>
+    );
+  }
+
   if (typeof className === 'string' && className.includes('chart-placeholder')) {
     return (
       <div className="my-2 flex items-center gap-2 rounded-md border border-border-light bg-surface-secondary px-3 py-2 text-sm text-text-secondary">
-        <span>📊</span>
-        <span>{typeof title === 'string' && title ? title : '图表'}</span>
+        <span>图表</span>
+        <span>{typeof title === 'string' && title ? title : '可视化'}</span>
         <span className="text-xs text-text-tertiary">（见工具调用结果）</span>
       </div>
     );

@@ -45,6 +45,7 @@ const {
   BeCauseSkills2,
   SemanticModelGenerator,
   GenerateExcel,
+  EChartsGeneratorAPP,
 } = require('../');
 const { primeFiles: primeCodeFiles } = require('~/server/services/Files/Code/process');
 const { createFileSearchTool, primeFiles: primeSearchFiles } = require('./fileSearch');
@@ -200,6 +201,7 @@ const loadTools = async ({
     sql_executor: SqlExecutor,
     semantic_model_generator: SemanticModelGenerator,
     generate_excel: GenerateExcel,
+    echarts_generator_app: EChartsGeneratorAPP,
   };
 
   const customConstructors = {

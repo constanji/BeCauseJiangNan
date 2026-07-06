@@ -3,6 +3,7 @@ import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import supersub from 'remark-supersub';
 import rehypeKatex from 'rehype-katex';
+import rehypeRaw from 'rehype-raw';
 import { useRecoilValue } from 'recoil';
 import ReactMarkdown from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
@@ -17,6 +18,7 @@ import { unicodeCitation } from '~/components/Web';
 import { code, a, p, img, chart } from './MarkdownComponents';
 import store from '~/store';
 import { preprocessChartMarkers, hasChartMarkers } from './ChartRenderer';
+import { preprocessEChartsMarkers, hasEChartsMarkers } from './EChartsMarkers';
 
 type TContentProps = {
   content: string;
@@ -44,11 +46,19 @@ const Markdown = memo(({ content = '', isLatestMessage }: TContentProps) => {
       processed = preprocessChartMarkers(processed);
     }
 
+    if (hasEChartsMarkers(processed)) {
+      processed = preprocessEChartsMarkers(processed);
+    }
+
     return processed;
   }, [content, LaTeXParsing, isInitializing]);
 
   const rehypePlugins = useMemo(
     () => [
+      // 必须最先执行：把 preprocessChartMarkers/preprocessEChartsMarkers 生成的
+      // <div class="chart-placeholder|echarts-marker" ...> 原始 HTML 解析成真实的 hast 元素节点，
+      // 否则会被当作纯文本节点原样输出（表现为聊天气泡里出现字面量 <div ...></div>）。
+      [rehypeRaw],
       [rehypeKatex],
       [
         rehypeHighlight,
@@ -90,6 +100,8 @@ const Markdown = memo(({ content = '', isLatestMessage }: TContentProps) => {
             remarkPlugins={remarkPlugins}
             /* @ts-ignore */
             rehypePlugins={rehypePlugins}
+            // rehypeRaw 依赖 remark-rehype 保留原始 HTML 节点，否则会在这一步就被丢弃
+            remarkRehypeOptions={{ allowDangerousHtml: true }}
             components={
               {
                 code,

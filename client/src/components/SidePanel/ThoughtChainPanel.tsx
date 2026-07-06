@@ -10,7 +10,7 @@ import { mapAttachments } from '~/utils/map';
 import { useLocalize } from '~/hooks';
 import MarkdownLite from '~/components/Chat/Messages/Content/MarkdownLite';
 import { ChartRenderer, extractChartDataFromToolOutput } from '~/components/Chat/Messages/Content/ChartRenderer';
-import { extractBecauseSkillsCommand } from '~/utils/toolCallDisplay';
+import { extractBecauseSkillsCommand, mapStandaloneToolName } from '~/utils/toolCallDisplay';
 
 const { Text } = Typography;
 
@@ -331,7 +331,7 @@ function SidePanelToolCallItem({
 
     // 兜底：尽量显示函数名，避免回退成泛化文案
     if (!displayName) {
-      displayName = function_name || null;
+      displayName = mapStandaloneToolName(function_name) || function_name || null;
     }
     
     if (isLoading) {

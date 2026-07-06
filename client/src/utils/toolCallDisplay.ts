@@ -61,3 +61,15 @@ export function extractBecauseSkillsCommand(
 
   return null;
 }
+
+const standaloneToolNameMap: Record<string, string> = {
+  echarts_generator_app: 'ECharts 图表生成',
+  generate_excel: '生成 Excel',
+};
+
+export function mapStandaloneToolName(name?: string | null): string | null {
+  if (!name || typeof name !== 'string') {
+    return null;
+  }
+  return standaloneToolNameMap[name] || null;
+}

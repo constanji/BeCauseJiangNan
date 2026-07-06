@@ -224,6 +224,13 @@
     "authConfig": []
   },
   {
+    "name": "ECharts 图表生成",
+    "pluginKey": "echarts_generator_app",
+    "description": "ECharts 多图生成工具。传入 charts 数组（每项含 id、title、echartsOption），验证后返回配置；模型在正文中用 @ec@type:id@ec@ 标记指定图表内联位置。支持柱状图、折线图、饼图、散点图、雷达图、热力图、桑基图等。",
+    "icon": "📈",
+    "authConfig": []
+  },
+  {
     "name": "生成 Excel",
     "pluginKey": "generate_excel",
     "description": "根据 JSON 规范（多 sheet、表头、数据行、可选样式与公式）生成 .xlsx 并保存到用户文件空间，返回 file_id 供下载或作为对话附件引用。与文件接口 POST /api/files/generate-excel 使用同一套校验与存储逻辑。",

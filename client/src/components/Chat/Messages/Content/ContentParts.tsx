@@ -15,6 +15,7 @@ import { AttachmentGroup } from './Parts/Attachment';
 import Part from './Part';
 import MessageUIResources from './MessageUIResources';
 import { extractChartDataFromToolOutput } from './ChartRenderer';
+import { buildEChartsChartsById } from './EChartsMarkers';
 
 
 type ContentPartsProps = {
@@ -147,6 +148,30 @@ const ContentParts = memo(
         return true;
       });
     }, [content, isCreatedByUser]);
+
+    const echartsChartsById = useMemo(() => {
+      if (!content || isCreatedByUser) {
+        return new Map();
+      }
+
+      const outputs: string[] = [];
+      for (const part of content) {
+        if (!part || part.type !== ContentTypes.TOOL_CALL) {
+          continue;
+        }
+        const toolCall = part[ContentTypes.TOOL_CALL] as Agents.ToolCall | undefined;
+        if (toolCall?.name !== 'echarts_generator_app') {
+          continue;
+        }
+        const output = toolCall.output;
+        if (typeof output === 'string' && output.length > 0) {
+          outputs.push(output);
+        }
+      }
+
+      return buildEChartsChartsById(outputs);
+    }, [content, isCreatedByUser]);
+
     if (edit === true && enterEdit && setSiblingIdx) {
       return (
         <>
@@ -273,6 +298,7 @@ const ContentParts = memo(
                   nextType: content[idx + 1]?.type,
                   isSubmitting: effectiveIsSubmitting,
                   isLatestMessage,
+                  echartsChartsById,
                 }}
               >
                 <Part

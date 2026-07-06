@@ -214,6 +214,15 @@ function extractFromDirectFormat(text: string): ExtractedChartData | null {
 }
 
 
+/** Escape a value for safe embedding inside a double-quoted HTML attribute. */
+function escapeHtmlAttr(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 /**
  * 处理文本中的图表标记，将其替换为占位 HTML
  * 无论是否找到数据都生成占位符，实际渲染由 chart 组件处理
@@ -227,7 +236,7 @@ export const preprocessChartMarkers = (
 
   const chartRegex = /\[chart:([^\]:]+):([^\]]+)\]/g;
   return text.replace(chartRegex, (_match, title, chartId) => {
-    return `<div class="chart-placeholder" data-chart-id="${chartId}" data-title="${title}"></div>`;
+    return `<div class="chart-placeholder" data-chart-id="${escapeHtmlAttr(chartId)}" data-title="${escapeHtmlAttr(title)}"></div>`;
   });
 };
 
