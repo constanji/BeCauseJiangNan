@@ -9,6 +9,11 @@
  */
 
 const StatisticsEngine = require('./statisticsEngine');
+const { capComponentsWithSummary } = require('./capComponents');
+
+/** metricDecomposition.components 默认上限：component_metrics 通常很短（几个指标名），
+ *  但若调用方传入了异常多的字段名，仍需防御性截断，避免无界输出。 */
+const MAX_DECOMPOSITION_COMPONENTS = 10;
 
 class MetricAttribution {
   /**
@@ -249,7 +254,13 @@ class MetricAttribution {
    * @param {string[]} params.componentMetrics - 组成指标
    * @returns {Object} 分解结果
    */
-  static metricDecomposition({ baseData, currentData, targetMetric, componentMetrics }) {
+  static metricDecomposition({
+    baseData,
+    currentData,
+    targetMetric,
+    componentMetrics,
+    maxComponents = MAX_DECOMPOSITION_COMPONENTS,
+  }) {
     const baseTarget = baseData.reduce((s, r) => s + (Number(r[targetMetric]) || 0), 0);
     const currentTarget = currentData.reduce((s, r) => s + (Number(r[targetMetric]) || 0), 0);
     const totalChange = currentTarget - baseTarget;
@@ -268,12 +279,28 @@ class MetricAttribution {
       };
     });
 
-    // 用线性回归估算各组成指标对目标指标的贡献
+    // 用线性回归估算各组成指标对目标指标的贡献（重要性计算仍基于全量 component_metrics，
+    // 不受下方输出截断影响）
     const allData = [...baseData, ...currentData];
     const X = allData.map((r) => componentMetrics.map((m) => Number(r[m]) || 0));
     const Y = allData.map((r) => Number(r[targetMetric]) || 0);
 
     const featureImps = this.featureImportance(X, Y, componentMetrics);
+
+    const enriched = components.map((c) => {
+      const imp = featureImps.find((f) => f.feature === c.metric);
+      return {
+        ...c,
+        importance: imp?.normalizedImportance || 0,
+        direction: imp?.direction || 'unknown',
+      };
+    });
+
+    // 防御性截断：component_metrics 通常很短，但一旦调用方传入异常多的字段名，
+    // 仍按 |change| 降序只保留 Top N，避免无界输出；总数/省略部分方向摘要保留在
+    // total_components / omitted_components / omitted_summary 中。
+    const { output, totalComponents, omittedComponents, omittedSummary } =
+      capComponentsWithSummary(enriched, { maxComponents, changeField: 'change' });
 
     return {
       targetMetric,
@@ -281,14 +308,10 @@ class MetricAttribution {
       currentValue: currentTarget,
       totalChange,
       changeRate: baseTarget !== 0 ? totalChange / baseTarget : 0,
-      components: components.map((c) => {
-        const imp = featureImps.find((f) => f.feature === c.metric);
-        return {
-          ...c,
-          importance: imp?.normalizedImportance || 0,
-          direction: imp?.direction || 'unknown',
-        };
-      }),
+      components: output,
+      total_components: totalComponents,
+      omitted_components: omittedComponents,
+      ...(omittedSummary ? { omitted_summary: omittedSummary } : {}),
       modelFit: featureImps.length > 0 ? 'regression' : 'direct',
     };
   }

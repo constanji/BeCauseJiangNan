@@ -4,6 +4,7 @@
 
 const StatisticsEngine = require('./statisticsEngine');
 const { detectMaskingEffect, appendWarnings } = require('./methodologyWarnings');
+const { capComponentsWithSummary } = require('./capComponents');
 
 /** 默认返回的最大子项数（按 |change| 降序），避免高基数维度（机构/客户）把整段 JSON 撑爆 */
 const MAX_COMPONENTS = 10;
@@ -13,20 +14,12 @@ function sumMetric(data, metricKey) {
 }
 
 /**
- * 按 |change| 降序排序后截断，返回值附带 total/omitted 计数，
- * 让模型知道明细已被裁剪、还有多少条被省略，而不是误以为只有这几项。
+ * 按 |change| 降序排序后截断，返回值附带 total/omitted 计数 + 被省略部分的
+ * 正负贡献聚合摘要（omittedSummary），避免模型因看不到被截断的尾部而误判
+ * 整体方向（例如省略的机构里其实正负贡献集中在一侧）。
  */
 function sortAndCapComponents(components, maxComponents) {
-  const sorted = [...components].sort((a, b) => Math.abs(b.change) - Math.abs(a.change));
-  const totalComponents = sorted.length;
-  const shouldCap = Number.isFinite(maxComponents) && totalComponents > maxComponents;
-  const output = shouldCap ? sorted.slice(0, maxComponents) : sorted;
-  return {
-    sorted,
-    output,
-    totalComponents,
-    omittedComponents: shouldCap ? totalComponents - output.length : 0,
-  };
+  return capComponentsWithSummary(components, { maxComponents, changeField: 'change' });
 }
 
 /**
@@ -87,7 +80,7 @@ function analyzeAdditiveFromComponents({
   const masking = detectMaskingEffect(deltaTotal, components);
   if (masking) warnings.push(masking);
 
-  const { output, totalComponents, omittedComponents } = sortAndCapComponents(
+  const { output, totalComponents, omittedComponents, omittedSummary } = sortAndCapComponents(
     components,
     maxComponents,
   );
@@ -103,6 +96,7 @@ function analyzeAdditiveFromComponents({
     components: output,
     total_components: totalComponents,
     omitted_components: omittedComponents,
+    ...(omittedSummary ? { omitted_summary: omittedSummary } : {}),
     topContributor: output[0] || null,
     methodology_warnings: warnings,
   };
@@ -136,7 +130,7 @@ function analyzeAdditiveByDimensions({
       contributionRate: deltaTotal !== 0 ? c.change / deltaTotal : 0,
     }));
     const masking = detectMaskingEffect(deltaTotal, components);
-    const { output, totalComponents, omittedComponents } = sortAndCapComponents(
+    const { output, totalComponents, omittedComponents, omittedSummary } = sortAndCapComponents(
       components,
       maxComponents,
     );
@@ -145,6 +139,7 @@ function analyzeAdditiveByDimensions({
       components: output,
       total_components: totalComponents,
       omitted_components: omittedComponents,
+      ...(omittedSummary ? { omitted_summary: omittedSummary } : {}),
       methodology_warnings: masking ? [masking] : [],
     };
   }

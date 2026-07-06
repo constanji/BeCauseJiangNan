@@ -5,6 +5,7 @@ const StatisticsEngine = require('../../utils/statisticsEngine');
 const TimeComparison = require('../../utils/timeComparison');
 const DimensionDrillDown = require('../../utils/dimensionDrillDown');
 const MetricAttribution = require('../../utils/metricAttribution');
+const { capComponentsWithSummary } = require('../../utils/capComponents');
 
 // ---- 新增：三类结构归因引擎 ----
 const { classifyMetricStructure } = require('../../utils/metricStructureClassifier');
@@ -222,7 +223,7 @@ class FluctuationAttributionTool extends Tool {
 
       // 指标归因（线性回归/特征重要性）
       if (input.analysis_type === 'metric' || input.analysis_type === 'comprehensive') {
-        result.metric_attribution = this._performMetricAttribution(input, baseData, currentData);
+        result.metric_attribution = this._performMetricAttribution(input, baseData, currentData, compact);
       }
 
       // ---- 新增：三类结构化归因引擎 ----
@@ -396,9 +397,11 @@ class FluctuationAttributionTool extends Tool {
 
   /**
    * 执行指标归因（线性回归/ElasticNet/特征重要性）
+   * @param {boolean} compact - true=decomposition.components / feature_importance 只保留Top10（默认）；false=全量（调试用）
    */
-  _performMetricAttribution(input, baseData, currentData) {
+  _performMetricAttribution(input, baseData, currentData, compact = true) {
     const result = {};
+    const maxComponents = compact ? undefined : Infinity;
 
     if (input.metric_fields.length > 1) {
       const allData = [...baseData, ...currentData];
@@ -411,6 +414,7 @@ class FluctuationAttributionTool extends Tool {
         currentData,
         targetMetric: input.target_metric,
         componentMetrics: input.component_metrics,
+        maxComponents,
       });
     }
 
@@ -419,9 +423,20 @@ class FluctuationAttributionTool extends Tool {
       const encoded = this._encodeDimensionsAsFeatures(allData, input.dimension_fields);
       if (encoded.X.length > 0) {
         const Y = allData.map((r) => Number(r[input.metric_fields[0]]) || 0);
-        result.feature_importance = MetricAttribution.featureImportance(
+        const fullFeatureImportance = MetricAttribution.featureImportance(
           encoded.X, Y, encoded.featureNames,
         );
+        // dimension_fields 多于1个时，one-hot 编码后的特征数会成倍增长（每个维度最多10个取值），
+        // 同样按重要性降序截断，避免和 components 一样无界增长
+        const { output, totalComponents, omittedComponents } = capComponentsWithSummary(
+          fullFeatureImportance,
+          { maxComponents, changeField: 'importance' },
+        );
+        result.feature_importance = output;
+        if (omittedComponents > 0) {
+          result.feature_importance_total = totalComponents;
+          result.feature_importance_omitted = omittedComponents;
+        }
 
         const elasticResult = MetricAttribution.elasticNet(encoded.X, Y, 0.1, 0.5);
         result.regression = {
