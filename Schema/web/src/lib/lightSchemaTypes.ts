@@ -8,6 +8,8 @@ export type LightSchemaColumn = {
 
 export type LightSchemaContent = {
   tableName: string;
+  /** 表级备注（用户可编辑） */
+  tableDescription?: string;
   columns: LightSchemaColumn[];
   primaryKeys?: string[];
 };
@@ -36,6 +38,7 @@ export function parseLightSchemaContent(raw: unknown, fallbackTableName = ''): L
   if (columns.length === 0) return null;
   return {
     tableName: String(record.tableName || fallbackTableName),
+    tableDescription: String(record.tableDescription || record.tableRemark || ''),
     columns: columns.map((col) => {
       const c = col as Record<string, unknown>;
       return {

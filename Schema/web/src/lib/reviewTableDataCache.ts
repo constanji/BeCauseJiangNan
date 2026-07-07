@@ -6,6 +6,8 @@ export type PreviewRowsPayload = {
   truncated: boolean;
   limit: number;
   filtered?: boolean;
+  deduped?: boolean;
+  dedupeBy?: string;
 };
 
 type CachedPreview = PreviewRowsPayload & {
@@ -35,11 +37,16 @@ export function loadCachedPreviewRows(catalogId: number): PreviewRowsPayload | n
       sessionStorage.removeItem(dataCacheKey(catalogId));
       return null;
     }
+    const limit = Number(parsed.limit) || 50;
+    if (limit > 50 || parsed.rows.length > 50) {
+      sessionStorage.removeItem(dataCacheKey(catalogId));
+      return null;
+    }
     return {
       columns: parsed.columns,
       rows: parsed.rows,
       truncated: Boolean(parsed.truncated),
-      limit: Number(parsed.limit) || 100,
+      limit,
       filtered: false,
     };
   } catch {

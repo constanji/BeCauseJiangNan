@@ -41,7 +41,9 @@ function validateAndNormalizeContent(content, expectedTableName) {
     ? [...new Set(content.primaryKeys.map((k) => String(k)).filter((k) => names.has(k)))]
     : [];
 
-  return { tableName, columns, primaryKeys };
+  const tableDescription = String(content.tableDescription || '').trim();
+
+  return { tableName, tableDescription, columns, primaryKeys };
 }
 
 function getLightSchemaRow(id) {

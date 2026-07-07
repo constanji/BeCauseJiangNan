@@ -1,4 +1,4 @@
-import type { CatalogDetail, CatalogItem, SearchHit, Tag } from '../lib/uiState';
+import type { CatalogDetail, CatalogItem, RemoteTablePreview, SearchHit, Tag } from '../lib/uiState';
 import type { LightSchemaContent } from '../lib/lightSchemaTypes';
 
 export type ApiResponse<T> = { success: boolean; data?: T; error?: string; message?: string };
@@ -111,13 +111,19 @@ export const api = {
 
   previewCatalogRows: (
     id: number,
-    body?: { filters?: Array<{ column: string; value: string }>; limit?: number },
+    body?: {
+      filters?: Array<{ column: string; value: string }>;
+      limit?: number;
+      dedupeBy?: string;
+    },
   ) => json<{
     columns: string[];
     rows: Record<string, unknown>[];
     truncated: boolean;
     limit: number;
     filtered?: boolean;
+    deduped?: boolean;
+    dedupeBy?: string;
   }>(`/api/light-schemas/${id}/preview-rows`, { method: 'POST', body: JSON.stringify(body || {}) }),
 
   previewCatalogDistinct: (
@@ -143,6 +149,73 @@ export const api = {
     schemaName?: string;
     tagId?: string;
   }) => json<SearchHit[]>(`/api/light-schemas/search${qs(params)}`),
+
+  searchLightSchemaData: (params: {
+    q: string;
+    dataSourceId: string;
+    schemaName: string;
+  }) => json<SearchHit[]>(`/api/light-schemas/data-search${qs({
+    q: params.q,
+    dataSourceId: params.dataSourceId,
+    schemaName: params.schemaName,
+    searchLight: '1',
+  })}`),
+
+  deepSearchLightSchemaData: (body: {
+    q: string;
+    dataSourceId: string;
+    schemaName: string;
+    tableNames?: string[];
+  }) => json<SearchHit[]>('/api/light-schemas/deep-data-search', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  }),
+
+  searchSchemaExplore: (dataSourceId: string, params: { q: string; schemaName: string }) =>
+    json<SearchHit[]>(`/api/data-sources/${dataSourceId}/catalog/explore-search${qs(params)}`),
+
+  previewRemoteTable: (dataSourceId: string, schemaName: string, tableName: string) =>
+    json<RemoteTablePreview>(
+      `/api/data-sources/${dataSourceId}/schemas/${encodeURIComponent(schemaName)}/tables/${encodeURIComponent(tableName)}/preview`,
+    ),
+
+  previewRemoteRows: (
+    dataSourceId: string,
+    schemaName: string,
+    tableName: string,
+    body?: {
+      columns: string[];
+      filters?: Array<{ column: string; value: string }>;
+      limit?: number;
+      dedupeBy?: string;
+    },
+  ) => json<{
+    columns: string[];
+    rows: Record<string, unknown>[];
+    truncated: boolean;
+    limit: number;
+    filtered?: boolean;
+    deduped?: boolean;
+    dedupeBy?: string;
+  }>(
+    `/api/data-sources/${dataSourceId}/schemas/${encodeURIComponent(schemaName)}/tables/${encodeURIComponent(tableName)}/preview-rows`,
+    { method: 'POST', body: JSON.stringify(body || {}) },
+  ),
+
+  previewRemoteDistinct: (
+    dataSourceId: string,
+    schemaName: string,
+    tableName: string,
+    body: { column: string; limit?: number },
+  ) => json<{
+    column: string;
+    values: string[];
+    truncated: boolean;
+    limit: number;
+  }>(
+    `/api/data-sources/${dataSourceId}/schemas/${encodeURIComponent(schemaName)}/tables/${encodeURIComponent(tableName)}/preview-distinct`,
+    { method: 'POST', body: JSON.stringify(body) },
+  ),
 
   exportCatalogExcel: (body: { items?: Array<{ lightSchemaId?: number; dataSourceId?: string; schemaName?: string; tableName?: string }>; tagIds?: number[] }, signal?: AbortSignal) =>
     blob('/api/light-schemas/export/excel', { method: 'POST', body: JSON.stringify(body), signal }),

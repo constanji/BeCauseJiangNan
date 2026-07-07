@@ -74,18 +74,28 @@ function buildPreviewWhereClause(filters, quoteCol, castType) {
   return { clauses, params };
 }
 
-async function gaussQueryTableRows(config, password, schemaName, tableName, columns, filters, limit) {
+function pickDedupeOrderColumn(columns, dedupeBy) {
+  return columns.find((col) => col !== dedupeBy) || dedupeBy;
+}
+
+async function gaussQueryTableRows(config, password, schemaName, tableName, columns, filters, limit, dedupeBy) {
   const tableRef = `${quoteIdentPg(schemaName)}.${quoteIdentPg(tableName)}`;
   const selectCols = columns.map((col) => quoteIdentPg(col)).join(', ');
   const quoteCol = (name) => quoteIdentPg(name);
   const { clauses, params } = buildPreviewWhereClause(filters, quoteCol, 'TEXT');
   const whereSql = clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : '';
-  const sql = `SELECT ${selectCols} FROM ${tableRef}${whereSql} LIMIT ${Number(limit)}`;
+  let sql;
+  if (dedupeBy) {
+    const orderCol = pickDedupeOrderColumn(columns, dedupeBy);
+    sql = `SELECT DISTINCT ON (${quoteCol(dedupeBy)}) ${selectCols} FROM ${tableRef}${whereSql} ORDER BY ${quoteCol(dedupeBy)}, ${quoteCol(orderCol)} LIMIT ${Number(limit)}`;
+  } else {
+    sql = `SELECT ${selectCols} FROM ${tableRef}${whereSql} LIMIT ${Number(limit)}`;
+  }
   const rows = await gaussdbJdbcQuery(sql, params, config, password);
   return rows;
 }
 
-async function mysqlQueryTableRows(config, password, schemaName, tableName, columns, filters, limit) {
+async function mysqlQueryTableRows(config, password, schemaName, tableName, columns, filters, limit, dedupeBy) {
   const mysql = loadMysql();
   const dbName = schemaName || config.database;
   const connection = await mysql.createConnection(mysqlConnectionConfig(config, password));
@@ -95,8 +105,21 @@ async function mysqlQueryTableRows(config, password, schemaName, tableName, colu
     const quoteCol = (name) => quoteIdentMySQL(name);
     const { clauses, params } = buildPreviewWhereClause(filters, quoteCol, 'CHAR');
     const whereSql = clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : '';
-    const sql = `SELECT ${selectCols} FROM ${tableRef}${whereSql} LIMIT ?`;
-    const [rows] = await connection.query(sql, [...params, Number(limit)]);
+    let sql;
+    let queryParams;
+    if (dedupeBy) {
+      const orderCol = pickDedupeOrderColumn(columns, dedupeBy);
+      const innerCols = columns.map((col) => quoteIdentMySQL(col)).join(', ');
+      sql = `SELECT ${innerCols} FROM (
+        SELECT ${innerCols}, ROW_NUMBER() OVER (PARTITION BY ${quoteIdentMySQL(dedupeBy)} ORDER BY ${quoteIdentMySQL(orderCol)}) AS __rn
+        FROM ${tableRef}${whereSql}
+      ) __deduped WHERE __rn = 1 LIMIT ?`;
+      queryParams = [...params, Number(limit)];
+    } else {
+      sql = `SELECT ${selectCols} FROM ${tableRef}${whereSql} LIMIT ?`;
+      queryParams = [...params, Number(limit)];
+    }
+    const [rows] = await connection.query(sql, queryParams);
     return rows;
   } finally {
     await connection.end();
@@ -112,12 +135,16 @@ async function queryTableRows(config, password, options) {
   const columns = normalizePreviewColumns(options.columns);
   const columnSet = new Set(columns);
   const filters = normalizePreviewFilters(options.filters, columnSet);
-  const limit = Math.max(1, Math.min(Number(options.limit || 100), 100));
+  const limit = Math.max(1, Math.min(Number(options.limit || 50), 50));
+  const dedupeBy = String(options.dedupeBy || '').trim();
+  if (dedupeBy && !columnSet.has(dedupeBy)) {
+    throw new Error(`无效去重列: ${dedupeBy}`);
+  }
   let rows;
   if (type === 'gaussdb') {
-    rows = await gaussQueryTableRows(config, password, schemaName, tableName, columns, filters, limit);
+    rows = await gaussQueryTableRows(config, password, schemaName, tableName, columns, filters, limit, dedupeBy);
   } else if (type === 'mysql') {
-    rows = await mysqlQueryTableRows(config, password, schemaName, tableName, columns, filters, limit);
+    rows = await mysqlQueryTableRows(config, password, schemaName, tableName, columns, filters, limit, dedupeBy);
   } else {
     throw new UnsupportedDbTypeError(type);
   }
@@ -127,6 +154,8 @@ async function queryTableRows(config, password, options) {
     truncated: rows.length >= limit,
     limit,
     filtered: filters.length > 0,
+    deduped: Boolean(dedupeBy),
+    dedupeBy: dedupeBy || undefined,
   };
 }
 
@@ -477,6 +506,207 @@ async function getTableSchema(config, password, schemaName, tableName, sampleLim
   throw new UnsupportedDbTypeError(type);
 }
 
+function buildSchemaSearchLike(query) {
+  return `%${String(query || '').trim().toLowerCase()}%`;
+}
+
+async function gaussSearchSchemaTables(config, password, schemaName, query) {
+  const like = buildSchemaSearchLike(query);
+  const rows = await gaussdbJdbcQuery(
+    `SELECT
+       n.nspname AS schema_name,
+       c.relname AS table_name,
+       a.attname AS column_name,
+       COALESCE(d.description, '') AS description
+     FROM pg_catalog.pg_class c
+     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+     JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid
+     LEFT JOIN pg_catalog.pg_description d ON d.objoid = c.oid AND d.objsubid = a.attnum
+     WHERE n.nspname = ?
+       AND c.relkind IN ('r', 'p')
+       AND a.attnum > 0
+       AND NOT a.attisdropped
+       AND (
+         LOWER(c.relname) LIKE ?
+         OR LOWER(a.attname) LIKE ?
+         OR LOWER(COALESCE(d.description, '')) LIKE ?
+       )
+     ORDER BY c.relname, a.attnum`,
+    [schemaName, like, like, like],
+    config,
+    password,
+  );
+  return rows.map((row) => ({
+    schemaName: row.schema_name,
+    tableName: row.table_name,
+    columnName: row.column_name,
+    description: row.description || '',
+  }));
+}
+
+async function mysqlSearchSchemaTables(config, password, schemaName, query) {
+  const mysql = loadMysql();
+  const dbName = schemaName || config.database;
+  const like = buildSchemaSearchLike(query);
+  const connection = await mysql.createConnection(mysqlConnectionConfig(config, password));
+  try {
+    const [rows] = await connection.query(
+      `SELECT
+         TABLE_SCHEMA AS schema_name,
+         TABLE_NAME AS table_name,
+         COLUMN_NAME AS column_name,
+         COALESCE(COLUMN_COMMENT, '') AS description
+       FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = ?
+         AND (
+           LOWER(TABLE_NAME) LIKE ?
+           OR LOWER(COLUMN_NAME) LIKE ?
+           OR LOWER(COALESCE(COLUMN_COMMENT, '')) LIKE ?
+         )
+       ORDER BY TABLE_NAME, ORDINAL_POSITION`,
+      [dbName, like, like, like],
+    );
+    return rows.map((row) => ({
+      schemaName: row.schema_name,
+      tableName: row.table_name,
+      columnName: row.column_name,
+      description: row.description || '',
+    }));
+  } finally {
+    await connection.end();
+  }
+}
+
+async function searchSchemaTables(config, password, options = {}) {
+  const type = config.type || 'gaussdb';
+  assertSupported(type);
+  const schemaName = String(options.schemaName || '').trim();
+  const query = String(options.q || '').trim();
+  if (!schemaName) throw new Error('schemaName 不能为空');
+  if (!query) throw new Error('搜索关键词不能为空');
+  if (type === 'gaussdb') return gaussSearchSchemaTables(config, password, schemaName, query);
+  if (type === 'mysql') return mysqlSearchSchemaTables(config, password, schemaName, query);
+  throw new UnsupportedDbTypeError(type);
+}
+
+async function gaussCountTableColumns(config, password, schemaName, tableNames) {
+  if (!tableNames.length) return new Map();
+  const placeholders = tableNames.map(() => '?').join(',');
+  const rows = await gaussdbJdbcQuery(
+    `SELECT c.relname AS table_name, COUNT(*) AS column_count
+     FROM pg_catalog.pg_class c
+     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+     JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid
+     WHERE n.nspname = ?
+       AND c.relname IN (${placeholders})
+       AND c.relkind IN ('r', 'p')
+       AND a.attnum > 0
+       AND NOT a.attisdropped
+     GROUP BY c.relname`,
+    [schemaName, ...tableNames],
+    config,
+    password,
+  );
+  return new Map(rows.map((row) => [row.table_name, Number(row.column_count || 0)]));
+}
+
+async function mysqlCountTableColumns(config, password, schemaName, tableNames) {
+  if (!tableNames.length) return new Map();
+  const mysql = loadMysql();
+  const dbName = schemaName || config.database;
+  const connection = await mysql.createConnection(mysqlConnectionConfig(config, password));
+  try {
+    const placeholders = tableNames.map(() => '?').join(',');
+    const [rows] = await connection.query(
+      `SELECT TABLE_NAME AS table_name, COUNT(*) AS column_count
+       FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = ? AND TABLE_NAME IN (${placeholders})
+       GROUP BY TABLE_NAME`,
+      [dbName, ...tableNames],
+    );
+    return new Map(rows.map((row) => [row.table_name, Number(row.column_count || 0)]));
+  } finally {
+    await connection.end();
+  }
+}
+
+async function countTableColumns(config, password, schemaName, tableNames) {
+  const type = config.type || 'gaussdb';
+  assertSupported(type);
+  if (type === 'gaussdb') return gaussCountTableColumns(config, password, schemaName, tableNames);
+  if (type === 'mysql') return mysqlCountTableColumns(config, password, schemaName, tableNames);
+  throw new UnsupportedDbTypeError(type);
+}
+
+async function gaussDeepSearchColumnValues(config, password, schemaName, tableName, column, query, limitPerColumn) {
+  const tableRef = `${quoteIdentPg(schemaName)}.${quoteIdentPg(tableName)}`;
+  const safeCol = quoteIdentPg(column);
+  const like = `%${escapeLikePattern(query)}%`;
+  const rows = await gaussdbJdbcQuery(
+    `SELECT DISTINCT CAST(${safeCol} AS TEXT) AS value
+     FROM ${tableRef}
+     WHERE ${safeCol} IS NOT NULL AND CAST(${safeCol} AS TEXT) ILIKE ?
+     LIMIT ${Number(limitPerColumn)}`,
+    [like],
+    config,
+    password,
+  );
+  return rows.map((row) => String(row.value ?? Object.values(row)[0] ?? '')).filter(Boolean);
+}
+
+async function mysqlDeepSearchColumnValues(config, password, schemaName, tableName, column, query, limitPerColumn) {
+  const mysql = loadMysql();
+  const dbName = schemaName || config.database;
+  const connection = await mysql.createConnection(mysqlConnectionConfig(config, password));
+  try {
+    const tableRef = `${quoteIdentMySQL(dbName)}.${quoteIdentMySQL(tableName)}`;
+    const safeCol = quoteIdentMySQL(column);
+    const like = `%${escapeLikePattern(query)}%`;
+    const [rows] = await connection.query(
+      `SELECT DISTINCT CAST(${safeCol} AS CHAR) AS value
+       FROM ${tableRef}
+       WHERE ${safeCol} IS NOT NULL AND CAST(${safeCol} AS CHAR) LIKE ?
+       LIMIT ?`,
+      [like, Number(limitPerColumn)],
+    );
+    return rows.map((row) => String(row.value ?? Object.values(row)[0] ?? '')).filter(Boolean);
+  } finally {
+    await connection.end();
+  }
+}
+
+async function deepSearchTableValues(config, password, options = {}) {
+  const type = config.type || 'gaussdb';
+  assertSupported(type);
+  const schemaName = String(options.schemaName || '').trim();
+  const tableName = String(options.tableName || '').trim();
+  const query = String(options.q || '').trim();
+  const textColumns = Array.isArray(options.textColumns) ? options.textColumns : [];
+  const limitPerColumn = Math.max(1, Math.min(Number(options.limitPerColumn || 5), 20));
+  if (!schemaName || !tableName) throw new Error('schemaName 与 tableName 不能为空');
+  if (!query) throw new Error('搜索关键词不能为空');
+
+  const matches = [];
+  for (const column of textColumns) {
+    const name = String(column || '').trim();
+    if (!name || !SAFE_COLUMN_NAME.test(name)) continue;
+    let values = [];
+    try {
+      if (type === 'gaussdb') {
+        values = await gaussDeepSearchColumnValues(config, password, schemaName, tableName, name, query, limitPerColumn);
+      } else if (type === 'mysql') {
+        values = await mysqlDeepSearchColumnValues(config, password, schemaName, tableName, name, query, limitPerColumn);
+      }
+    } catch {
+      continue;
+    }
+    if (values.length > 0) {
+      matches.push({ columnName: name, values });
+    }
+  }
+  return matches;
+}
+
 module.exports = {
   testConnection,
   listSchemas,
@@ -485,6 +715,9 @@ module.exports = {
   isTableEmpty,
   queryTableRows,
   queryDistinctColumnValues,
+  searchSchemaTables,
+  countTableColumns,
+  deepSearchTableValues,
   normalizePreviewColumns,
   toDDL,
   isTextType,

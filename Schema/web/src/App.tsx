@@ -12,6 +12,7 @@ import LightSchemaLibrary from './pages/LightSchemaLibrary';
 import ReviewPage from './pages/ReviewPage';
 import TagManagement from './pages/TagManagement';
 import LightSchemaSearch from './pages/LightSchemaSearch';
+import SchemaExplorePage from './pages/SchemaExplorePage';
 import ExportPage from './pages/ExportPage';
 
 export default function App() {
@@ -26,6 +27,7 @@ export default function App() {
               <Route index element={<LightSchemaLibrary />} />
               <Route path="review" element={<ReviewPage />} />
               <Route path="search" element={<LightSchemaSearch />} />
+              <Route path="explore" element={<SchemaExplorePage />} />
             </Route>
             <Route path="/review" element={<Navigate to="/library/review" replace />} />
             <Route path="/search" element={<Navigate to="/library/search" replace />} />

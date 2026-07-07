@@ -10,6 +10,7 @@ import {
   ShoppingCart,
   Table2,
   Tags,
+  StickyNote,
   X,
 } from 'lucide-react';
 import { api } from '../api/client';
@@ -166,6 +167,9 @@ export default function ReviewPage({ cartOnly = false }: { cartOnly?: boolean })
   const [viewDataOpen, setViewDataOpen] = React.useState(false);
   const [editTagIds, setEditTagIds] = React.useState<number[]>([]);
   const [allTags, setAllTags] = React.useState<Tag[]>([]);
+  const [tableRemark, setTableRemark] = React.useState('');
+  const [remarkSaving, setRemarkSaving] = React.useState(false);
+  const [remarkEditOpen, setRemarkEditOpen] = React.useState(false);
 
   React.useEffect(() => {
     api.listTags().then((r) => {
@@ -254,6 +258,51 @@ export default function ReviewPage({ cartOnly = false }: { cartOnly?: boolean })
   }, [selectedId]);
 
   const parsed = detail ? parseLightSchemaContent(detail.content, detail.tableName) : null;
+
+  React.useEffect(() => {
+    setTableRemark(parsed?.tableDescription || '');
+    setRemarkEditOpen(false);
+  }, [detail?.id, parsed?.tableDescription]);
+
+  const openRemarkEdit = () => {
+    setTableRemark(parsed?.tableDescription || '');
+    setRemarkEditOpen(true);
+  };
+
+  const closeRemarkEdit = () => {
+    setTableRemark(parsed?.tableDescription || '');
+    setRemarkEditOpen(false);
+  };
+
+  const saveTableRemark = React.useCallback(async (nextRemark?: string) => {
+    if (!detail || !parsed) return;
+    const trimmed = (nextRemark ?? tableRemark).trim();
+    if (trimmed === (parsed.tableDescription || '').trim()) {
+      setRemarkEditOpen(false);
+      return;
+    }
+    setRemarkSaving(true);
+    setError(null);
+    try {
+      const res = await api.updateCatalogContent(detail.id, {
+        ...parsed,
+        tableDescription: trimmed,
+      });
+      if (!res.success || !res.data) throw new Error(res.error || '保存备注失败');
+      setDetail(res.data);
+      setTableRemark(trimmed);
+      setRemarkEditOpen(false);
+      showToast('表备注已保存');
+    } catch (err: any) {
+      const message = err?.message || String(err);
+      setError(message);
+      showToast(message, 'error');
+    } finally {
+      setRemarkSaving(false);
+    }
+  }, [detail, parsed, tableRemark, showToast]);
+
+  const savedTableRemark = (parsed?.tableDescription || '').trim();
 
   const handleSave = async (content: NonNullable<ReturnType<typeof parseLightSchemaContent>>) => {
     if (!detail) throw new Error('未选择表');
@@ -521,6 +570,40 @@ export default function ReviewPage({ cartOnly = false }: { cartOnly?: boolean })
                         <Button variant="neutral" className="px-2 py-1 text-xs" onClick={openTagEdit}>
                           <Tags className="h-3.5 w-3.5" />
                           标签
+                        </Button>
+                      )}
+                      {remarkEditOpen ? (
+                        <input
+                          className="input min-w-[10rem] max-w-md py-1 text-sm"
+                          placeholder="输入表备注…"
+                          value={tableRemark}
+                          onChange={(e) => setTableRemark(e.target.value)}
+                          onBlur={() => saveTableRemark()}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') e.currentTarget.blur();
+                            if (e.key === 'Escape') {
+                              e.preventDefault();
+                              closeRemarkEdit();
+                            }
+                          }}
+                          disabled={remarkSaving}
+                          autoFocus
+                        />
+                      ) : savedTableRemark ? (
+                        <button
+                          type="button"
+                          className="inline-flex max-w-md cursor-pointer items-center gap-1.5 rounded-full border border-border-light bg-surface-primary px-2.5 py-1 text-xs font-medium text-text-primary transition-opacity hover:opacity-80"
+                          title="点击编辑备注"
+                          aria-label={`编辑备注 ${savedTableRemark}`}
+                          onClick={openRemarkEdit}
+                        >
+                          <StickyNote className="h-3 w-3 shrink-0 text-text-tertiary" />
+                          <span className="truncate">{savedTableRemark}</span>
+                        </button>
+                      ) : (
+                        <Button variant="neutral" className="px-2 py-1 text-xs" onClick={openRemarkEdit}>
+                          <StickyNote className="h-3.5 w-3.5" />
+                          备注
                         </Button>
                       )}
                     </div>

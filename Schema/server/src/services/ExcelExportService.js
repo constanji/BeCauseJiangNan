@@ -27,6 +27,7 @@ function sortSchemas(schemas) {
 function toLightSchemaJson(item) {
   return JSON.stringify({
     tableName: item.tableName,
+    tableDescription: item.tableDescription || '',
     columns: item.columns || [],
     primaryKeys: item.primaryKeys || [],
   });
@@ -46,14 +47,14 @@ function addSummarySheet(workbook, schemas, { multiSource = false, dataSourceNam
         item.dataSourceName || dataSourceName,
         item.schemaName || '',
         item.tableName,
-        '',
+        item.tableDescription || '',
         (item.primaryKeys || []).join(', '),
         toLightSchemaJson(item),
       ]
       : [
         item.schemaName || '',
         item.tableName,
-        '',
+        item.tableDescription || '',
         (item.primaryKeys || []).join(', '),
         toLightSchemaJson(item),
       ]);

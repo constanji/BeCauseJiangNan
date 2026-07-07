@@ -6,6 +6,7 @@ const subTabs = [
   { id: 'home', label: '主页', path: '/library' },
   { id: 'review', label: '审查', path: '/library/review' },
   { id: 'search', label: '搜索', path: '/library/search' },
+  { id: 'explore', label: '找表', path: '/library/explore' },
 ] as const;
 
 function isSubTabActive(path: string, locationPath: string) {

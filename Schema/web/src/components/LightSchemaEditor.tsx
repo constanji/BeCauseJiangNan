@@ -28,6 +28,9 @@ export default function LightSchemaEditor({
   showSamples = false,
   showDdlTab = false,
   highlightQuery = '',
+  highlightMeta = true,
+  highlightSamples = true,
+  editable = true,
   onSave,
   onDelete,
 }: {
@@ -36,6 +39,9 @@ export default function LightSchemaEditor({
   showSamples?: boolean;
   showDdlTab?: boolean;
   highlightQuery?: string;
+  highlightMeta?: boolean;
+  highlightSamples?: boolean;
+  editable?: boolean;
   onSave: (content: LightSchemaContent) => Promise<void>;
   onDelete?: () => Promise<void>;
 }) {
@@ -71,12 +77,19 @@ export default function LightSchemaEditor({
     const matched: typeof indexed = [];
     const unmatched: typeof indexed = [];
     for (const item of indexed) {
-      const searchable = `${item.col.name} ${item.col.description || ''}`.toLowerCase();
+      const parts: string[] = [];
+      if (highlightMeta) {
+        parts.push(item.col.name, item.col.description || '');
+      }
+      if (highlightSamples) {
+        parts.push((item.col.sampleValues || []).join(' '));
+      }
+      const searchable = parts.join(' ').toLowerCase();
       if (searchable.includes(normalizedHighlightQ)) matched.push(item);
       else unmatched.push(item);
     }
     return [...matched, ...unmatched];
-  }, [activeContent.columns, editing, normalizedHighlightQ]);
+  }, [activeContent.columns, editing, normalizedHighlightQ, highlightMeta, highlightSamples]);
 
   const totalColumnPages = Math.max(1, Math.ceil(displayColumns.length / COLUMN_PAGE_SIZE));
   const pageColumns = displayColumns.slice(
@@ -84,10 +97,10 @@ export default function LightSchemaEditor({
     columnPage * COLUMN_PAGE_SIZE,
   );
 
-  const renderReadonlyText = (text: string, muted = false) => {
+  const renderReadonlyText = (text: string, muted = false, enableHighlight = true) => {
     if (!text) return <span className="text-text-secondary">—</span>;
     const className = muted ? 'text-text-secondary' : 'font-medium text-text-primary';
-    if (highlightQ) {
+    if (highlightQ && enableHighlight) {
       return <span className={className}>{highlightText(text, highlightQ)}</span>;
     }
     return <span className={className}>{text}</span>;
@@ -189,7 +202,7 @@ export default function LightSchemaEditor({
           )}
         </div>
         <div className="flex flex-wrap gap-2">
-          {!editing ? (
+          {!editable ? null : !editing ? (
             <>
               <Button variant="neutral" className="px-2 py-1 text-xs" onClick={startEdit}>
                 <Pencil className="h-3.5 w-3.5" />
@@ -258,7 +271,7 @@ export default function LightSchemaEditor({
                             onChange={(e) => setDraft(updateDraftColumn(draft, index, { name: e.target.value }))}
                           />
                         ) : (
-                          renderReadonlyText(col.name)
+                          renderReadonlyText(col.name, false, highlightMeta)
                         )}
                       </td>
                       <td className="py-2 pr-3">
@@ -297,7 +310,7 @@ export default function LightSchemaEditor({
                             onChange={(e) => setDraft(updateDraftColumn(draft, index, { description: e.target.value }))}
                           />
                         ) : (
-                          renderReadonlyText(col.description || '', true)
+                          renderReadonlyText(col.description || '', true, highlightMeta)
                         )}
                       </td>
                       {showSamples && (
@@ -312,7 +325,7 @@ export default function LightSchemaEditor({
                               placeholder="逗号分隔"
                             />
                           ) : (
-                            renderReadonlyText((col.sampleValues || []).join(', '), true)
+                            renderReadonlyText((col.sampleValues || []).join(', '), true, highlightSamples)
                           )}
                         </td>
                       )}

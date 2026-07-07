@@ -2,6 +2,7 @@ import React from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronDown, X } from 'lucide-react';
 import { api } from '../api/client';
+import { cn } from '../lib/cn';
 import { CatalogDetail } from '../lib/uiState';
 import { parseLightSchemaContent } from '../lib/lightSchemaTypes';
 import {
@@ -23,6 +24,7 @@ import StatusBanner from './StatusBanner';
 
 const DEBOUNCE_MS = 400;
 const DISTINCT_LIMIT = 200;
+const PREVIEW_ROW_LIMIT = 50;
 
 function formatCell(value: unknown) {
   if (value == null) return '';
@@ -30,15 +32,40 @@ function formatCell(value: unknown) {
   return String(value);
 }
 
+function isCellEmpty(value: unknown) {
+  if (value == null) return true;
+  return String(value).trim() === '';
+}
+
+function getRowValue(row: Record<string, unknown>, column: string) {
+  if (Object.prototype.hasOwnProperty.call(row, column)) return row[column];
+  const lower = column.toLowerCase();
+  const matchedKey = Object.keys(row).find((key) => key.toLowerCase() === lower);
+  return matchedKey ? row[matchedKey] : undefined;
+}
+
+function computeVisibleColumns(
+  allColumns: string[],
+  rows: Record<string, unknown>[],
+  hideEmptyColumns: boolean,
+) {
+  if (!hideEmptyColumns || rows.length === 0) return allColumns;
+  return allColumns.filter((column) => (
+    rows.some((row) => !isCellEmpty(getRowValue(row, column)))
+  ));
+}
+
 function ColumnValuePicker({
   catalogId,
+  remoteRef,
   column,
   open,
   anchorRect,
   onClose,
   onSelect,
 }: {
-  catalogId: number;
+  catalogId?: number;
+  remoteRef?: { dataSourceId: string; schemaName: string; tableName: string };
   column: string;
   open: boolean;
   anchorRect: DOMRect | null;
@@ -55,23 +82,28 @@ function ColumnValuePicker({
     if (!open) return;
     setSearch('');
     setError(null);
-    const cached = loadCachedDistinctValues(catalogId, column);
-    if (cached) {
-      setPayload(cached);
-      setLoading(false);
-      return;
+    if (!remoteRef && catalogId != null) {
+      const cached = loadCachedDistinctValues(catalogId, column);
+      if (cached) {
+        setPayload(cached);
+        setLoading(false);
+        return;
+      }
     }
     setPayload(null);
     setLoading(true);
-    api.previewCatalogDistinct(catalogId, { column, limit: DISTINCT_LIMIT })
+    const request = remoteRef
+      ? api.previewRemoteDistinct(remoteRef.dataSourceId, remoteRef.schemaName, remoteRef.tableName, { column, limit: DISTINCT_LIMIT })
+      : api.previewCatalogDistinct(catalogId!, { column, limit: DISTINCT_LIMIT });
+    request
       .then((res) => {
         if (!res.success || !res.data) throw new Error(res.error || '加载可选值失败');
         setPayload(res.data);
-        saveCachedDistinctValues(catalogId, res.data);
+        if (!remoteRef && catalogId != null) saveCachedDistinctValues(catalogId, res.data);
       })
       .catch((err) => setError(err?.message || String(err)))
       .finally(() => setLoading(false));
-  }, [open, catalogId, column]);
+  }, [open, catalogId, remoteRef, column]);
 
   React.useEffect(() => {
     if (!open) return;
@@ -174,20 +206,44 @@ function ColumnValuePicker({
 
 export default function TableDataPreviewPanel({
   catalogId,
+  remoteRef,
   detail,
   open,
   onClose,
+  variant = 'modal',
+  initialFilters,
 }: {
-  catalogId: number;
+  catalogId?: number;
+  remoteRef?: { dataSourceId: string; schemaName: string; tableName: string };
   detail: CatalogDetail;
   open: boolean;
-  onClose: () => void;
+  onClose?: () => void;
+  variant?: 'modal' | 'inline';
+  initialFilters?: Record<string, string>;
 }) {
   const parsed = parseLightSchemaContent(detail.content, detail.tableName);
-  const columnNames = React.useMemo(
-    () => (parsed?.columns || []).map((col) => col.name),
-    [parsed],
-  );
+  const columnNamesKey = React.useMemo(() => {
+    const names = (parsed?.columns || []).map((col) => col.name);
+    return `${detail.id}:${names.join('\x1e')}`;
+  }, [detail.id, detail.content]);
+  const columnNames = React.useMemo(() => {
+    const sep = columnNamesKey.indexOf(':');
+    if (sep < 0) return [];
+    const raw = columnNamesKey.slice(sep + 1);
+    return raw ? raw.split('\x1e') : [];
+  }, [columnNamesKey]);
+  const remoteRefKey = remoteRef
+    ? `${remoteRef.dataSourceId}|${remoteRef.schemaName}|${remoteRef.tableName}`
+    : '';
+  const columnNamesRef = React.useRef(columnNames);
+  columnNamesRef.current = columnNames;
+  const columnDescriptions = React.useMemo(() => {
+    const map = new Map<string, string>();
+    for (const col of parsed?.columns || []) {
+      map.set(col.name, col.description || '');
+    }
+    return map;
+  }, [parsed]);
 
   const [filtersByColumn, setFiltersByColumn] = React.useState<Record<string, string>>({});
   const [payload, setPayload] = React.useState<PreviewRowsPayload | null>(null);
@@ -195,12 +251,24 @@ export default function TableDataPreviewPanel({
   const [error, setError] = React.useState<string | null>(null);
   const [openPickerColumn, setOpenPickerColumn] = React.useState<string | null>(null);
   const [pickerAnchor, setPickerAnchor] = React.useState<DOMRect | null>(null);
+  const [dedupeColumn, setDedupeColumn] = React.useState<string | null>(null);
+  const dedupeColumnRef = React.useRef<string | null>(null);
+  dedupeColumnRef.current = dedupeColumn;
   const requestSeq = React.useRef(0);
   const skipFilterEffect = React.useRef(true);
+  const persistFilters = variant === 'modal' && !initialFilters;
+  const initialFiltersKey = React.useMemo(
+    () => JSON.stringify(initialFilters || {}),
+    [initialFilters],
+  );
 
-  const fetchRows = React.useCallback(async (nextFilters: Record<string, string>) => {
+  const fetchRows = React.useCallback(async (
+    nextFilters: Record<string, string>,
+    nextDedupeBy: string | null = dedupeColumnRef.current,
+  ) => {
     const active = hasActiveFilters(nextFilters);
-    if (!active) {
+    const deduping = Boolean(nextDedupeBy);
+    if (!remoteRef && catalogId != null && !active && !deduping) {
       const cached = loadCachedPreviewRows(catalogId);
       if (cached) {
         setPayload(cached);
@@ -214,36 +282,50 @@ export default function TableDataPreviewPanel({
     setLoading(true);
     setError(null);
     try {
-      const res = await api.previewCatalogRows(catalogId, {
+      const requestBody = {
         filters: filtersToRequest(nextFilters),
-        limit: 100,
-      });
+        limit: PREVIEW_ROW_LIMIT,
+        dedupeBy: nextDedupeBy || undefined,
+      };
+      const res = remoteRef
+        ? await api.previewRemoteRows(remoteRef.dataSourceId, remoteRef.schemaName, remoteRef.tableName, {
+          columns: columnNamesRef.current,
+          ...requestBody,
+        })
+        : await api.previewCatalogRows(catalogId!, requestBody);
       if (seq !== requestSeq.current) return;
       if (!res.success || !res.data) throw new Error(res.error || '加载数据失败');
       setPayload(res.data);
-      if (!active) saveCachedPreviewRows(catalogId, res.data);
+      if (!remoteRef && catalogId != null && !active && !deduping) {
+        saveCachedPreviewRows(catalogId, res.data);
+      }
     } catch (err: any) {
       if (seq !== requestSeq.current) return;
       setError(err?.message || String(err));
     } finally {
       if (seq === requestSeq.current) setLoading(false);
     }
-  }, [catalogId]);
+  }, [catalogId, remoteRefKey]);
 
   React.useEffect(() => {
     if (!open || columnNames.length === 0) return;
     skipFilterEffect.current = true;
-    const savedFilters = loadSavedFilters(catalogId);
+    const preset = initialFilters && Object.keys(initialFilters).length > 0
+      ? initialFilters
+      : null;
+    const savedFilters = preset
+      ?? ((!remoteRef && catalogId != null) ? loadSavedFilters(catalogId) : {});
     setFiltersByColumn(savedFilters);
     setPayload(null);
     setError(null);
     setOpenPickerColumn(null);
+    setDedupeColumn(null);
     fetchRows(savedFilters);
-  }, [open, catalogId, columnNames.length, fetchRows]);
+  }, [open, catalogId, remoteRefKey, columnNamesKey, initialFiltersKey, fetchRows]);
 
   React.useEffect(() => {
     if (!open) return;
-    saveFilters(catalogId, filtersByColumn);
+    if (persistFilters && !remoteRef && catalogId != null) saveFilters(catalogId, filtersByColumn);
     if (skipFilterEffect.current) {
       skipFilterEffect.current = false;
       return;
@@ -252,18 +334,184 @@ export default function TableDataPreviewPanel({
       fetchRows(filtersByColumn);
     }, DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [open, catalogId, filtersByColumn, fetchRows]);
+  }, [open, catalogId, remoteRefKey, filtersByColumn, fetchRows, persistFilters]);
 
   const openColumnPicker = (column: string, button: HTMLButtonElement) => {
     setOpenPickerColumn(column);
     setPickerAnchor(button.getBoundingClientRect());
   };
 
-  if (!open || !parsed) return null;
-
   const displayColumns = payload?.columns?.length ? payload.columns : columnNames;
   const rows = payload?.rows || [];
-  const filtered = hasActiveFilters(filtersByColumn);
+  const filtered = hasActiveFilters(filtersByColumn) || Boolean(payload?.filtered);
+  const visibleColumns = React.useMemo(
+    () => computeVisibleColumns(displayColumns, rows, filtered),
+    [displayColumns, rows, filtered],
+  );
+  const hiddenEmptyColumnCount = filtered ? displayColumns.length - visibleColumns.length : 0;
+
+  if (!open || !parsed) return null;
+
+  const tableBlock = (
+    <>
+      {error && (
+        <div className={cn('shrink-0', variant === 'modal' ? 'px-6 pt-4' : 'pb-3')}>
+          <StatusBanner tone="error" title="加载失败" message={error} />
+        </div>
+      )}
+      <div className={cn(
+        'flex min-h-0 flex-1 flex-col overflow-hidden',
+        variant === 'modal' && 'px-6 py-4',
+      )}>
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-border-light">
+          <div className="min-h-0 flex-1 overflow-y-auto overflow-x-auto overscroll-y-contain">
+            <table className="w-full min-w-max text-sm">
+              <thead className="sticky top-0 z-10 bg-surface-secondary">
+                <tr className="border-b border-border-light text-left text-text-secondary">
+                  {visibleColumns.map((col) => (
+                    <th key={col} className="whitespace-nowrap px-3 py-2 font-medium text-text-primary">
+                      <div className="flex items-center gap-1">
+                        <span className="truncate">{col}</span>
+                        <button
+                          type="button"
+                          className={cn(
+                            'shrink-0 rounded border px-1 py-0.5 text-[10px] leading-none transition-colors',
+                            dedupeColumn === col
+                              ? 'border-brand bg-brand/10 text-brand'
+                              : 'border-border-light text-text-tertiary hover:border-border-medium hover:bg-surface-tertiary hover:text-text-primary',
+                          )}
+                          title={`按 ${col} 去重`}
+                          aria-label={`按 ${col} 去重`}
+                          onClick={() => {
+                            const next = dedupeColumn === col ? null : col;
+                            setDedupeColumn(next);
+                            fetchRows(filtersByColumn, next);
+                          }}
+                        >
+                          去重
+                        </button>
+                      </div>
+                    </th>
+                  ))}
+                </tr>
+                <tr className="border-b border-border-light bg-surface-secondary text-left">
+                  {visibleColumns.map((col) => {
+                    const description = columnDescriptions.get(col) || '';
+                    return (
+                      <th key={`desc-${col}`} className="max-w-[12rem] px-3 py-1.5 font-normal">
+                        {description ? (
+                          <span
+                            className="block truncate text-[11px] leading-snug text-text-tertiary"
+                            title={description}
+                          >
+                            {description}
+                          </span>
+                        ) : (
+                          <span className="text-[11px] text-text-tertiary">—</span>
+                        )}
+                      </th>
+                    );
+                  })}
+                </tr>
+                <tr className="border-b border-border-light bg-surface-primary">
+                  {visibleColumns.map((col) => (
+                    <th key={`filter-${col}`} className="px-3 py-2">
+                      <div className="flex min-w-[8rem] items-center gap-1">
+                        <input
+                          className="input min-w-0 flex-1 py-1 text-xs"
+                          placeholder={`筛选 ${col}`}
+                          value={filtersByColumn[col] || ''}
+                          onChange={(e) => setFiltersByColumn((prev) => ({
+                            ...prev,
+                            [col]: e.target.value,
+                          }))}
+                        />
+                        <button
+                          type="button"
+                          className="shrink-0 rounded border border-border-light bg-surface-secondary p-1 text-text-secondary hover:border-border-medium hover:bg-surface-tertiary hover:text-text-primary"
+                          title={`选择 ${col} 的可选值`}
+                          aria-label={`选择 ${col} 的可选值`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openColumnPicker(col, e.currentTarget);
+                          }}
+                        >
+                          <ChevronDown className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {loading && rows.length === 0 ? (
+                  <tr>
+                    <td colSpan={visibleColumns.length || 1} className="px-3 py-8 text-center text-text-secondary">
+                      加载中…
+                    </td>
+                  </tr>
+                ) : rows.length === 0 ? (
+                  <tr>
+                    <td colSpan={visibleColumns.length || 1} className="px-3 py-8 text-center text-text-secondary">
+                      {filtered || payload?.deduped ? '无匹配数据' : '暂无数据'}
+                    </td>
+                  </tr>
+                ) : visibleColumns.length === 0 ? (
+                  <tr>
+                    <td colSpan={displayColumns.length || 1} className="px-3 py-8 text-center text-text-secondary">
+                      筛选结果各列均为空
+                    </td>
+                  </tr>
+                ) : (
+                  rows.map((row, rowIndex) => (
+                    <tr key={rowIndex} className="border-t border-border-light hover:bg-surface-tertiary/30">
+                      {visibleColumns.map((col) => (
+                        <td
+                          key={`${rowIndex}-${col}`}
+                          className="max-w-[16rem] truncate px-3 py-2 text-text-primary"
+                          title={formatCell(getRowValue(row, col))}
+                        >
+                          {formatCell(getRowValue(row, col))}
+                        </td>
+                      ))}
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex shrink-0 items-center justify-between border-t border-border-light px-4 py-3 text-xs text-text-secondary">
+            <span>
+              共返回 {rows.length} 行
+              {payload?.deduped && payload.dedupeBy ? `（按 ${payload.dedupeBy} 去重）` : ''}
+              {payload?.truncated ? `（最多 ${payload.limit} 行）` : ''}
+            </span>
+            <span>
+              {filtered ? '已对全表筛选' : payload?.deduped ? '已对全表去重' : loading ? '加载中…' : `显示前 ${PREVIEW_ROW_LIMIT} 行`}
+              {hiddenEmptyColumnCount > 0 ? ` · 已隐藏 ${hiddenEmptyColumnCount} 个空列` : ''}
+            </span>
+          </div>
+        </div>
+      </div>
+      <ColumnValuePicker
+        catalogId={catalogId}
+        remoteRef={remoteRef}
+        column={openPickerColumn || ''}
+        open={openPickerColumn != null}
+        anchorRect={pickerAnchor}
+        onClose={() => setOpenPickerColumn(null)}
+        onSelect={(value) => setFiltersByColumn((prev) => ({ ...prev, [openPickerColumn || '']: value }))}
+      />
+    </>
+  );
+
+  if (variant === 'inline') {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        {tableBlock}
+      </div>
+    );
+  }
 
   return (
     <div
@@ -281,112 +529,15 @@ export default function TableDataPreviewPanel({
               {detail.dataSourceName} / {detail.schemaName}.{detail.tableName}
             </p>
             <p className="mt-1 text-xs text-text-tertiary">
-              仅查询 LightSchema 中的 {columnNames.length} 列，最多返回 100 行
+              仅查询 LightSchema 中的 {columnNames.length} 列，最多返回 {PREVIEW_ROW_LIMIT} 行
             </p>
           </div>
           <Button variant="neutral" className="shrink-0 px-2 py-2" onClick={onClose}>
             <X className="h-4 w-4" />
           </Button>
         </div>
-
-        {error && (
-          <div className="shrink-0 px-6 pt-4">
-            <StatusBanner tone="error" title="加载失败" message={error} />
-          </div>
-        )}
-
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-6 py-4">
-          <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-border-light">
-            <div className="min-h-0 flex-1 overflow-y-auto overflow-x-auto overscroll-y-contain">
-              <table className="w-full min-w-max text-sm">
-                <thead className="sticky top-0 z-10 bg-surface-secondary">
-                  <tr className="border-b border-border-light text-left text-text-secondary">
-                    {displayColumns.map((col) => (
-                      <th key={col} className="whitespace-nowrap px-3 py-2 font-medium">{col}</th>
-                    ))}
-                  </tr>
-                  <tr className="border-b border-border-light bg-surface-primary">
-                    {displayColumns.map((col) => (
-                      <th key={`filter-${col}`} className="px-3 py-2">
-                        <div className="flex min-w-[8rem] items-center gap-1">
-                          <input
-                            className="input min-w-0 flex-1 py-1 text-xs"
-                            placeholder={`筛选 ${col}`}
-                            value={filtersByColumn[col] || ''}
-                            onChange={(e) => setFiltersByColumn((prev) => ({
-                              ...prev,
-                              [col]: e.target.value,
-                            }))}
-                          />
-                          <button
-                            type="button"
-                            className="shrink-0 rounded border border-border-light bg-surface-secondary p-1 text-text-secondary hover:border-border-medium hover:bg-surface-tertiary hover:text-text-primary"
-                            title={`选择 ${col} 的可选值`}
-                            aria-label={`选择 ${col} 的可选值`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              openColumnPicker(col, e.currentTarget);
-                            }}
-                          >
-                            <ChevronDown className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {loading && rows.length === 0 ? (
-                    <tr>
-                      <td colSpan={displayColumns.length} className="px-3 py-8 text-center text-text-secondary">
-                        加载中…
-                      </td>
-                    </tr>
-                  ) : rows.length === 0 ? (
-                    <tr>
-                      <td colSpan={displayColumns.length} className="px-3 py-8 text-center text-text-secondary">
-                        {filtered ? '无匹配数据' : '暂无数据'}
-                      </td>
-                    </tr>
-                  ) : (
-                    rows.map((row, rowIndex) => (
-                      <tr key={rowIndex} className="border-t border-border-light hover:bg-surface-tertiary/30">
-                        {displayColumns.map((col) => (
-                          <td
-                            key={`${rowIndex}-${col}`}
-                            className="max-w-[16rem] truncate px-3 py-2 text-text-primary"
-                            title={formatCell(row[col])}
-                          >
-                            {formatCell(row[col])}
-                          </td>
-                        ))}
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-            <div className="flex shrink-0 items-center justify-between border-t border-border-light px-4 py-3 text-xs text-text-secondary">
-              <span>
-                共返回 {rows.length} 行
-                {payload?.truncated ? `（最多 ${payload.limit} 行）` : ''}
-              </span>
-              <span>
-                {filtered ? '已对全表筛选' : loading ? '加载中…' : '显示前 100 行'}
-              </span>
-            </div>
-          </div>
-        </div>
+        {tableBlock}
       </div>
-
-      <ColumnValuePicker
-        catalogId={catalogId}
-        column={openPickerColumn || ''}
-        open={openPickerColumn != null}
-        anchorRect={pickerAnchor}
-        onClose={() => setOpenPickerColumn(null)}
-        onSelect={(value) => setFiltersByColumn((prev) => ({ ...prev, [openPickerColumn || '']: value }))}
-      />
     </div>
   );
 }

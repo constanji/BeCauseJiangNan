@@ -5,6 +5,10 @@ const {
   getColumnCount,
   columnMatchesQuery,
   buildColumnMatchSnippet,
+  columnMatchesSampleQuery,
+  matchedSampleValues,
+  buildSampleMatchSnippet,
+  buildSnippet,
   normalizeSearchLike,
 } = require('../lib/lightSchemaIndex');
 const {
@@ -13,7 +17,13 @@ const {
   getLightSchemaRow,
 } = require('../lib/lightSchemaContent');
 const { decrypt } = require('../services/crypto');
-const { queryTableRows, queryDistinctColumnValues, normalizePreviewColumns } = require('../services/DatabaseService');
+const {
+  queryTableRows,
+  queryDistinctColumnValues,
+  normalizePreviewColumns,
+  deepSearchTableValues,
+  isTextType,
+} = require('../services/DatabaseService');
 const { toConnectionConfig } = require('../lib/dataSourceConfig');
 const { isSupportedType } = require('../lib/dbTypes');
 
@@ -179,6 +189,7 @@ router.get('/search', (req, res) => {
       schemaName: row.schema_name,
       tableName: row.table_name,
       tags: tagMap.get(row.id) || [],
+      columnCount: getColumnCount(row.content),
       matches,
     });
   }
@@ -187,6 +198,186 @@ router.get('/search', (req, res) => {
     success: true,
     data,
     meta: { totalTables: data.length, totalColumns },
+  });
+});
+
+router.get('/data-search', (req, res) => {
+  const q = String(req.query.q || '').trim();
+  if (!q) return res.status(400).json({ success: false, error: '搜索关键词 q 不能为空' });
+  const dataSourceId = req.query.dataSourceId;
+  const schemaName = typeof req.query.schemaName === 'string' ? req.query.schemaName.trim() : '';
+  if (!dataSourceId) return res.status(400).json({ success: false, error: '请选择数据源' });
+  if (!schemaName) return res.status(400).json({ success: false, error: '请选择 Schema' });
+
+  const searchLight = req.query.searchLight === 'true' || req.query.searchLight === '1'
+    || (
+      (req.query.searchMeta === 'true' || req.query.searchMeta === '1')
+      || (req.query.searchSample !== 'false' && req.query.searchSample !== '0' && req.query.searchSample != null)
+    );
+  if (!searchLight) {
+    return res.status(400).json({ success: false, error: '轻量搜索未开启' });
+  }
+
+  const filters = { dataSourceId, schemaName };
+  const { where, params } = buildListQuery(filters);
+  const rows = getDb().prepare(`
+    SELECT ls.*, ds.name AS data_source_name
+    FROM light_schemas ls
+    JOIN data_sources ds ON ds.id = ls.data_source_id
+    WHERE ${where}
+    ORDER BY ds.name, ls.schema_name, ls.table_name
+  `).all(...params);
+
+  const tagMap = fetchTagsForSchemaIds(rows.map((row) => row.id));
+  const data = [];
+  let totalColumns = 0;
+
+  for (const row of rows) {
+    const parsed = parseContent(row.content);
+    if (!parsed?.columns) continue;
+    const matches = [];
+    for (const col of parsed.columns) {
+      const desc = String(col.description || '');
+      const sampleHit = columnMatchesSampleQuery(col, q);
+      const metaHit = columnMatchesQuery(col, q);
+      if (sampleHit) {
+        const hits = matchedSampleValues(col, q);
+        matches.push({
+          columnName: col.name,
+          description: desc,
+          snippet: buildSampleMatchSnippet(col, q),
+          matchSource: 'sample',
+          matchedValues: hits,
+        });
+      } else if (metaHit) {
+        matches.push({
+          columnName: col.name,
+          description: desc,
+          snippet: buildColumnMatchSnippet(col, q),
+          matchSource: 'meta',
+          matchedValues: [],
+        });
+      }
+    }
+    if (matches.length === 0) continue;
+    totalColumns += matches.length;
+    data.push({
+      lightSchemaId: row.id,
+      dataSourceId: String(row.data_source_id),
+      dataSourceName: row.data_source_name,
+      schemaName: row.schema_name,
+      tableName: row.table_name,
+      tags: tagMap.get(row.id) || [],
+      columnCount: getColumnCount(row.content),
+      matches,
+    });
+  }
+
+  res.json({
+    success: true,
+    data,
+    meta: {
+      totalTables: data.length,
+      totalColumns,
+      searchLight: true,
+    },
+  });
+});
+
+router.post('/deep-data-search', async (req, res) => {
+  const body = req.body || {};
+  const q = String(body.q || '').trim();
+  if (!q) return res.status(400).json({ success: false, error: '搜索关键词 q 不能为空' });
+  const dataSourceId = body.dataSourceId;
+  const schemaName = typeof body.schemaName === 'string' ? body.schemaName.trim() : '';
+  if (!dataSourceId) return res.status(400).json({ success: false, error: '请选择数据源' });
+  if (!schemaName) return res.status(400).json({ success: false, error: '请选择 Schema' });
+
+  const source = getDb().prepare('SELECT * FROM data_sources WHERE id = ?').get(Number(dataSourceId));
+  if (!source) return res.status(404).json({ success: false, error: '数据源不存在' });
+  const dataSource = toConnectionConfig(source);
+  if (!isSupportedType(dataSource.type)) {
+    return res.status(501).json({ success: false, error: `暂不支持的数据源类型: ${dataSource.type}` });
+  }
+
+  const tableNames = Array.isArray(body.tableNames)
+    ? body.tableNames.map((name) => String(name).trim()).filter(Boolean)
+    : null;
+
+  const filters = { dataSourceId, schemaName };
+  const { where, params } = buildListQuery(filters);
+  let rows = getDb().prepare(`
+    SELECT ls.*, ds.name AS data_source_name
+    FROM light_schemas ls
+    JOIN data_sources ds ON ds.id = ls.data_source_id
+    WHERE ${where}
+    ORDER BY ls.table_name
+  `).all(...params);
+
+  if (tableNames?.length) {
+    const allowed = new Set(tableNames);
+    rows = rows.filter((row) => allowed.has(row.table_name));
+  }
+
+  const startedAt = Date.now();
+  const password = decrypt(source.password_enc);
+  const tagMap = fetchTagsForSchemaIds(rows.map((row) => row.id));
+  const data = [];
+  let totalColumns = 0;
+
+  for (const row of rows) {
+    const parsed = parseContent(row.content);
+    if (!parsed?.columns) continue;
+    const textColumns = parsed.columns
+      .filter((col) => isTextType(col.type))
+      .map((col) => col.name);
+    if (textColumns.length === 0) continue;
+
+    let columnHits = [];
+    try {
+      columnHits = await deepSearchTableValues(dataSource, password, {
+        schemaName: row.schema_name,
+        tableName: row.table_name,
+        textColumns,
+        q,
+        limitPerColumn: 5,
+      });
+    } catch {
+      continue;
+    }
+    if (columnHits.length === 0) continue;
+
+    const colDesc = new Map(parsed.columns.map((col) => [col.name, String(col.description || '')]));
+    const matches = columnHits.map((hit) => ({
+      columnName: hit.columnName,
+      description: colDesc.get(hit.columnName) || '',
+      snippet: buildSnippet(hit.values.join(', '), q),
+      matchSource: 'live',
+      matchedValues: hit.values,
+    }));
+    totalColumns += matches.length;
+    data.push({
+      lightSchemaId: row.id,
+      dataSourceId: String(row.data_source_id),
+      dataSourceName: row.data_source_name,
+      schemaName: row.schema_name,
+      tableName: row.table_name,
+      tags: tagMap.get(row.id) || [],
+      columnCount: getColumnCount(row.content),
+      matches,
+    });
+  }
+
+  res.json({
+    success: true,
+    data,
+    meta: {
+      totalTables: data.length,
+      totalColumns,
+      scannedTables: rows.length,
+      elapsedMs: Date.now() - startedAt,
+      source: 'live',
+    },
   });
 });
 
@@ -296,13 +487,17 @@ router.post('/:id/preview-rows', async (req, res) => {
   const columnSet = new Set(columns);
 
   const body = req.body || {};
-  const limit = Math.max(1, Math.min(Number(body.limit || 100), 100));
+  const limit = Math.max(1, Math.min(Number(body.limit || 50), 50));
   const rawFilters = Array.isArray(body.filters) ? body.filters : [];
+  const dedupeBy = String(body.dedupeBy || '').trim();
   for (const filter of rawFilters) {
     const column = String(filter?.column || '').trim();
     if (column && !columnSet.has(column)) {
       return res.status(400).json({ success: false, error: `无效筛选列: ${column}` });
     }
+  }
+  if (dedupeBy && !columnSet.has(dedupeBy)) {
+    return res.status(400).json({ success: false, error: `无效去重列: ${dedupeBy}` });
   }
 
   const source = getDb().prepare('SELECT * FROM data_sources WHERE id = ?').get(row.data_source_id);
@@ -320,6 +515,7 @@ router.post('/:id/preview-rows', async (req, res) => {
       columns,
       filters: rawFilters,
       limit,
+      dedupeBy,
     });
     res.json({ success: true, data: result });
   } catch (error) {

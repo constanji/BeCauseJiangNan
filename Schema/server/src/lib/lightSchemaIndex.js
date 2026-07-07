@@ -60,6 +60,30 @@ function buildSnippet(text, query, radius = 24) {
   return `${prefix}${source.slice(start, end)}${suffix}`;
 }
 
+function columnSampleParts(col) {
+  if (!Array.isArray(col?.sampleValues)) return [];
+  return col.sampleValues.map((v) => String(v ?? '').trim()).filter(Boolean);
+}
+
+function columnMatchesSampleQuery(col, query) {
+  const needle = String(query || '').trim().toLowerCase();
+  if (!needle) return false;
+  return columnSampleParts(col).some((part) => part.toLowerCase().includes(needle));
+}
+
+function matchedSampleValues(col, query) {
+  const needle = String(query || '').trim().toLowerCase();
+  if (!needle) return [];
+  return columnSampleParts(col).filter((part) => part.toLowerCase().includes(needle));
+}
+
+function buildSampleMatchSnippet(col, query) {
+  const hits = matchedSampleValues(col, query);
+  if (hits.length > 0) return buildSnippet(hits[0], query);
+  const joined = columnSampleParts(col).join(', ');
+  return buildSnippet(joined, query);
+}
+
 module.exports = {
   parseContent,
   buildColumnSearchText,
@@ -67,5 +91,9 @@ module.exports = {
   buildSnippet,
   columnMatchesQuery,
   buildColumnMatchSnippet,
+  columnSampleParts,
+  columnMatchesSampleQuery,
+  matchedSampleValues,
+  buildSampleMatchSnippet,
   normalizeSearchLike,
 };

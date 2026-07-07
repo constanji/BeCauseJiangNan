@@ -3,6 +3,7 @@ import {
   DEFAULT_UI_STATE,
   ExportCartItem,
   GroupMode,
+  ExploreUiState,
   LibraryUiState,
   SearchUiState,
   ReviewUiState,
@@ -16,6 +17,7 @@ type UiStateContextValue = {
   state: UiState;
   setLibrary: (patch: Partial<LibraryUiState>) => void;
   setSearch: (patch: Partial<SearchUiState>) => void;
+  setExplore: (patch: Partial<ExploreUiState>) => void;
   setReview: (patch: Partial<ReviewUiState>) => void;
   setExportTagIds: (tagIds: number[]) => void;
   addToCart: (items: ExportCartItem[]) => void;
@@ -41,6 +43,10 @@ export function UiStateProvider({ children }: { children: React.ReactNode }) {
 
   const setSearch = React.useCallback((patch: Partial<SearchUiState>) => {
     setState((prev) => ({ ...prev, search: { ...prev.search, ...patch } }));
+  }, []);
+
+  const setExplore = React.useCallback((patch: Partial<ExploreUiState>) => {
+    setState((prev) => ({ ...prev, explore: { ...prev.explore, ...patch } }));
   }, []);
 
   const setReview = React.useCallback((patch: Partial<ReviewUiState>) => {
@@ -97,6 +103,7 @@ export function UiStateProvider({ children }: { children: React.ReactNode }) {
     state,
     setLibrary,
     setSearch,
+    setExplore,
     setReview,
     setExportTagIds,
     addToCart,
