@@ -77,16 +77,21 @@ public class GaussJdbcServer {
     try {
       reqId = extractStr(jsonLine, "id");
       String b64Sql = extractStr(jsonLine, "sql");
+      String b64Params = extractStr(jsonLine, "params", "");
       int timeoutSec = extractInt(jsonLine, "timeout",
           parseIntEnv("GAUSSDB_JDBC_QUERY_TIMEOUT_SEC", 180));
 
       String sql = new String(
           Base64.getDecoder().decode(b64Sql), StandardCharsets.UTF_8);
+      String[] params = parseStringArray(decodeBase64(b64Params, "[]"));
 
       ensureConnected();
 
       try (PreparedStatement stmt = conn.prepareStatement(sql)) {
         stmt.setQueryTimeout(timeoutSec);
+        for (int i = 0; i < params.length; i++) {
+          stmt.setString(i + 1, params[i]);
+        }
         boolean hasRs = stmt.execute();
         if (!hasRs) {
           return "{\"id\":" + q(reqId) + ",\"rows\":[],\"rowCount\":" + stmt.getUpdateCount() + "}";
@@ -219,6 +224,12 @@ public class GaussJdbcServer {
     return sb.toString();
   }
 
+  private static String extractStr(String json, String key, String fallback) {
+    String pat = "\"" + key + "\"";
+    if (json.indexOf(pat) < 0) return fallback;
+    return extractStr(json, key);
+  }
+
   private static int extractInt(String json, String key, int fallback) {
     String pat = "\"" + key + "\"";
     int ki = json.indexOf(pat);
@@ -230,6 +241,60 @@ public class GaussJdbcServer {
     while (i < json.length() && Character.isDigit(json.charAt(i)))
       sb.append(json.charAt(i++));
     try { return Integer.parseInt(sb.toString()); } catch (Exception e) { return fallback; }
+  }
+
+  private static String decodeBase64(String b64, String fallback) {
+    if (b64 == null || b64.isEmpty()) return fallback;
+    try {
+      return new String(Base64.getDecoder().decode(b64), StandardCharsets.UTF_8);
+    } catch (Exception e) {
+      return fallback;
+    }
+  }
+
+  private static String[] parseStringArray(String json) {
+    if (json == null) return new String[0];
+    String s = json.trim();
+    if (s.length() < 2 || s.charAt(0) != '[') return new String[0];
+
+    java.util.ArrayList<String> out = new java.util.ArrayList<>();
+    int i = 1;
+    while (i < s.length()) {
+      while (i < s.length() && Character.isWhitespace(s.charAt(i))) i++;
+      if (i >= s.length() || s.charAt(i) == ']') break;
+      if (s.startsWith("null", i)) {
+        out.add(null);
+        i += 4;
+      } else if (s.charAt(i) == '"') {
+        StringBuilder sb = new StringBuilder();
+        i++;
+        while (i < s.length()) {
+          char ch = s.charAt(i++);
+          if (ch == '"') break;
+          if (ch == '\\' && i < s.length()) {
+            char esc = s.charAt(i++);
+            switch (esc) {
+              case '"': sb.append('"'); break;
+              case '\\': sb.append('\\'); break;
+              case 'n': sb.append('\n'); break;
+              case 'r': sb.append('\r'); break;
+              case 't': sb.append('\t'); break;
+              default: sb.append(esc);
+            }
+          } else {
+            sb.append(ch);
+          }
+        }
+        out.add(sb.toString());
+      } else {
+        int start = i;
+        while (i < s.length() && s.charAt(i) != ',' && s.charAt(i) != ']') i++;
+        out.add(s.substring(start, i).trim());
+      }
+      while (i < s.length() && s.charAt(i) != ',' && s.charAt(i) != ']') i++;
+      if (i < s.length() && s.charAt(i) == ',') i++;
+    }
+    return out.toArray(new String[0]);
   }
 
   // ---- 工具方法 ----

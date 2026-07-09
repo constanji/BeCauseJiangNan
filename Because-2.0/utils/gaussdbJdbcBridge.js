@@ -8,7 +8,7 @@
  * 处理查询，避免了 JVM 冷启动（节省 2-8 秒/次）。
  *
  * 协议：
- *   → stdin  每行: { "id": "<uuid>", "sql": "<base64>", "timeout": <秒> }
+ *   → stdin  每行: { "id": "<uuid>", "sql": "<base64>", "params": "<base64-json-array>", "timeout": <秒> }
  *   ← stdout 每行: { "id": "<uuid>", "rows": [...] }
  *                  { "id": "<uuid>", "error": "<msg>" }
  *   首行:           { "ready": true }
@@ -226,12 +226,12 @@ function waitReady(state, timeoutMs) {
  * 通过持久 Java 进程执行 GaussDB SQL，返回行数组
  *
  * @param {string} sql
- * @param {string[]} _params   保留参数（当前忽略，SQL 已含参数）
+ * @param {string[]} params    PreparedStatement 参数
  * @param {object} dataSource  DataSource 对象
  * @param {string} password    明文密码
  * @returns {Promise<any[]>}
  */
-async function gaussdbJdbcQuery(sql, _params = [], dataSource, password) {
+async function gaussdbJdbcQuery(sql, params = [], dataSource, password) {
   const dsKey = String(dataSource._id || dataSource.id || `${dataSource.host}:${dataSource.port}/${dataSource.database}`);
   const queryTimeoutMs = parseInt(process.env.GAUSSDB_JDBC_TIMEOUT_MS, 10) || 240000;
   // 进程启动+就绪最多等 30s（首次冷启动包含 JVM 加载）
@@ -246,6 +246,8 @@ async function gaussdbJdbcQuery(sql, _params = [], dataSource, password) {
 
   const reqId = crypto.randomUUID();
   const b64Sql = Buffer.from(sql, 'utf8').toString('base64');
+  const safeParams = Array.isArray(params) ? params.map((p) => (p == null ? null : String(p))) : [];
+  const b64Params = Buffer.from(JSON.stringify(safeParams), 'utf8').toString('base64');
   const timeoutSec = parseInt(process.env.GAUSSDB_JDBC_QUERY_TIMEOUT_SEC, 10) || 180;
 
   return new Promise((resolve, reject) => {
@@ -258,7 +260,7 @@ async function gaussdbJdbcQuery(sql, _params = [], dataSource, password) {
     state.pending.set(reqId, { resolve, reject, timer });
 
     try {
-      const line = JSON.stringify({ id: reqId, sql: b64Sql, timeout: timeoutSec });
+      const line = JSON.stringify({ id: reqId, sql: b64Sql, params: b64Params, timeout: timeoutSec });
       state.child.stdin.write(line + '\n');
     } catch (err) {
       state.pending.delete(reqId);
