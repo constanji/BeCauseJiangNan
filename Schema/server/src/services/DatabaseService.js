@@ -35,6 +35,10 @@ function quoteIdentMySQL(name) {
 }
 
 const SAFE_COLUMN_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const PREVIEW_ROW_LIMIT = 50;
+const EXPORT_ROW_LIMIT = 50000;
+const EXPORT_MAX_COLUMNS = 500;
+const EXPORT_MAX_COLUMN_NAME_LENGTH = 256;
 
 function escapeLikePattern(value) {
   return String(value).replace(/[%_\\]/g, '\\$&');
@@ -50,6 +54,25 @@ function normalizePreviewColumns(columns) {
     unique.push(name);
   }
   if (unique.length === 0) throw new Error('无有效列');
+  return unique;
+}
+
+function normalizeExportColumns(columns) {
+  const unique = [];
+  const seen = new Set();
+  for (const col of columns || []) {
+    const name = String(col || '').trim();
+    if (!name || seen.has(name)) continue;
+    if (name.length > EXPORT_MAX_COLUMN_NAME_LENGTH) {
+      throw new Error(`列名过长（上限 ${EXPORT_MAX_COLUMN_NAME_LENGTH} 字符）: ${name.slice(0, 32)}…`);
+    }
+    seen.add(name);
+    unique.push(name);
+  }
+  if (unique.length === 0) throw new Error('无有效列');
+  if (unique.length > EXPORT_MAX_COLUMNS) {
+    throw new Error(`导出列数超过上限 ${EXPORT_MAX_COLUMNS}`);
+  }
   return unique;
 }
 
@@ -132,10 +155,15 @@ async function queryTableRows(config, password, options) {
   const schemaName = String(options.schemaName || '').trim();
   const tableName = String(options.tableName || '').trim();
   if (!schemaName || !tableName) throw new Error('schemaName 与 tableName 不能为空');
-  const columns = normalizePreviewColumns(options.columns);
+  const purpose = options.purpose === 'export' ? 'export' : 'preview';
+  const columns = purpose === 'export'
+    ? normalizeExportColumns(options.columns)
+    : normalizePreviewColumns(options.columns);
   const columnSet = new Set(columns);
   const filters = normalizePreviewFilters(options.filters, columnSet);
-  const limit = Math.max(1, Math.min(Number(options.limit || 50), 50));
+  const maxLimit = purpose === 'export' ? EXPORT_ROW_LIMIT : PREVIEW_ROW_LIMIT;
+  const defaultLimit = purpose === 'export' ? EXPORT_ROW_LIMIT : PREVIEW_ROW_LIMIT;
+  const limit = Math.max(1, Math.min(Number(options.limit || defaultLimit), maxLimit));
   const dedupeBy = String(options.dedupeBy || '').trim();
   if (dedupeBy && !columnSet.has(dedupeBy)) {
     throw new Error(`无效去重列: ${dedupeBy}`);
@@ -719,7 +747,10 @@ module.exports = {
   countTableColumns,
   deepSearchTableValues,
   normalizePreviewColumns,
+  normalizeExportColumns,
   toDDL,
   isTextType,
   UnsupportedDbTypeError,
+  PREVIEW_ROW_LIMIT,
+  EXPORT_ROW_LIMIT,
 };

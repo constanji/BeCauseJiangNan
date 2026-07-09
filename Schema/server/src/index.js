@@ -16,7 +16,7 @@ const port = Number(process.env.PORT || 4100);
 const host = process.env.HOST || '0.0.0.0';
 const webDist = path.resolve(__dirname, '../../web/dist');
 
-app.use(cors({ origin: true, credentials: true }));
+app.use(cors({ origin: true, credentials: true, exposedHeaders: ['X-Export-Mode', 'X-Export-Skipped'] }));
 app.use(express.json({ limit: '8mb' }));
 
 app.use((req, res, next) => {

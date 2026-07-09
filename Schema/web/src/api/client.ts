@@ -217,6 +217,12 @@ export const api = {
     { method: 'POST', body: JSON.stringify(body) },
   ),
 
-  exportCatalogExcel: (body: { items?: Array<{ lightSchemaId?: number; dataSourceId?: string; schemaName?: string; tableName?: string }>; tagIds?: number[] }, signal?: AbortSignal) =>
-    blob('/api/light-schemas/export/excel', { method: 'POST', body: JSON.stringify(body), signal }),
+  exportCatalogExcel: (
+    body: {
+      items?: Array<{ lightSchemaId?: number; dataSourceId?: string; schemaName?: string; tableName?: string }>;
+      tagIds?: number[];
+      mode?: 'light_schema' | 'table_data';
+    },
+    signal?: AbortSignal,
+  ) => blob('/api/light-schemas/export/excel', { method: 'POST', body: JSON.stringify(body), signal }),
 };

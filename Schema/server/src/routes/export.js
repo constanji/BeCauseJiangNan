@@ -1,6 +1,7 @@
 const express = require('express');
 const { getDb } = require('../db/sqlite');
 const { buildWorkbook } = require('../services/ExcelExportService');
+const { buildAttachmentContentDisposition } = require('../lib/httpContentDisposition');
 
 const router = express.Router({ mergeParams: true });
 
@@ -43,7 +44,7 @@ router.post('/excel', async (req, res) => {
     const buffer = await buildWorkbook({ dataSourceName: source.name, schemas });
     const date = new Date().toISOString().slice(0, 10);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename=light-schema-${source.name}-${date}.xlsx`);
+    res.setHeader('Content-Disposition', buildAttachmentContentDisposition(`light-schema-${source.name}-${date}.xlsx`));
     if (skipped.length > 0) {
       res.setHeader('X-Export-Skipped', encodeURIComponent(JSON.stringify(skipped)));
     }

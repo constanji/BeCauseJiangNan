@@ -122,4 +122,107 @@ async function buildWorkbook({ dataSourceName, schemas, multiSource = false }) {
   return workbook.xlsx.writeBuffer();
 }
 
-module.exports = { buildWorkbook };
+function sortTables(tables) {
+  return [...tables].sort((a, b) => {
+    const ds = String(a.dataSourceName || '').localeCompare(String(b.dataSourceName || ''));
+    if (ds !== 0) return ds;
+    const sn = String(a.schemaName || '').localeCompare(String(b.schemaName || ''));
+    if (sn !== 0) return sn;
+    return String(a.tableName || '').localeCompare(String(b.tableName || ''));
+  });
+}
+
+function formatCellValue(value) {
+  if (value == null) return '';
+  if (value instanceof Date) return value;
+  if (Buffer.isBuffer(value)) return value.toString('base64');
+  if (typeof value === 'object') return JSON.stringify(value);
+  return value;
+}
+
+function pickRowValue(row, column) {
+  if (row == null) return undefined;
+  if (Object.prototype.hasOwnProperty.call(row, column)) return row[column];
+  const lower = String(column).toLowerCase();
+  for (const key of Object.keys(row)) {
+    if (key.toLowerCase() === lower) return row[key];
+  }
+  return undefined;
+}
+
+function addDataSheet(workbook, table, { multiSource = false } = {}) {
+  const sheetBase = multiSource
+    ? `${table.dataSourceName || 'ds'}_${table.schemaName || 'public'}_${table.tableName}`
+    : table.tableName;
+  const ws = workbook.addWorksheet(uniqueSheetName(workbook, sheetBase));
+
+  let rowIndex = 1;
+  if (table.tableDescription) {
+    ws.addRow([`表备注: ${table.tableDescription}`]);
+    ws.getRow(rowIndex).font = { italic: true };
+    rowIndex += 1;
+  }
+
+  ws.addRow(table.columns);
+  ws.getRow(rowIndex).font = { bold: true };
+  rowIndex += 1;
+
+  const descriptions = Array.isArray(table.columnDescriptions) ? table.columnDescriptions : [];
+  if (descriptions.length === table.columns.length) {
+    ws.addRow(descriptions);
+    ws.getRow(rowIndex).font = { italic: true, color: { argb: 'FF666666' } };
+    rowIndex += 1;
+  }
+
+  for (const row of table.rows) {
+    ws.addRow(table.columns.map((col) => formatCellValue(pickRowValue(row, col))));
+  }
+  ws.columns = table.columns.map(() => ({ width: 20 }));
+  return ws;
+}
+
+async function buildDataWorkbook({ dataSourceName, tables, multiSource = false }) {
+  const workbook = new ExcelJS.Workbook();
+  const sortedTables = sortTables(tables);
+
+  if (sortedTables.length === 1) {
+    addDataSheet(workbook, sortedTables[0], { multiSource });
+    return workbook.xlsx.writeBuffer();
+  }
+
+  const catalog = workbook.addWorksheet('目录');
+  const header = multiSource
+    ? ['数据源', 'Schema', '表名', '列数', '行数', '已截断', '导出上限']
+    : ['表名', '列数', '行数', '已截断', '导出上限'];
+  catalog.addRow(header);
+  catalog.getRow(1).font = { bold: true };
+
+  for (const table of sortedTables) {
+    catalog.addRow(multiSource
+      ? [
+        table.dataSourceName || dataSourceName,
+        table.schemaName || '',
+        table.tableName,
+        table.columns.length,
+        table.rows.length,
+        table.truncated ? '是' : '否',
+        table.limit,
+      ]
+      : [
+        table.tableName,
+        table.columns.length,
+        table.rows.length,
+        table.truncated ? '是' : '否',
+        table.limit,
+      ]);
+    addDataSheet(workbook, table, { multiSource });
+  }
+
+  catalog.columns = multiSource
+    ? [{ width: 24 }, { width: 16 }, { width: 30 }, { width: 10 }, { width: 10 }, { width: 10 }, { width: 12 }]
+    : [{ width: 30 }, { width: 10 }, { width: 10 }, { width: 10 }, { width: 12 }];
+
+  return workbook.xlsx.writeBuffer();
+}
+
+module.exports = { buildWorkbook, buildDataWorkbook };

@@ -8,6 +8,19 @@ import { useUiState } from '../context/UiStateProvider';
 import { useToast } from '../context/ToastProvider';
 import { ExportCartItem, Tag } from '../lib/uiState';
 
+type ExportMode = 'light_schema' | 'table_data';
+
+type SkippedExportItem = {
+  tableName?: string;
+  dataSourceName?: string;
+  error?: string;
+};
+
+const EXPORT_MODE_LABEL: Record<ExportMode, string> = {
+  light_schema: 'LightSchema 导出',
+  table_data: '全表导出',
+};
+
 function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -15,6 +28,46 @@ function downloadBlob(blob: Blob, filename: string) {
   a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+function parseContentDispositionFilename(header: string | null) {
+  if (!header) return null;
+  const utf8Match = header.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch {
+      return utf8Match[1];
+    }
+  }
+  const plainMatch = header.match(/filename="?([^";]+)"?/i);
+  return plainMatch?.[1] || null;
+}
+
+function fallbackFilename(mode: ExportMode, tableName?: string) {
+  const date = new Date().toISOString().slice(0, 10);
+  const prefix = mode === 'table_data' ? 'table-data' : 'light-schema';
+  const suffix = tableName ? `-${tableName}` : '';
+  return `${prefix}${suffix}-${date}.xlsx`;
+}
+
+function parseExportSkipped(header: string | null): SkippedExportItem[] {
+  if (!header) return [];
+  try {
+    const parsed = JSON.parse(decodeURIComponent(header));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function formatSkippedExportMessage(skipped: SkippedExportItem[]) {
+  return skipped
+    .map((item) => {
+      const table = [item.dataSourceName, item.tableName].filter(Boolean).join(' / ') || '未知表';
+      return `${table}: ${item.error || '未知错误'}`;
+    })
+    .join('\n');
 }
 
 export default function ExportPage() {
@@ -28,24 +81,39 @@ export default function ExportPage() {
   const { exportCart } = state;
 
   const [tags, setTags] = React.useState<Tag[]>([]);
-  const [loading, setLoading] = React.useState(false);
+  const [loadingMode, setLoadingMode] = React.useState<ExportMode | null>(null);
+  const [exportingId, setExportingId] = React.useState<number | null>(null);
+  const [exportMenuId, setExportMenuId] = React.useState<number | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [message, setMessage] = React.useState<string | null>(null);
+  const [warning, setWarning] = React.useState<string | null>(null);
   const { showToast } = useToast();
+  const menuRef = React.useRef<HTMLDivElement | null>(null);
 
   React.useEffect(() => {
     api.listTags().then((r) => { if (r.success) setTags(r.data || []); });
   }, []);
+
+  React.useEffect(() => {
+    if (exportMenuId == null) return undefined;
+    const onClickOutside = (event: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setExportMenuId(null);
+      }
+    };
+    document.addEventListener('mousedown', onClickOutside);
+    return () => document.removeEventListener('mousedown', onClickOutside);
+  }, [exportMenuId]);
 
   const addByTags = async () => {
     if (exportCart.tagIds.length === 0) {
       setError('请先选择至少一个标签');
       return;
     }
-    setLoading(true);
+    setLoadingMode('light_schema');
     setError(null);
     const res = await api.listCatalog({ tagIds: exportCart.tagIds });
-    setLoading(false);
+    setLoadingMode(null);
     if (!res.success) {
       setError(res.error || '加载标签关联表失败');
       return;
@@ -63,35 +131,82 @@ export default function ExportPage() {
     showToast(msg);
   };
 
-  const handleExport = async () => {
+  const runExport = async ({
+    items,
+    mode,
+    tableName,
+    tagIds,
+  }: {
+    items: Array<{ lightSchemaId: number }>;
+    mode: ExportMode;
+    tableName?: string;
+    tagIds?: number[];
+  }) => {
+    setError(null);
+    setMessage(null);
+    setWarning(null);
+    try {
+      const res = await api.exportCatalogExcel({ items, tagIds, mode });
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}));
+        throw new Error(payload.error || `导出失败 HTTP ${res.status}`);
+      }
+
+      const responseMode = res.headers.get('X-Export-Mode');
+      if (responseMode && responseMode !== mode) {
+        throw new Error('服务端未识别导出模式，请重新构建并重启 Schema 服务后再试');
+      }
+      if (!responseMode) {
+        throw new Error('当前 Schema 服务版本过旧，不支持全表导出，请重新构建并重启后再试');
+      }
+
+      const blob = await res.blob();
+      const filename = parseContentDispositionFilename(res.headers.get('Content-Disposition'))
+        || fallbackFilename(mode, tableName);
+      downloadBlob(blob, filename);
+
+      const skipped = parseExportSkipped(res.headers.get('X-Export-Skipped'));
+      const msg = `${EXPORT_MODE_LABEL[mode]}成功`;
+      setMessage(msg);
+      showToast(msg);
+      if (skipped.length > 0) {
+        const warnMsg = `${skipped.length} 张表导出失败或被跳过：\n${formatSkippedExportMessage(skipped)}`;
+        setWarning(warnMsg);
+        showToast(`部分表未导出（${skipped.length} 张）`);
+      }
+    } catch (err: any) {
+      setError(err.message || String(err));
+    }
+  };
+
+  const handleBatchExport = async (mode: ExportMode) => {
     const items = exportCart.items.map((item) => ({ lightSchemaId: item.lightSchemaId }));
     if (items.length === 0 && exportCart.tagIds.length === 0) {
       setError('导出篮为空，请先加入表或选择标签');
       return;
     }
-    setLoading(true);
-    setError(null);
-    setMessage(null);
-    try {
-      const res = await api.exportCatalogExcel({
-        items,
-        tagIds: exportCart.tagIds.length ? exportCart.tagIds : undefined,
-      });
-      if (!res.ok) {
-        const payload = await res.json().catch(() => ({}));
-        throw new Error(payload.error || `导出失败 HTTP ${res.status}`);
-      }
-      const blob = await res.blob();
-      const date = new Date().toISOString().slice(0, 10);
-      downloadBlob(blob, `light-schema-export-${date}.xlsx`);
-      setMessage('导出成功');
-      showToast('导出成功');
-    } catch (err: any) {
-      setError(err.message || String(err));
-    } finally {
-      setLoading(false);
-    }
+    setExportMenuId(null);
+    setLoadingMode(mode);
+    await runExport({
+      items,
+      mode,
+      tagIds: exportCart.tagIds.length ? exportCart.tagIds : undefined,
+    });
+    setLoadingMode(null);
   };
+
+  const handleSingleExport = async (item: ExportCartItem, mode: ExportMode) => {
+    setExportMenuId(null);
+    setExportingId(item.lightSchemaId);
+    await runExport({
+      items: [{ lightSchemaId: item.lightSchemaId }],
+      mode,
+      tableName: item.tableName,
+    });
+    setExportingId(null);
+  };
+
+  const busy = loadingMode != null || exportingId != null;
 
   return (
     <div className="flex h-full flex-col overflow-hidden px-4 py-4">
@@ -101,21 +216,45 @@ export default function ExportPage() {
           <p className="mt-1 text-sm text-text-secondary">
             管理导出篮，按标签批量加入或导出 Excel（可跨数据源）
           </p>
+          <p className="mt-2 text-xs text-text-secondary">
+            LightSchema 导出 = 列定义、类型、备注；全表导出 = 按 LightSchema 保留列导出全部行数据，并在表头下方附带列备注（审查删除的列不包含）
+          </p>
         </div>
-        <Button variant="primary" className="px-4 py-2" disabled={loading} onClick={handleExport}>
-          <Download className="h-4 w-4" />
-          导出 Excel
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="neutral"
+            className="px-4 py-2"
+            disabled={busy}
+            onClick={() => handleBatchExport('table_data')}
+          >
+            <Download className="h-4 w-4" />
+            {loadingMode === 'table_data' ? '全表导出中…' : '批量全表导出'}
+          </Button>
+          <Button
+            variant="primary"
+            className="px-4 py-2"
+            disabled={busy}
+            onClick={() => handleBatchExport('light_schema')}
+          >
+            <Download className="h-4 w-4" />
+            {loadingMode === 'light_schema' ? 'LightSchema 导出中…' : '批量 LightSchema 导出'}
+          </Button>
+        </div>
       </div>
 
       {error && <div className="mb-4"><StatusBanner tone="error" title="操作失败" message={error} /></div>}
+      {warning && (
+        <div className="mb-4">
+          <StatusBanner tone="warning" title="部分表未导出" message={<pre className="whitespace-pre-wrap font-sans">{warning}</pre>} />
+        </div>
+      )}
       {message && <div className="mb-4"><StatusBanner tone="success" title="完成" message={message} /></div>}
 
       <div className="mb-4 rounded-lg border border-border-light bg-surface-primary p-4">
         <h3 className="mb-3 text-sm font-medium text-text-primary">按标签一键加入</h3>
         <TagPicker tags={tags} value={exportCart.tagIds} onChange={setExportTagIds} />
         <div className="mt-4">
-          <Button variant="neutral" className="px-3 py-2" disabled={loading} onClick={addByTags}>
+          <Button variant="neutral" className="px-3 py-2" disabled={busy} onClick={addByTags}>
             加入全部带所选标签的表
           </Button>
         </div>
@@ -138,12 +277,45 @@ export default function ExportPage() {
             <div className="space-y-2">
               {exportCart.items.map((item) => (
                 <div key={item.lightSchemaId} className="flex items-center justify-between gap-3 rounded-lg border border-border-light px-3 py-2">
-                  <span className="text-sm text-text-primary">
+                  <span className="min-w-0 flex-1 truncate text-sm text-text-primary">
                     {item.dataSourceName} / {item.schemaName}.{item.tableName}
                   </span>
-                  <Button variant="neutral" className="px-2 py-1" onClick={() => removeFromCart(item.lightSchemaId)}>
-                    <X className="h-4 w-4" />
-                  </Button>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <div className="relative" ref={exportMenuId === item.lightSchemaId ? menuRef : undefined}>
+                      <Button
+                        variant="neutral"
+                        className="px-2 py-1"
+                        disabled={busy}
+                        onClick={() => setExportMenuId((prev) => (prev === item.lightSchemaId ? null : item.lightSchemaId))}
+                      >
+                        <Download className="h-4 w-4" />
+                        {exportingId === item.lightSchemaId ? '导出中…' : '导出'}
+                      </Button>
+                      {exportMenuId === item.lightSchemaId && (
+                        <div className="absolute right-0 top-full z-20 mt-1 w-64 overflow-hidden rounded-lg border border-border-light bg-surface-primary shadow-lg">
+                          <button
+                            type="button"
+                            className="block w-full px-3 py-2 text-left hover:bg-surface-secondary"
+                            onClick={() => handleSingleExport(item, 'light_schema')}
+                          >
+                            <div className="text-sm font-medium text-text-primary">LightSchema 导出</div>
+                            <div className="mt-0.5 text-xs text-text-secondary">导出列定义、类型、备注、采样值</div>
+                          </button>
+                          <button
+                            type="button"
+                            className="block w-full border-t border-border-light px-3 py-2 text-left hover:bg-surface-secondary"
+                            onClick={() => handleSingleExport(item, 'table_data')}
+                          >
+                            <div className="text-sm font-medium text-text-primary">全表导出</div>
+                            <div className="mt-0.5 text-xs text-text-secondary">按 LightSchema 保留列导出全部行数据，含列备注</div>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                    <Button variant="neutral" className="px-2 py-1" onClick={() => removeFromCart(item.lightSchemaId)}>
+                      <X className="h-4 w-4" />
+                    </Button>
+                  </div>
                 </div>
               ))}
             </div>
