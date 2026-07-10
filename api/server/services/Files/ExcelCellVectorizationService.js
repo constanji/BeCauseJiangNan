@@ -5,13 +5,24 @@
  * - 每个非空单元格独立 embed（精准检索）
  * - metadata.full_row 保存整行序列化文本（命中后返回整行）
  * - 支持多 sheet、多文件、datasource 隔离
+ * - 支持主列（高优先级）与排除列（不参与检索）
  */
 
 const { v4: uuidv4 } = require('uuid');
 const XLSX = require('xlsx');
 const { logger } = require('@because/data-schemas');
+const {
+  buildColumnSet,
+  parseWorkbookHeaders,
+  computeTextMatchScore,
+  applyVectorColumnWeight,
+  parseMetadataFlag,
+  formatSearchRow,
+  mergeSearchResults,
+  buildFullRow,
+} = require('./ExcelColumnSearchUtils');
 
-const BATCH_SIZE = 20; // 每批并发向量化的单元格数
+const BATCH_SIZE = 20;
 
 class ExcelCellVectorizationService {
   constructor() {
@@ -33,15 +44,50 @@ class ExcelCellVectorizationService {
   }
 
   /**
-   * 解析 xlsx 文件并向量化所有单元格
-   * @param {Buffer|string} fileBufferOrPath  文件 Buffer 或本地路径
-   * @param {string}        entityId          数据源 ID（用于隔离）
-   * @param {string}        userId            用户 ID
-   * @param {string}        filename          原始文件名（存入 metadata）
-   * @param {string}        [sheetName]       指定 sheet，默认处理所有 sheet
-   * @returns {{ fileId: string, rowCount: number, cellCount: number, sheetNames: string[] }}
+   * 解析 xlsx 表头（首行），供上传前配置列
    */
-  async vectorize({ fileBufferOrPath, entityId, userId, filename, sheetName, primaryColumns = [] }) {
+  parseHeaders(fileBufferOrPath) {
+    const buffer = Buffer.isBuffer(fileBufferOrPath)
+      ? fileBufferOrPath
+      : require('fs').readFileSync(fileBufferOrPath);
+    return parseWorkbookHeaders(buffer);
+  }
+
+  /**
+   * 写入文件级列配置（不参与检索）
+   */
+  async saveFileConfig({ fileId, entityId, userId, filename, primaryColumns, excludedColumns, headers, sheetNames }) {
+    await this.initialize();
+    const metadata = {
+      source: 'excel_file_config',
+      entity_id: entityId,
+      filename,
+      primary_columns: primaryColumns || [],
+      excluded_columns: excludedColumns || [],
+      headers: headers || [],
+      sheet_names: sheetNames || [],
+    };
+
+    await this.pool.query(
+      `INSERT INTO file_vectors
+         (file_id, user_id, entity_id, chunk_index, content, embedding, metadata)
+       VALUES ($1, $2, $3, $4, $5, NULL, $6::jsonb)`,
+      [fileId, userId || null, entityId || null, -1, '__file_config__', JSON.stringify(metadata)],
+    );
+  }
+
+  /**
+   * 解析 xlsx 文件并向量化所有单元格
+   */
+  async vectorize({
+    fileBufferOrPath,
+    entityId,
+    userId,
+    filename,
+    sheetName,
+    primaryColumns = [],
+    excludedColumns = [],
+  }) {
     await this.initialize();
 
     const fileId = uuidv4();
@@ -53,51 +99,51 @@ class ExcelCellVectorizationService {
       workbook = XLSX.readFile(fileBufferOrPath);
     }
 
-    const sheetsToProcess = sheetName
-      ? [sheetName]
-      : workbook.SheetNames;
+    const sheetsToProcess = sheetName ? [sheetName] : workbook.SheetNames;
+    const primarySet = buildColumnSet(primaryColumns);
+    const excludedSet = buildColumnSet(excludedColumns);
 
     let totalRowCount = 0;
     let totalCellCount = 0;
+    const allHeaders = [];
 
     for (const sName of sheetsToProcess) {
       const sheet = workbook.Sheets[sName];
       if (!sheet) continue;
 
       const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
-      if (!rows || rows.length < 2) continue; // 至少有 header + 1 行数据
+      if (!rows || rows.length < 2) continue;
 
       const headers = rows[0].map((h) => String(h).trim());
+      allHeaders.push(...headers);
       const dataRows = rows.slice(1);
       totalRowCount += dataRows.length;
 
-      // 主检索列名集合（不区分大小写）
-      const primarySet = new Set(primaryColumns.map((c) => c.trim().toLowerCase()));
-
       logger.info(
-        `[ExcelCellVectorizationService] Sheet "${sName}": ${dataRows.length} 行, ${headers.length} 列, 主列: [${[...primarySet].join(', ')}]`,
+        `[ExcelCellVectorizationService] Sheet "${sName}": ${dataRows.length} 行, ${headers.length} 列, 主列=[${primaryColumns.join(', ')}], 排除列=[${excludedColumns.join(', ')}]`,
       );
 
-      // 遍历每行每列，收集待向量化的单元格
       const cells = [];
       for (let rowIdx = 0; rowIdx < dataRows.length; rowIdx++) {
         const row = dataRows[rowIdx];
 
-        // 整行序列化（用于返回全行上下文）
-        const fullRow = headers
-          .map((h, colIdx) => `${h}: ${String(row[colIdx] ?? '').trim()}`)
-          .filter((seg) => !seg.endsWith(': '))
-          .join(' | ');
+        // fullRow 始终包含整行所有列（含排除列），排除只影响下方是否参与检索/向量化
+        const fullRow = buildFullRow(headers, row);
 
         for (let colIdx = 0; colIdx < headers.length; colIdx++) {
-          const cellValue = String(row[colIdx] ?? '').trim();
-          if (!cellValue) continue; // 跳过空单元格
+          const colName = headers[colIdx];
+          const colKey = colName.trim().toLowerCase();
 
-          const isPrimary = primarySet.size > 0 && primarySet.has(headers[colIdx].trim().toLowerCase());
+          if (excludedSet.has(colKey)) continue;
+
+          const cellValue = String(row[colIdx] ?? '').trim();
+          if (!cellValue) continue;
+
+          const isPrimary = primarySet.size > 0 && primarySet.has(colKey);
 
           cells.push({
             content: cellValue,
-            colName: headers[colIdx],
+            colName,
             rowIdx,
             fullRow,
             sheetName: sName,
@@ -106,14 +152,11 @@ class ExcelCellVectorizationService {
         }
       }
 
-      // 分批向量化写入
       for (let batchStart = 0; batchStart < cells.length; batchStart += BATCH_SIZE) {
         const batch = cells.slice(batchStart, batchStart + BATCH_SIZE);
 
         await Promise.all(
           batch.map(async (cell, batchOffset) => {
-            const chunkIndex = (cell.rowIdx * headers.length) + cells.indexOf(cell);
-
             let embedding = null;
             try {
               embedding = await this.embeddingService.embedText(cell.content);
@@ -131,6 +174,8 @@ class ExcelCellVectorizationService {
               full_row: cell.fullRow,
               source: 'excel_cell',
               is_primary_column: cell.isPrimary || false,
+              primary_columns: primaryColumns,
+              excluded_columns: excludedColumns,
             };
 
             await this.pool.query(
@@ -158,6 +203,18 @@ class ExcelCellVectorizationService {
       totalCellCount += cells.length;
     }
 
+    const uniqueHeaders = [...new Set(allHeaders.filter(Boolean))];
+    await this.saveFileConfig({
+      fileId,
+      entityId,
+      userId,
+      filename,
+      primaryColumns,
+      excludedColumns,
+      headers: uniqueHeaders,
+      sheetNames: sheetsToProcess,
+    });
+
     logger.info(
       `[ExcelCellVectorizationService] 完成：fileId=${fileId}, rows=${totalRowCount}, cells=${totalCellCount}`,
     );
@@ -167,27 +224,32 @@ class ExcelCellVectorizationService {
       rowCount: totalRowCount,
       cellCount: totalCellCount,
       sheetNames: sheetsToProcess,
+      primaryColumns,
+      excludedColumns,
+      headers: uniqueHeaders,
     };
   }
 
-  /**
-   * 删除指定 file_id 的所有向量记录
-   * @param {string} fileId
-   */
-  async deleteByFileId(fileId) {
+  async deleteByFileId(fileId, entityId) {
     await this.initialize();
     const result = await this.pool.query(
-      'DELETE FROM file_vectors WHERE file_id = $1',
-      [fileId],
+      'DELETE FROM file_vectors WHERE file_id = $1 AND entity_id = $2',
+      [fileId, entityId],
     );
     return result.rowCount;
   }
 
-  /**
-   * 列出指定 datasource 下的所有 Excel 文件（按 file_id 聚合）
-   * @param {string} entityId
-   * @returns {Array<{ fileId, filename, cellCount, rowCount, createdAt }>}
-   */
+  async fileExistsInEntity(fileId, entityId) {
+    await this.initialize();
+    const result = await this.pool.query(
+      `SELECT 1 FROM file_vectors
+       WHERE file_id = $1 AND entity_id = $2
+       LIMIT 1`,
+      [fileId, entityId],
+    );
+    return result.rows.length > 0;
+  }
+
   async listByEntityId(entityId) {
     await this.initialize();
     const result = await this.pool.query(
@@ -206,16 +268,31 @@ class ExcelCellVectorizationService {
       [entityId],
     );
 
-    // 合并同 file_id 的多个 sheet
+    const configResult = await this.pool.query(
+      `SELECT file_id, metadata
+       FROM file_vectors
+       WHERE entity_id = $1
+         AND metadata->>'source' = 'excel_file_config'`,
+      [entityId],
+    );
+    const configMap = {};
+    for (const row of configResult.rows) {
+      configMap[row.file_id] = row.metadata || {};
+    }
+
     const fileMap = {};
     for (const row of result.rows) {
       if (!fileMap[row.file_id]) {
+        const cfg = configMap[row.file_id] || {};
         fileMap[row.file_id] = {
           fileId: row.file_id,
           filename: row.filename || 'unknown',
           cellCount: 0,
           rowCount: 0,
           createdAt: row.created_at,
+          primaryColumns: cfg.primary_columns || [],
+          excludedColumns: cfg.excluded_columns || [],
+          headers: cfg.headers || [],
         };
       }
       fileMap[row.file_id].cellCount += parseInt(row.cell_count, 10);
@@ -225,14 +302,7 @@ class ExcelCellVectorizationService {
     return Object.values(fileMap);
   }
 
-  /**
-   * 获取指定文件的原始行数据（用于预览）
-   * 从 metadata.full_row 按 row_index 去重重建行列表
-   * @param {string} fileId
-   * @param {number} limit  最多返回多少行，默认 200
-   * @returns {Array<{ rowIndex, fullRow, sheetName }>}
-   */
-  async getFileRows(fileId, limit = 200) {
+  async getFileRows(fileId, entityId, limit = 200) {
     await this.initialize();
     const result = await this.pool.query(
       `SELECT DISTINCT ON ((metadata->>'row_index')::int, metadata->>'sheet_name')
@@ -241,10 +311,11 @@ class ExcelCellVectorizationService {
          metadata->>'sheet_name'       AS sheet_name
        FROM file_vectors
        WHERE file_id = $1
+         AND entity_id = $2
          AND metadata->>'source' = 'excel_cell'
        ORDER BY (metadata->>'row_index')::int, metadata->>'sheet_name'
-       LIMIT $2`,
-      [fileId, limit],
+       LIMIT $3`,
+      [fileId, entityId, limit],
     );
     return result.rows.map((r) => ({
       rowIndex: r.row_index,
@@ -254,90 +325,224 @@ class ExcelCellVectorizationService {
   }
 
   /**
-   * 语义检索 Excel 单元格，返回命中行
-   * @param {string}   entityId
-   * @param {string}   query
-   * @param {number}   topK
-   * @param {number}   minScore
-   * @returns {Array<{ score, cellValue, columnName, fullRow, filename, rowIndex }>}
+   * 规范化文件名过滤条件。
+   * 支持：精确匹配（大小写不敏感）、无扩展名时匹配 org_master → org_master.xlsx
+   * @returns {string|null}
    */
-  async search({ entityId, query, topK = 10, minScore = 0.5 }) {
-    await this.initialize();
+  normalizeFilenameFilter(filename) {
+    if (filename == null) return null;
+    const trimmed = String(filename).trim();
+    return trimmed || null;
+  }
 
-    const formatRow = (r, score) => ({
-      score,
-      cellValue: r.content,
-      columnName: r.metadata?.column_name || '',
-      fullRow: r.metadata?.full_row || r.content,
-      filename: r.metadata?.filename || '',
-      rowIndex: r.metadata?.row_index ?? -1,
-      sheetName: r.metadata?.sheet_name || '',
-      isPrimaryColumn: r.metadata?.is_primary_column === true || r.metadata?.is_primary_column === 'true',
-    });
+  /**
+   * 追加 filename 过滤到 SQL（大小写不敏感；无扩展名时允许匹配同名 .xlsx/.xls）
+   * @returns {{ sql: string, params: any[] }}
+   */
+  appendFilenameFilter(sql, params, filename) {
+    const name = this.normalizeFilenameFilter(filename);
+    if (!name) return { sql, params };
 
-    // ── 第一步：文本精确匹配（优先处理编码/ID类精确查询）──────────────────────
-    // 用 ILIKE 做包含匹配，主列命中 score=1.0，非主列 score=0.99，排在向量结果前面。
-    const textResult = await this.pool.query(
-      `SELECT content, metadata
-       FROM file_vectors
-       WHERE entity_id = $1
-         AND metadata->>'source' = 'excel_cell'
-         AND content ILIKE $2
-       LIMIT $3`,
-      [entityId, `%${query}%`, topK],
-    );
+    const nextParams = [...params, name];
+    const idx = nextParams.length;
+    // 精确匹配，或传入无扩展名时匹配「basename.任意扩展名」
+    const clause = ` AND (
+      LOWER(TRIM(metadata->>'filename')) = LOWER(TRIM($${idx}))
+      OR (
+        POSITION('.' IN TRIM($${idx})) = 0
+        AND LOWER(TRIM(metadata->>'filename')) LIKE LOWER(TRIM($${idx})) || '.%'
+      )
+    )`;
+    return { sql: sql + clause, params: nextParams };
+  }
 
-    // 主列命中排前，非主列排后
-    const textRows = textResult.rows
-      .map((r) => {
-        const isPrimary = r.metadata?.is_primary_column === true || r.metadata?.is_primary_column === 'true';
-        return formatRow(r, isPrimary ? 1.0 : 0.99);
-      })
-      .sort((a, b) => b.score - a.score);
+  /**
+   * 文本精确匹配：支持主列优先、排除列（索引阶段已跳过）、可选按文件名限定
+   */
+  async searchTextMatches({ entityId, query, topK, primaryOnly = false, filename = null }) {
+    let sql = `SELECT content, metadata
+               FROM file_vectors
+               WHERE entity_id = $1
+                 AND metadata->>'source' = 'excel_cell'
+                 AND content ILIKE $2`;
+    let params = [entityId, `%${query}%`];
 
-    // ── 第二步：向量语义检索（用于自然语言描述型查询）────────────────────────
-    const queryEmbedding = await this.embeddingService.embedText(query);
-    let vectorRows = [];
-    if (queryEmbedding) {
-      const embeddingStr = `[${queryEmbedding.join(',')}]`;
-      const vectorResult = await this.pool.query(
-        `SELECT
-           content,
-           metadata,
-           1 - (embedding <=> $1::vector) AS score
-         FROM file_vectors
-         WHERE entity_id = $2
-           AND metadata->>'source' = 'excel_cell'
-           AND embedding IS NOT NULL
-           AND 1 - (embedding <=> $1::vector) >= $3
-         ORDER BY embedding <=> $1::vector
-         LIMIT $4`,
-        [embeddingStr, entityId, minScore, topK],
-      );
-      vectorRows = vectorResult.rows.map((r) => formatRow(r, parseFloat(r.score)));
+    if (primaryOnly) {
+      sql += ` AND (metadata->>'is_primary_column' = 'true')`;
     }
 
-    // ── 第三步：按行去重，每行只保留最高分的那条命中 ──────────────────────────
-    // 同一行可能有多个单元格命中（如同行的 kpi_code、kpi_name 都包含关键词），
-    // 但只需要返回一行内容，取主列优先、分数最高的那条代表。
-    const rowMap = new Map(); // key: "filename::sheetName::rowIndex"
-    for (const r of [...textRows, ...vectorRows]) {
-      const key = `${r.filename}::${r.sheetName}::${r.rowIndex}`;
-      const existing = rowMap.get(key);
-      if (!existing) {
-        rowMap.set(key, r);
-      } else {
-        // 主列优先；同为主列或同为非主列时取高分
-        const curBetter =
-          (r.isPrimaryColumn && !existing.isPrimaryColumn) ||
-          (r.isPrimaryColumn === existing.isPrimaryColumn && r.score > existing.score);
-        if (curBetter) rowMap.set(key, r);
+    ({ sql, params } = this.appendFilenameFilter(sql, params, filename));
+
+    sql += ` LIMIT $${params.length + 1}`;
+    params.push(topK * 5);
+
+    const textResult = await this.pool.query(sql, params);
+    return textResult.rows;
+  }
+
+  /**
+   * 拉取全部主列单元格（不做 ILIKE 字面过滤）。
+   * 主列数据量通常有限（机构/指标主档），全量拉取后交给 JS 侧做精确/包含/有序子序列模糊评分，
+   * 避免 SQL ILIKE 要求连续子串导致漏掉"溧阳支行"命中"溧阳市支行"这类中间插字场景
+   * （ILIKE '%溧阳支行%' 永远匹配不到"溧阳市支行"，因为字面上不是连续子串）。
+   */
+  async fetchAllPrimaryColumnCells({ entityId, limit = 5000, filename = null }) {
+    let sql = `SELECT content, metadata
+               FROM file_vectors
+               WHERE entity_id = $1
+                 AND metadata->>'source' = 'excel_cell'
+                 AND metadata->>'is_primary_column' = 'true'`;
+    let params = [entityId];
+    ({ sql, params } = this.appendFilenameFilter(sql, params, filename));
+    sql += ` LIMIT $${params.length + 1}`;
+    params.push(limit);
+
+    const result = await this.pool.query(sql, params);
+    return result.rows;
+  }
+
+  /**
+   * 语义检索 Excel 单元格
+   * @param {Object} opts
+   * @param {string} [opts.filename] - 可选；指定后仅在该 Excel 文件内检索（大小写不敏感）
+   */
+  async search({ entityId, query, topK = 10, minScore = 0.5, filename = null }) {
+    await this.initialize();
+
+    const filenameFilter = this.normalizeFilenameFilter(filename);
+
+    let primaryCheckSql = `SELECT 1 FROM file_vectors
+       WHERE entity_id = $1
+         AND metadata->>'source' = 'excel_cell'
+         AND metadata->>'is_primary_column' = 'true'`;
+    let primaryCheckParams = [entityId];
+    ({ sql: primaryCheckSql, params: primaryCheckParams } = this.appendFilenameFilter(
+      primaryCheckSql,
+      primaryCheckParams,
+      filenameFilter,
+    ));
+    primaryCheckSql += ' LIMIT 1';
+
+    const hasPrimaryConfig = await this.pool.query(primaryCheckSql, primaryCheckParams);
+    const usePrimaryBoost = hasPrimaryConfig.rows.length > 0;
+
+    const mapTextRows = (rows, { isPrimary } = {}) =>
+      rows
+        .map((r) => {
+          const rowIsPrimary = isPrimary ?? parseMetadataFlag(r.metadata?.is_primary_column);
+          const score = computeTextMatchScore({
+            query,
+            cellValue: r.content,
+            isPrimaryColumn: rowIsPrimary,
+            hasPrimaryConfig: usePrimaryBoost,
+          });
+          if (score == null) return null;
+          const formatted = formatSearchRow(r, score);
+          formatted.isExactMatch = String(r.content).trim().toLowerCase() === String(query).trim().toLowerCase();
+          return formatted;
+        })
+        .filter(Boolean);
+
+    let textRows;
+    if (usePrimaryBoost) {
+      // 主列走全量拉取 + JS 评分（精确/包含/有序子序列模糊），不受 ILIKE 连续子串限制
+      const primaryCells = await this.fetchAllPrimaryColumnCells({
+        entityId,
+        filename: filenameFilter,
+      });
+      textRows = mapTextRows(primaryCells, { isPrimary: true }).sort((a, b) => b.score - a.score);
+
+      if (textRows.length < topK) {
+        const primaryKeys = new Set(
+          textRows.map((r) => `${r.filename}::${r.sheetName}::${r.rowIndex}::${r.columnName}`),
+        );
+        const fallbackRows = mapTextRows(
+          await this.searchTextMatches({
+            entityId,
+            query,
+            topK,
+            primaryOnly: false,
+            filename: filenameFilter,
+          }),
+        ).filter((r) => !primaryKeys.has(`${r.filename}::${r.sheetName}::${r.rowIndex}::${r.columnName}`));
+        textRows = [...textRows, ...fallbackRows];
+      }
+    } else {
+      textRows = mapTextRows(
+        await this.searchTextMatches({
+          entityId,
+          query,
+          topK,
+          primaryOnly: false,
+          filename: filenameFilter,
+        }),
+      );
+    }
+
+    let vectorRows = [];
+    const queryEmbedding = await this.embeddingService.embedText(query);
+    if (queryEmbedding) {
+      const embeddingStr = `[${queryEmbedding.join(',')}]`;
+      let vectorSql = `SELECT content, metadata, 1 - (embedding <=> $1::vector) AS score
+                       FROM file_vectors
+                       WHERE entity_id = $2
+                         AND metadata->>'source' = 'excel_cell'
+                         AND embedding IS NOT NULL
+                         AND 1 - (embedding <=> $1::vector) >= $3`;
+      let vectorParams = [embeddingStr, entityId, minScore];
+
+      if (usePrimaryBoost) {
+        vectorSql += ` AND (metadata->>'is_primary_column' = 'true')`;
+      }
+
+      ({ sql: vectorSql, params: vectorParams } = this.appendFilenameFilter(
+        vectorSql,
+        vectorParams,
+        filenameFilter,
+      ));
+
+      vectorSql += ` ORDER BY embedding <=> $1::vector LIMIT $${vectorParams.length + 1}`;
+      vectorParams.push(topK * 3);
+
+      const vectorResult = await this.pool.query(vectorSql, vectorParams);
+      vectorRows = vectorResult.rows.map((r) => {
+        const isPrimary = parseMetadataFlag(r.metadata?.is_primary_column);
+        const weighted = applyVectorColumnWeight(parseFloat(r.score), isPrimary, usePrimaryBoost);
+        return formatSearchRow(r, weighted);
+      });
+
+      if (usePrimaryBoost && vectorRows.length < topK) {
+        let fallbackSql = `SELECT content, metadata, 1 - (embedding <=> $1::vector) AS score
+           FROM file_vectors
+           WHERE entity_id = $2
+             AND metadata->>'source' = 'excel_cell'
+             AND embedding IS NOT NULL
+             AND 1 - (embedding <=> $1::vector) >= $3`;
+        let fallbackParams = [embeddingStr, entityId, minScore];
+        ({ sql: fallbackSql, params: fallbackParams } = this.appendFilenameFilter(
+          fallbackSql,
+          fallbackParams,
+          filenameFilter,
+        ));
+        fallbackSql += ` ORDER BY embedding <=> $1::vector LIMIT $${fallbackParams.length + 1}`;
+        fallbackParams.push(topK * 3);
+
+        const fallbackResult = await this.pool.query(fallbackSql, fallbackParams);
+        const extra = fallbackResult.rows.map((r) => {
+          const isPrimary = parseMetadataFlag(r.metadata?.is_primary_column);
+          const weighted = applyVectorColumnWeight(parseFloat(r.score), isPrimary, usePrimaryBoost);
+          return formatSearchRow(r, weighted);
+        });
+        vectorRows = [...vectorRows, ...extra];
       }
     }
 
-    return [...rowMap.values()]
-      .sort((a, b) => (b.isPrimaryColumn ? 1 : 0) - (a.isPrimaryColumn ? 1 : 0) || b.score - a.score)
-      .slice(0, topK);
+    return mergeSearchResults({
+      textRows,
+      vectorRows,
+      topK,
+      hasPrimaryConfig: usePrimaryBoost,
+    });
   }
 }
 

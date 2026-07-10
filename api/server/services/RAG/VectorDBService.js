@@ -561,6 +561,13 @@ class VectorDBService {
     }
 
     try {
+      const {
+        computeTextMatchScore,
+        applyVectorColumnWeight,
+        parseMetadataFlag,
+      } = require('~/server/services/Files/ExcelColumnSearchUtils');
+      const PRIMARY_CELL_FETCH_LIMIT = 5000;
+
       const formatRow = (row, similarity) => ({
         fileId: row.file_id,
         chunkIndex: row.chunk_index,
@@ -570,54 +577,162 @@ class VectorDBService {
         similarity,
       });
 
-      // ── 文本精确匹配（Excel 指标编码/ID 类精确查询优先）──────────────────
-      // 只对 excel_cell 来源启用，普通文件 chunk 走向量检索即可。
+      let usePrimaryBoost = false;
+      if (entityId) {
+        const primaryCheck = await this.pool.query(
+          `SELECT 1 FROM file_vectors
+           WHERE metadata->>'source' = 'excel_cell'
+             AND metadata->>'entity_id' = $1
+             AND metadata->>'is_primary_column' = 'true'
+           LIMIT 1`,
+          [entityId],
+        );
+        usePrimaryBoost = primaryCheck.rows.length > 0;
+      }
+
+      // ── 文本精确匹配（Excel 编码/ID 类查询，主列优先）────────────────────
       let textRows = [];
       if (rawQuery && entityId) {
-        const textParams = [entityId, `%${rawQuery}%`, topK];
-        let textWhere = `WHERE metadata->>'source' = 'excel_cell' AND metadata->>'entity_id' = $1 AND content ILIKE $2`;
-        if (fileId) { textWhere += ` AND file_id = $4`; textParams.push(fileId); }
-        if (userId) { textWhere += ` AND user_id = $${textParams.length + 1}`; textParams.push(userId.toString()); }
-        const textResult = await this.pool.query(
-          `SELECT file_id, chunk_index, content, metadata FROM file_vectors ${textWhere} LIMIT $3`,
-          textParams,
-        );
-        // 主列命中 score=1.0，非主列 score=0.99，主列优先
-        textRows = textResult.rows
-          .map((row) => {
-            const isPrimary = row.metadata?.is_primary_column === true || row.metadata?.is_primary_column === 'true';
-            return formatRow(row, isPrimary ? 1.0 : 0.99);
-          })
-          .sort((a, b) => b.score - a.score);
+        const runTextQuery = async (primaryOnly) => {
+          const textParams = [entityId, `%${rawQuery}%`, topK * 5];
+          let textWhere = `WHERE metadata->>'source' = 'excel_cell' AND metadata->>'entity_id' = $1 AND content ILIKE $2`;
+          if (primaryOnly) {
+            textWhere += ` AND metadata->>'is_primary_column' = 'true'`;
+          }
+          if (fileId) {
+            textWhere += ` AND file_id = $4`;
+            textParams.push(fileId);
+          }
+          if (userId) {
+            textWhere += ` AND user_id = $${textParams.length + 1}`;
+            textParams.push(userId.toString());
+          }
+          return this.pool.query(
+            `SELECT file_id, chunk_index, content, metadata FROM file_vectors ${textWhere} LIMIT $3`,
+            textParams,
+          );
+        };
+
+        const mapText = (rows, { forcePrimary } = {}) =>
+          rows
+            .map((row) => {
+              const isPrimary = forcePrimary ?? parseMetadataFlag(row.metadata?.is_primary_column);
+              const score = computeTextMatchScore({
+                query: rawQuery,
+                cellValue: row.content,
+                isPrimaryColumn: isPrimary,
+                hasPrimaryConfig: usePrimaryBoost,
+              });
+              if (score == null) return null;
+              return formatRow(row, score);
+            })
+            .filter(Boolean);
+
+        if (usePrimaryBoost) {
+          // 主列数据量通常有限（机构/指标主档），全量拉取后在 JS 侧做精确/包含/有序子序列模糊评分，
+          // 避免 ILIKE 要求连续子串导致漏掉"溧阳支行"命中"溧阳市支行"这类中间插字场景。
+          const primaryParams = [entityId];
+          let primaryWhere = `WHERE metadata->>'source' = 'excel_cell' AND metadata->>'entity_id' = $1 AND metadata->>'is_primary_column' = 'true'`;
+          if (fileId) {
+            primaryWhere += ` AND file_id = $${primaryParams.length + 1}`;
+            primaryParams.push(fileId);
+          }
+          if (userId) {
+            primaryWhere += ` AND user_id = $${primaryParams.length + 1}`;
+            primaryParams.push(userId.toString());
+          }
+          primaryParams.push(PRIMARY_CELL_FETCH_LIMIT);
+          const primaryResult = await this.pool.query(
+            `SELECT file_id, chunk_index, content, metadata FROM file_vectors ${primaryWhere} LIMIT $${primaryParams.length}`,
+            primaryParams,
+          );
+          textRows = mapText(primaryResult.rows, { forcePrimary: true });
+
+          if (textRows.length < topK) {
+            const seen = new Set(textRows.map((r) => `${r.fileId}:${r.chunkIndex}`));
+            const fallback = mapText((await runTextQuery(false)).rows).filter(
+              (r) => !seen.has(`${r.fileId}:${r.chunkIndex}`),
+            );
+            textRows = [...textRows, ...fallback];
+          }
+        } else {
+          textRows = mapText((await runTextQuery(false)).rows);
+        }
+        textRows.sort((a, b) => b.score - a.score);
       }
       const textKeys = new Set(textRows.map((r) => `${r.fileId}:${r.chunkIndex}`));
 
       // ── 向量语义检索 ──────────────────────────────────────────────────────
       const embeddingStr = `[${queryEmbedding.join(',')}]`;
-      let whereClause = 'WHERE embedding IS NOT NULL\n        AND 1 - (embedding <=> $1::vector) >= $2';
-      const queryParams = [embeddingStr, minScore];
-      let paramIndex = 3;
+      const runVectorQuery = async (primaryOnly, limit) => {
+        let whereClause = 'WHERE embedding IS NOT NULL\n        AND 1 - (embedding <=> $1::vector) >= $2';
+        const queryParams = [embeddingStr, minScore];
+        let paramIndex = 3;
 
-      if (fileId) { whereClause += `\n        AND file_id = $${paramIndex}`; queryParams.push(fileId); paramIndex++; }
-      if (userId) { whereClause += `\n        AND user_id = $${paramIndex}`; queryParams.push(userId.toString()); paramIndex++; }
-      if (entityId) { whereClause += `\n        AND metadata->>'entity_id' = $${paramIndex}`; queryParams.push(entityId); paramIndex++; }
+        if (fileId) {
+          whereClause += `\n        AND file_id = $${paramIndex}`;
+          queryParams.push(fileId);
+          paramIndex++;
+        }
+        if (userId) {
+          whereClause += `\n        AND user_id = $${paramIndex}`;
+          queryParams.push(userId.toString());
+          paramIndex++;
+        }
+        if (entityId) {
+          whereClause += `\n        AND metadata->>'entity_id' = $${paramIndex}`;
+          queryParams.push(entityId);
+          paramIndex++;
+        }
+        if (primaryOnly) {
+          whereClause += `\n        AND metadata->>'source' = 'excel_cell'`;
+          whereClause += `\n        AND metadata->>'is_primary_column' = 'true'`;
+        }
 
-      queryParams.push(topK);
-      const result = await this.pool.query(
-        `SELECT file_id, chunk_index, content, metadata,
-                1 - (embedding <=> $1::vector) as similarity
-         FROM file_vectors ${whereClause}
-         ORDER BY embedding <=> $1::vector
-         LIMIT $${paramIndex}`,
-        queryParams,
-      );
+        queryParams.push(limit);
+        return this.pool.query(
+          `SELECT file_id, chunk_index, content, metadata,
+                  1 - (embedding <=> $1::vector) as similarity
+           FROM file_vectors ${whereClause}
+           ORDER BY embedding <=> $1::vector
+           LIMIT $${paramIndex}`,
+          queryParams,
+        );
+      };
 
-      const vectorRows = result.rows
-        .map((row) => formatRow(row, parseFloat(row.similarity)))
+      let vectorRows = (await runVectorQuery(usePrimaryBoost, topK * 3)).rows
+        .map((row) => {
+          const isPrimary = parseMetadataFlag(row.metadata?.is_primary_column);
+          const weighted = applyVectorColumnWeight(parseFloat(row.similarity), isPrimary, usePrimaryBoost);
+          return formatRow(row, weighted);
+        })
         .filter((r) => !textKeys.has(`${r.fileId}:${r.chunkIndex}`));
 
-      // 文本命中优先，向量结果补充
-      return [...textRows, ...vectorRows].slice(0, topK);
+      if (usePrimaryBoost && vectorRows.length < topK) {
+        const seen = new Set(vectorRows.map((r) => `${r.fileId}:${r.chunkIndex}`));
+        const fallback = (await runVectorQuery(false, topK * 3)).rows
+          .map((row) => {
+            const isPrimary = parseMetadataFlag(row.metadata?.is_primary_column);
+            const weighted = applyVectorColumnWeight(parseFloat(row.similarity), isPrimary, usePrimaryBoost);
+            return formatRow(row, weighted);
+          })
+          .filter((r) => !textKeys.has(`${r.fileId}:${r.chunkIndex}`) && !seen.has(`${r.fileId}:${r.chunkIndex}`));
+        vectorRows = [...vectorRows, ...fallback];
+      }
+
+      let merged = [...textRows, ...vectorRows];
+      if (usePrimaryBoost) {
+        const primaryMerged = merged.filter((r) => parseMetadataFlag(r.metadata?.is_primary_column));
+        if (primaryMerged.length > 0) merged = primaryMerged;
+      }
+
+      return merged
+        .sort(
+          (a, b) =>
+            (parseMetadataFlag(b.metadata?.is_primary_column) ? 1 : 0) -
+              (parseMetadataFlag(a.metadata?.is_primary_column) ? 1 : 0) || b.score - a.score,
+        )
+        .slice(0, topK);
     } catch (error) {
       logger.error('[VectorDBService] 文件向量检索失败:', error);
       throw error;

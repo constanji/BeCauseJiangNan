@@ -54,6 +54,7 @@ const {
   deleteCellHandler,
   deleteCellsByTableHandler,
   uploadExcelFileHandler,
+  previewExcelHeadersHandler,
   listExcelFilesHandler,
   deleteExcelFileHandler,
   getExcelFileRowsHandler,
@@ -327,6 +328,7 @@ router.delete('/data-sources/:id/light-schema/:tableName', requireJwtAuth, check
 router.put('/data-sources/:id/light-schema/:tableName', requireJwtAuth, checkAdmin, updateLightSchemaHandler);
 
 // Excel 文件单元格向量化
+router.post('/data-sources/:id/excel-files/preview-headers', requireJwtAuth, checkAdmin, previewExcelHeadersHandler);
 router.post('/data-sources/:id/excel-files', requireJwtAuth, checkAdmin, uploadExcelFileHandler);
 router.get('/data-sources/:id/excel-files', requireJwtAuth, listExcelFilesHandler);
 router.delete('/data-sources/:id/excel-files/:fileId', requireJwtAuth, checkAdmin, deleteExcelFileHandler);

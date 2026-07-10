@@ -75,6 +75,7 @@ class KnowledgeDiscoveryTool extends Tool {
   description =
     '在已上传的结构化知识文件（Excel 指标库、数据字典、业务映射表等）中检索数据行。' +
     '支持指标编码（如 BM10012529）、指标名称、业务术语等查询。' +
+    '可通过 filename 限定只在某个 Excel 内检索（如 org_master.xlsx）；不传则在当前数据源全部 Excel 中搜索。' +
     '返回命中的完整行内容，包括所有字段。' +
     '当用户查询指标定义、指标口径、计算公式、业务含义时，优先调用此工具。';
 
@@ -98,6 +99,12 @@ class KnowledgeDiscoveryTool extends Tool {
       .optional()
       .default(0.4)
       .describe('向量检索最低相似度阈值，默认0.4'),
+    filename: z
+      .string()
+      .optional()
+      .describe(
+        '可选。指定 Excel 文件名后仅在该文件内检索（大小写不敏感，如 org_master.xlsx；也可传无扩展名 org_master）。不传则在当前数据源全部 Excel 中搜索',
+      ),
     data_source_id: z
       .string()
       .optional()
@@ -182,10 +189,32 @@ class KnowledgeDiscoveryTool extends Tool {
   }
 
   async _call(input) {
-    const { query, top_k = 5, min_score = 0.4 } = input;
+    const { query, top_k = 5, min_score = 0.4, filename } = input || {};
+
+    // because_skills_2 直接调用 _call，不会走 Tool.invoke() 的 Zod schema 校验，
+    // 这里补一道前置校验：query 缺失/为空时给出明确的、面向模型的错误提示，
+    // 而不是让请求继续往下走到 embedText 抛出难以定位的 "Text must be a non-empty string"。
+    if (!query || typeof query !== 'string' || !query.trim()) {
+      logger.warn(
+        `[KnowledgeDiscoveryTool] query 参数缺失或为空，input=${JSON.stringify(input)}`,
+      );
+      return JSON.stringify({
+        success: false,
+        error:
+          'query 参数缺失或为空。请通过 because_skills_2 的 arguments 传入形如 ' +
+          '{"query":"对公存款余额","top_k":5} 的 JSON 字符串；查机构时可加 "filename":"org_master.xlsx"。不要多层转义或漏传 query 字段。',
+        results: [],
+      });
+    }
+
+    const filenameFilter =
+      typeof filename === 'string' && filename.trim() ? filename.trim() : null;
+
     const entityId = await this.getEntityId(input);
 
-    logger.info(`[KnowledgeDiscoveryTool] query="${query}", entityId=${entityId}, topK=${top_k}`);
+    logger.info(
+      `[KnowledgeDiscoveryTool] query="${query}", entityId=${entityId}, topK=${top_k}, filename=${filenameFilter || '(all)'}`,
+    );
 
     if (!entityId) {
       return JSON.stringify({
@@ -206,15 +235,20 @@ class KnowledgeDiscoveryTool extends Tool {
         query,
         topK: top_k,
         minScore: min_score,
+        filename: filenameFilter,
       });
 
       if (!results || results.length === 0) {
+        const scope = filenameFilter
+          ? `文件「${filenameFilter}」`
+          : `数据源 ${entityId} 的结构化知识文件`;
         return JSON.stringify({
           success: true,
           query,
           entityId,
+          filename: filenameFilter || null,
           results: [],
-          summary: `未在数据源 ${entityId} 的结构化知识文件中找到与「${query}」相关的数据行。`,
+          summary: `未在${scope}中找到与「${query}」相关的数据行。`,
         });
       }
 
@@ -231,10 +265,11 @@ class KnowledgeDiscoveryTool extends Tool {
       }));
 
       const primaryHits = formatted.filter((r) => r.is_primary_column);
+      const scopeHint = filenameFilter ? `（限定文件 ${filenameFilter}）` : '';
       const summary =
         primaryHits.length > 0
-          ? `在主列中精确命中 ${primaryHits.length} 条，共返回 ${formatted.length} 条相关数据行。`
-          : `共返回 ${formatted.length} 条相关数据行（语义匹配）。`;
+          ? `在主列中精确命中 ${primaryHits.length} 条，共返回 ${formatted.length} 条相关数据行${scopeHint}。`
+          : `共返回 ${formatted.length} 条相关数据行（语义匹配）${scopeHint}。`;
 
       logger.info(`[KnowledgeDiscoveryTool] 返回 ${formatted.length} 条结果，主列命中 ${primaryHits.length} 条`);
 
@@ -242,6 +277,7 @@ class KnowledgeDiscoveryTool extends Tool {
         success: true,
         query,
         entityId,
+        filename: filenameFilter || null,
         total: formatted.length,
         summary,
         results: formatted,

@@ -1876,6 +1876,50 @@ async function deleteCellHandler(req, res) {
 const multer = require('multer');
 const excelUpload = multer({ storage: multer.memoryStorage() }).single('file');
 
+function decodeUploadedFilename(rawName) {
+  const raw = rawName || 'unknown.xlsx';
+  return Buffer.from(raw, 'latin1').toString('utf8');
+}
+
+function parseExcelColumnConfig(body = {}) {
+  const { parseColumnList } = require('~/server/services/Files/ExcelColumnSearchUtils');
+  const primaryColumns = parseColumnList(body.primary_columns);
+  const excludedColumns = parseColumnList(body.excluded_columns);
+  return { primaryColumns, excludedColumns };
+}
+
+/**
+ * POST /data-sources/:id/excel-files/preview-headers
+ * 上传前预览 Excel 表头（首行）
+ */
+async function previewExcelHeadersHandler(req, res) {
+  excelUpload(req, res, async (uploadErr) => {
+    if (uploadErr) {
+      return res.status(400).json({ success: false, error: uploadErr.message || '文件上传失败' });
+    }
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: '未收到文件，请上传 .xlsx 或 .xls 文件' });
+    }
+
+    try {
+      const ExcelCellVectorizationService = require('~/server/services/Files/ExcelCellVectorizationService');
+      const svc = new ExcelCellVectorizationService();
+      const parsed = svc.parseHeaders(req.file.buffer);
+      const headers = [...new Set(parsed.sheets.flatMap((s) => s.headers))];
+      return res.json({
+        success: true,
+        filename: decodeUploadedFilename(req.file.originalname),
+        sheetNames: parsed.sheetNames,
+        sheets: parsed.sheets,
+        headers,
+      });
+    } catch (error) {
+      logger.error('[previewExcelHeadersHandler] Error:', error.message, error.stack);
+      return res.status(500).json({ success: false, error: error.message || '解析 Excel 表头失败' });
+    }
+  });
+}
+
 /**
  * POST /data-sources/:id/excel-files
  * 上传 xlsx 文件并向量化所有单元格
@@ -1890,9 +1934,7 @@ async function uploadExcelFileHandler(req, res) {
     }
 
     const { id } = req.params;
-    // multer 默认以 Latin-1 解码 multipart 文件名，中文会乱码，需要重新按 UTF-8 解码
-    const rawName = req.file.originalname || 'unknown.xlsx';
-    const filename = Buffer.from(rawName, 'latin1').toString('utf8');
+    const filename = decodeUploadedFilename(req.file.originalname);
 
     try {
       const dataSource = await getDataSourceById(id);
@@ -1902,11 +1944,7 @@ async function uploadExcelFileHandler(req, res) {
 
       const ExcelCellVectorizationService = require('~/server/services/Files/ExcelCellVectorizationService');
       const svc = new ExcelCellVectorizationService();
-
-      // primary_columns: 逗号分隔的主检索列名，如 "指标名称,指标代码"（支持中英文逗号）
-      const primaryColumns = req.body.primary_columns
-        ? req.body.primary_columns.split(/[,，]/).map((c) => c.trim()).filter(Boolean)
-        : [];
+      const { primaryColumns, excludedColumns } = parseExcelColumnConfig(req.body);
 
       const result = await svc.vectorize({
         fileBufferOrPath: req.file.buffer,
@@ -1915,10 +1953,11 @@ async function uploadExcelFileHandler(req, res) {
         filename,
         sheetName: req.body.sheet_name || undefined,
         primaryColumns,
+        excludedColumns,
       });
 
       logger.info(
-        `[uploadExcelFileHandler] 向量化完成：fileId=${result.fileId}, cells=${result.cellCount}, rows=${result.rowCount}`,
+        `[uploadExcelFileHandler] 向量化完成：fileId=${result.fileId}, cells=${result.cellCount}, rows=${result.rowCount}, primary=[${primaryColumns.join(',')}], excluded=[${excludedColumns.join(',')}]`,
       );
       return res.json({ success: true, ...result });
     } catch (error) {
@@ -1964,7 +2003,10 @@ async function deleteExcelFileHandler(req, res) {
 
     const ExcelCellVectorizationService = require('~/server/services/Files/ExcelCellVectorizationService');
     const svc = new ExcelCellVectorizationService();
-    const deletedCount = await svc.deleteByFileId(fileId);
+    const deletedCount = await svc.deleteByFileId(fileId, String(dataSource._id));
+    if (deletedCount === 0) {
+      return res.status(404).json({ success: false, error: '文件不存在或不属于该数据源' });
+    }
     return res.json({ success: true, deletedCount });
   } catch (error) {
     logger.error('[deleteExcelFileHandler] Error:', error.message);
@@ -1987,7 +2029,14 @@ async function getExcelFileRowsHandler(req, res) {
 
     const ExcelCellVectorizationService = require('~/server/services/Files/ExcelCellVectorizationService');
     const svc = new ExcelCellVectorizationService();
-    const rows = await svc.getFileRows(fileId, limit);
+    const entityId = String(dataSource._id);
+    const rows = await svc.getFileRows(fileId, entityId, limit);
+    if (rows.length === 0) {
+      const exists = await svc.fileExistsInEntity(fileId, entityId);
+      if (!exists) {
+        return res.status(404).json({ success: false, error: '文件不存在或不属于该数据源' });
+      }
+    }
     return res.json({ success: true, data: rows });
   } catch (error) {
     logger.error('[getExcelFileRowsHandler] Error:', error.message);
@@ -2001,7 +2050,7 @@ async function getExcelFileRowsHandler(req, res) {
  */
 async function searchExcelCellsHandler(req, res) {
   const { id } = req.params;
-  const { query, top_k = 10, min_score = 0.5 } = req.body;
+  const { query, top_k = 10, min_score = 0.5, filename } = req.body;
 
   if (!query) {
     return res.status(400).json({ success: false, error: '请提供查询文本 query' });
@@ -2020,6 +2069,7 @@ async function searchExcelCellsHandler(req, res) {
       query,
       topK: Number(top_k),
       minScore: Number(min_score),
+      filename: typeof filename === 'string' && filename.trim() ? filename.trim() : null,
     });
 
     return res.json({ success: true, data: results });
@@ -2096,6 +2146,7 @@ module.exports = {
   deleteCellHandler,
   deleteCellsByTableHandler,
   uploadExcelFileHandler,
+  previewExcelHeadersHandler,
   listExcelFilesHandler,
   deleteExcelFileHandler,
   getExcelFileRowsHandler,

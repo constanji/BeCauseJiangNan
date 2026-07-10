@@ -766,15 +766,48 @@ export const updateLightSchema = (
 export const uploadExcelFile = (
   id: string,
   formData: FormData,
-): Promise<{ success: boolean; fileId: string; rowCount: number; cellCount: number; sheetNames: string[]; error?: string }> => {
+): Promise<{
+  success: boolean;
+  fileId: string;
+  rowCount: number;
+  cellCount: number;
+  sheetNames: string[];
+  primaryColumns?: string[];
+  excludedColumns?: string[];
+  headers?: string[];
+  error?: string;
+}> => {
   return request.postMultiPart(endpoints.dataSources.uploadExcelFile(id), formData);
+};
+
+export const previewExcelHeaders = (
+  id: string,
+  formData: FormData,
+): Promise<{
+  success: boolean;
+  filename?: string;
+  sheetNames?: string[];
+  sheets?: Array<{ name: string; headers: string[] }>;
+  headers?: string[];
+  error?: string;
+}> => {
+  return request.postMultiPart(endpoints.dataSources.previewExcelHeaders(id), formData);
 };
 
 export const listExcelFiles = (
   id: string,
 ): Promise<{
   success: boolean;
-  data: Array<{ fileId: string; filename: string; cellCount: number; rowCount: number; createdAt: string }>;
+  data: Array<{
+    fileId: string;
+    filename: string;
+    cellCount: number;
+    rowCount: number;
+    createdAt: string;
+    primaryColumns?: string[];
+    excludedColumns?: string[];
+    headers?: string[];
+  }>;
   error?: string;
 }> => {
   return request.get(endpoints.dataSources.listExcelFiles(id));
@@ -802,10 +835,20 @@ export const getExcelFileRows = (
 
 export const searchExcelCells = (
   id: string,
-  body: { query: string; top_k?: number; min_score?: number },
+  body: { query: string; top_k?: number; min_score?: number; filename?: string },
 ): Promise<{
   success: boolean;
-  data: Array<{ score: number; cellValue: string; columnName: string; fullRow: string; filename: string; rowIndex: number; sheetName: string }>;
+  data: Array<{
+    score: number;
+    cellValue: string;
+    columnName: string;
+    fullRow: string;
+    filename: string;
+    rowIndex: number;
+    sheetName: string;
+    isPrimaryColumn?: boolean;
+    isExactMatch?: boolean;
+  }>;
   error?: string;
 }> => {
   return request.post(endpoints.dataSources.searchExcelCells(id), body);

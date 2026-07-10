@@ -14,7 +14,7 @@ import { useListAgentsQuery } from '~/data-provider';
 import { useAuthContext } from '~/hooks/AuthContext';
 import { EToolResources, EModelEndpoint, Constants, QueryKeys } from '@because/data-provider';
 import type { DataSource, Agent } from '@because/data-provider';
-import { dataService } from '@because/data-provider';
+import { dataService, request, apiBaseUrl } from '@because/data-provider';
 import { cn } from '~/utils';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
@@ -99,8 +99,28 @@ export default function KnowledgeBaseManagement() {
   );
 
   // ── Excel 文件向量化 state ──────────────────────────────────────────────────
-  interface ExcelFile { fileId: string; filename: string; cellCount: number; rowCount: number; createdAt: string; primaryColumns?: string[]; }
-  interface ExcelSearchResult { score: number; cellValue: string; columnName: string; fullRow: string; filename: string; rowIndex: number; sheetName: string; isPrimaryColumn?: boolean; }
+  type ExcelColumnRole = 'primary' | 'searchable' | 'excluded';
+  interface ExcelFile {
+    fileId: string;
+    filename: string;
+    cellCount: number;
+    rowCount: number;
+    createdAt: string;
+    primaryColumns?: string[];
+    excludedColumns?: string[];
+    headers?: string[];
+  }
+  interface ExcelSearchResult {
+    score: number;
+    cellValue: string;
+    columnName: string;
+    fullRow: string;
+    filename: string;
+    rowIndex: number;
+    sheetName: string;
+    isPrimaryColumn?: boolean;
+    isExactMatch?: boolean;
+  }
   interface ExcelFileRow { rowIndex: number; fullRow: string; sheetName: string; }
   const excelInputRef = useRef<HTMLInputElement>(null);
   const [excelFiles, setExcelFiles] = useState<ExcelFile[]>([]);
@@ -111,17 +131,30 @@ export default function KnowledgeBaseManagement() {
   const [excelSearchResults, setExcelSearchResults] = useState<ExcelSearchResult[]>([]);
   const [previewFile, setPreviewFile] = useState<{ file: ExcelFile; rows: ExcelFileRow[] } | null>(null);
   const [loadingPreview, setLoadingPreview] = useState(false);
-  // 上传主列配置弹窗
+  // 上传列配置弹窗
   const [pendingUploadFile, setPendingUploadFile] = useState<File | null>(null);
   const [showUploadConfigModal, setShowUploadConfigModal] = useState(false);
-  const [primaryColumnsInput, setPrimaryColumnsInput] = useState('');
+  const [loadingExcelHeaders, setLoadingExcelHeaders] = useState(false);
+  const [excelHeaders, setExcelHeaders] = useState<string[]>([]);
+  const [excelSheetNames, setExcelSheetNames] = useState<string[]>([]);
+  const [columnRoles, setColumnRoles] = useState<Record<string, ExcelColumnRole>>({});
+
+  const previewExcelHeaders = async (dataSourceId: string, formData: FormData) => {
+    if (typeof dataService.previewExcelHeaders === 'function') {
+      return dataService.previewExcelHeaders(dataSourceId, formData);
+    }
+    return request.postMultiPart(
+      `${apiBaseUrl()}/api/config/data-sources/${dataSourceId}/excel-files/preview-headers`,
+      formData,
+    );
+  };
 
   const fetchExcelFiles = async (dsId?: string) => {
     const id = dsId ?? selectedDataSourceId;
     if (!id) return;
     setLoadingExcelFiles(true);
     try {
-      const res = await (dataService as any).listExcelFiles(id);
+      const res = await dataService.listExcelFiles(id);
       if (res?.success) setExcelFiles(res.data || []);
     } catch (_) { /* 静默 */ } finally { setLoadingExcelFiles(false); }
   };
@@ -130,15 +163,108 @@ export default function KnowledgeBaseManagement() {
     if (activeTab === 'excel_file' && selectedDataSourceId) fetchExcelFiles();
   }, [activeTab, selectedDataSourceId]);
 
-  // 文件选中后先弹配置弹窗
-  const handleFileSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const guessDefaultColumnRoles = (headers: string[]): Record<string, ExcelColumnRole> => {
+    const roles: Record<string, ExcelColumnRole> = {};
+    const primaryPatterns = [
+      /^org_code$/i,
+      /^name$/i,
+      /^org_name$/i,
+      /^standard_name$/i,
+      /^index_number$/i,
+      /机构名称$/,
+      /指标名称$/,
+      /指标编号$/,
+    ];
+    const excludePatterns = [/region_org_code/i, /parent_/i, /_path$/i, /_ids$/i, /权限/, /备注/, /sql/i, /filter/i];
+
+    for (const header of headers) {
+      if (excludePatterns.some((p) => p.test(header))) {
+        roles[header] = 'excluded';
+      } else if (primaryPatterns.some((p) => p.test(header))) {
+        roles[header] = 'primary';
+      } else {
+        roles[header] = 'searchable';
+      }
+    }
+    return roles;
+  };
+
+  const resetUploadConfigModal = () => {
+    setShowUploadConfigModal(false);
+    setPendingUploadFile(null);
+    setExcelHeaders([]);
+    setExcelSheetNames([]);
+    setColumnRoles({});
+    setLoadingExcelHeaders(false);
+  };
+
+  // 文件选中后解析表头并弹配置弹窗
+  const handleFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !selectedDataSourceId) return;
     e.target.value = '';
+
     setPendingUploadFile(file);
-    setPrimaryColumnsInput('');
     setShowUploadConfigModal(true);
+    setLoadingExcelHeaders(true);
+    setExcelHeaders([]);
+    setExcelSheetNames([]);
+    setColumnRoles({});
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await previewExcelHeaders(selectedDataSourceId, formData);
+      if (!res?.success || !res.headers?.length) {
+        showToast({ message: res?.error || '未能解析 Excel 表头，请确认首行为列名', status: 'error' });
+        resetUploadConfigModal();
+        return;
+      }
+      setExcelHeaders(res.headers);
+      setExcelSheetNames(res.sheetNames || []);
+      setColumnRoles(guessDefaultColumnRoles(res.headers));
+    } catch (err: any) {
+      showToast({ message: `解析表头失败: ${err?.message || err}`, status: 'error' });
+      resetUploadConfigModal();
+    } finally {
+      setLoadingExcelHeaders(false);
+    }
   };
+
+  const selectedPrimaryColumns = useMemo(
+    () => excelHeaders.filter((h) => columnRoles[h] === 'primary'),
+    [excelHeaders, columnRoles],
+  );
+  const selectedExcludedColumns = useMemo(
+    () => excelHeaders.filter((h) => columnRoles[h] === 'excluded'),
+    [excelHeaders, columnRoles],
+  );
+
+  const setColumnRole = (header: string, role: ExcelColumnRole) => {
+    setColumnRoles((prev) => ({ ...prev, [header]: role }));
+  };
+
+  const excludeAllExceptPrimary = () => {
+    setColumnRoles((prev) => {
+      const next: Record<string, ExcelColumnRole> = {};
+      for (const header of excelHeaders) {
+        next[header] = prev[header] === 'primary' ? 'primary' : 'excluded';
+      }
+      return next;
+    });
+  };
+
+  const getColumnRoleButtonClass = (role: ExcelColumnRole, active: boolean) =>
+    cn(
+      'inline-flex h-7 min-w-[3.5rem] items-center justify-center rounded-md border px-2 text-xs font-medium transition-colors',
+      active
+        ? role === 'primary'
+          ? 'border-green-500/50 bg-green-500/10 text-green-400'
+          : role === 'excluded'
+            ? 'border-border-medium bg-surface-hover text-text-tertiary'
+            : 'border-primary/60 bg-surface-primary text-text-primary'
+        : 'border-transparent bg-transparent text-text-secondary hover:border-border-light hover:bg-surface-hover hover:text-text-primary',
+    );
 
   // 确认后真正上传
   const handleExcelUpload = async () => {
@@ -148,12 +274,18 @@ export default function KnowledgeBaseManagement() {
     try {
       const formData = new FormData();
       formData.append('file', pendingUploadFile);
-      if (primaryColumnsInput.trim()) {
-        formData.append('primary_columns', primaryColumnsInput.trim());
+      if (selectedPrimaryColumns.length > 0) {
+        formData.append('primary_columns', selectedPrimaryColumns.join(','));
       }
-      const res = await (dataService as any).uploadExcelFile(selectedDataSourceId, formData);
+      if (selectedExcludedColumns.length > 0) {
+        formData.append('excluded_columns', selectedExcludedColumns.join(','));
+      }
+      const res = await dataService.uploadExcelFile(selectedDataSourceId, formData);
       if (res?.success) {
-        showToast({ message: `上传成功：${res.rowCount} 行，${res.cellCount} 个单元格已向量化`, status: 'success' });
+        showToast({
+          message: `上传成功：${res.rowCount} 行，${res.cellCount} 个单元格已向量化（主列 ${selectedPrimaryColumns.length}，排除 ${selectedExcludedColumns.length}）`,
+          status: 'success',
+        });
         await fetchExcelFiles();
       } else {
         showToast({ message: `上传失败: ${res?.error || '未知错误'}`, status: 'error' });
@@ -162,7 +294,7 @@ export default function KnowledgeBaseManagement() {
       showToast({ message: `上传失败: ${err?.message || err}`, status: 'error' });
     } finally {
       setUploadingExcel(false);
-      setPendingUploadFile(null);
+      resetUploadConfigModal();
     }
   };
 
@@ -437,8 +569,13 @@ export default function KnowledgeBaseManagement() {
                           {f.rowCount} 行 · {f.cellCount} 个单元格
                         </span>
                         {f.primaryColumns && f.primaryColumns.length > 0 && (
-                          <span className="text-[10px] rounded bg-amber-700/30 px-1.5 py-0.5 text-amber-300 whitespace-nowrap" title={`主列: ${f.primaryColumns.join(', ')}`}>
+                          <span className="text-[10px] rounded border border-green-500/30 bg-green-500/10 px-1.5 py-0.5 text-green-400 whitespace-nowrap" title={`主列: ${f.primaryColumns.join(', ')}`}>
                             主列: {f.primaryColumns.join(', ')}
+                          </span>
+                        )}
+                        {f.excludedColumns && f.excludedColumns.length > 0 && (
+                          <span className="text-[10px] rounded bg-surface-primary px-1.5 py-0.5 text-text-tertiary whitespace-nowrap" title={`排除列: ${f.excludedColumns.join(', ')}`}>
+                            排除: {f.excludedColumns.length} 列
                           </span>
                         )}
                       </div>
@@ -496,7 +633,7 @@ export default function KnowledgeBaseManagement() {
                         <div className="flex items-center gap-1.5 flex-wrap">
                           <span className="text-xs font-medium text-green-400">{r.columnName}</span>
                           {r.isPrimaryColumn && (
-                            <span className="rounded bg-amber-700/40 px-1 py-0.5 text-[10px] font-semibold text-amber-300">主列</span>
+                            <span className="rounded border border-green-500/30 bg-green-500/10 px-1 py-0.5 text-[10px] font-semibold text-green-400">主列</span>
                           )}
                           <span className="text-xs text-text-secondary">=</span>
                           <span className="rounded bg-green-900/30 px-1.5 py-0.5 text-xs font-semibold text-green-300">{r.cellValue}</span>
@@ -504,7 +641,7 @@ export default function KnowledgeBaseManagement() {
                         <div className="flex items-center gap-2 text-xs text-text-secondary whitespace-nowrap shrink-0">
                           <span className="text-[10px] text-text-secondary/60 truncate max-w-[80px]" title={r.filename}>{r.filename}</span>
                           <span className="rounded bg-green-700/30 px-1.5 py-0.5 text-green-400">
-                            {(r.score * 100).toFixed(0)}%
+                            {(r.score * 100).toFixed(r.score >= 0.995 ? 0 : 1)}%
                           </span>
                         </div>
                       </div>
@@ -517,7 +654,7 @@ export default function KnowledgeBaseManagement() {
               )}
 
               <p className="text-xs text-text-secondary">
-                仅搜索当前数据源的 Excel 文件向量，用于验证文件是否被正确向量化。右上角「RAG测试」会综合检索全部知识库（QA对、同义词、语义模型、业务知识 + Excel），模拟 Agent 实际调用效果。
+                检索优先命中「主列」；「排除列」不参与检索。编码类查询（如 A0000）建议 org_code、name 设为主列，region_org_code 等关联字段设为排除列。右上角「RAG测试」会综合检索全部知识库。
               </p>
             </div>
           </div>
@@ -589,14 +726,14 @@ export default function KnowledgeBaseManagement() {
         <ViewKnowledgeModal entry={showViewModal} onClose={() => setShowViewModal(null)} />
       )}
 
-      {/* Excel 上传主列配置弹窗 */}
+      {/* Excel 上传列配置弹窗 */}
       {showUploadConfigModal && pendingUploadFile && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="w-full max-w-md rounded-xl border border-border-light bg-surface-primary p-6 shadow-xl flex flex-col gap-4">
+          <div className="w-full max-w-2xl max-h-[85vh] rounded-xl border border-border-light bg-surface-primary p-6 shadow-xl flex flex-col gap-4">
             <div className="flex items-center justify-between">
-              <h3 className="text-base font-semibold text-text-primary">上传 Excel 文件</h3>
+              <h3 className="text-base font-semibold text-text-primary">配置 Excel 检索列</h3>
               <button
-                onClick={() => { setShowUploadConfigModal(false); setPendingUploadFile(null); }}
+                onClick={resetUploadConfigModal}
                 title="取消"
                 aria-label="取消上传"
                 className="rounded p-1 text-text-secondary hover:text-text-primary hover:bg-surface-secondary transition-colors"
@@ -608,38 +745,100 @@ export default function KnowledgeBaseManagement() {
             <div className="rounded-lg bg-surface-secondary px-3 py-2 flex items-center gap-2">
               <FileSpreadsheet className="h-4 w-4 text-green-400 shrink-0" />
               <span className="text-sm text-text-primary truncate">{pendingUploadFile.name}</span>
+              {excelSheetNames.length > 0 && (
+                <span className="text-xs text-text-secondary whitespace-nowrap">
+                  {excelSheetNames.length} 个 sheet
+                </span>
+              )}
             </div>
 
-            <div className="flex flex-col gap-1.5">
-              <label className="text-sm font-medium text-text-primary">
-                主检索列名 <span className="text-text-secondary font-normal">（可选）</span>
-              </label>
-              <input
-                type="text"
-                value={primaryColumnsInput}
-                onChange={(e) => setPrimaryColumnsInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleExcelUpload()}
-                placeholder="如：指标名称，多列用逗号分隔（中英文均可）"
-                className="rounded-md border border-border-light bg-surface-secondary px-3 py-1.5 text-sm text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:ring-1 focus:ring-green-500"
-                autoFocus
-              />
-              <p className="text-xs text-text-tertiary">
-                指定后，该列的单元格命中时会优先排在检索结果前面。适合指标名称、产品名等核心标识列。
-              </p>
-            </div>
+            {loadingExcelHeaders ? (
+              <div className="flex items-center justify-center gap-2 py-10 text-sm text-text-secondary">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                正在解析表头…
+              </div>
+            ) : excelHeaders.length === 0 ? (
+              <p className="text-sm text-text-secondary py-6 text-center">未识别到表头，请确认 Excel 首行为列名</p>
+            ) : (
+              <>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <p className="text-sm text-text-secondary">
+                    已识别 {excelHeaders.length} 列。主列优先返回；排除列不会参与检索。
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={excludeAllExceptPrimary}
+                      disabled={selectedPrimaryColumns.length === 0}
+                      title={selectedPrimaryColumns.length === 0 ? '请先选择至少一列作为主列' : undefined}
+                      className="rounded-md border border-border-light bg-surface-secondary px-3 py-1.5 text-xs text-text-secondary transition-colors hover:border-green-500/40 hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      除主列外全设为排除
+                    </button>
+                    <div className="flex gap-1.5 text-[10px] whitespace-nowrap">
+                      <span className="rounded border border-green-500/30 bg-green-500/10 px-1.5 py-0.5 text-green-400">
+                        主列 {selectedPrimaryColumns.length}
+                      </span>
+                      <span className="rounded border border-border-light bg-surface-secondary px-1.5 py-0.5 text-text-secondary">
+                        可检索 {excelHeaders.length - selectedPrimaryColumns.length - selectedExcludedColumns.length}
+                      </span>
+                      <span className="rounded border border-border-light bg-surface-secondary px-1.5 py-0.5 text-text-tertiary">
+                        排除 {selectedExcludedColumns.length}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex-1 overflow-auto rounded-lg border border-border-light bg-surface-secondary/30">
+                  <table className="w-full text-sm">
+                    <thead className="sticky top-0 z-10 bg-surface-secondary text-left text-xs text-text-secondary">
+                      <tr>
+                        <th className="px-3 py-2.5 font-medium">列名（表头）</th>
+                        <th className="px-3 py-2 font-medium w-28 text-center text-green-400/90">主列</th>
+                        <th className="px-3 py-2 font-medium w-28 text-center">可检索</th>
+                        <th className="px-3 py-2 font-medium w-28 text-center text-text-tertiary">排除</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {excelHeaders.map((header) => {
+                        const role = columnRoles[header] || 'searchable';
+                        return (
+                          <tr key={header} className="border-t border-border-light/60 hover:bg-surface-secondary/60">
+                            <td className="px-3 py-2 font-mono text-xs text-text-primary">{header}</td>
+                            {(['primary', 'searchable', 'excluded'] as ExcelColumnRole[]).map((option) => (
+                              <td key={option} className="px-3 py-2 text-center">
+                                <button
+                                  type="button"
+                                  onClick={() => setColumnRole(header, option)}
+                                  className={getColumnRoleButtonClass(option, role === option)}
+                                  aria-label={`${header} - ${option === 'primary' ? '主列' : option === 'excluded' ? '排除' : '可检索'}`}
+                                >
+                                  {option === 'primary' ? '主列' : option === 'excluded' ? '排除' : '检索'}
+                                </button>
+                              </td>
+                            ))}
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
 
             <div className="flex gap-2 justify-end">
               <button
-                onClick={() => { setShowUploadConfigModal(false); setPendingUploadFile(null); }}
+                onClick={resetUploadConfigModal}
                 className="rounded-md border border-border-light px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary hover:bg-surface-secondary transition-colors"
               >
                 取消
               </button>
               <button
                 onClick={handleExcelUpload}
-                className="rounded-md bg-green-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-green-500 transition-colors"
+                disabled={loadingExcelHeaders || excelHeaders.length === 0 || uploadingExcel}
+                className="rounded-md bg-green-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-green-500 disabled:opacity-50 transition-colors"
               >
-                开始向量化
+                {uploadingExcel ? '向量化中…' : '开始向量化'}
               </button>
             </div>
           </div>

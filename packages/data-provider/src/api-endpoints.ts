@@ -254,6 +254,7 @@ export const dataSources = {
   deleteLightSchema: (id: string, tableName: string) =>
     `${BASE_URL}/api/config/data-sources/${id}/light-schema/${encodeURIComponent(tableName)}`,
   uploadExcelFile: (id: string) => `${BASE_URL}/api/config/data-sources/${id}/excel-files`,
+  previewExcelHeaders: (id: string) => `${BASE_URL}/api/config/data-sources/${id}/excel-files/preview-headers`,
   listExcelFiles: (id: string) => `${BASE_URL}/api/config/data-sources/${id}/excel-files`,
   deleteExcelFile: (id: string, fileId: string) => `${BASE_URL}/api/config/data-sources/${id}/excel-files/${fileId}`,
   getExcelFileRows: (id: string, fileId: string) => `${BASE_URL}/api/config/data-sources/${id}/excel-files/${fileId}/rows`,
