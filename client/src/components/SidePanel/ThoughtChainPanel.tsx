@@ -10,7 +10,11 @@ import { mapAttachments } from '~/utils/map';
 import { useLocalize } from '~/hooks';
 import MarkdownLite from '~/components/Chat/Messages/Content/MarkdownLite';
 import { ChartRenderer, extractChartDataFromToolOutput } from '~/components/Chat/Messages/Content/ChartRenderer';
-import { extractBecauseSkillsCommand, mapStandaloneToolName } from '~/utils/toolCallDisplay';
+import {
+  extractBecauseSkillsCommand,
+  mapStandaloneToolName,
+  isToolOutputError,
+} from '~/utils/toolCallDisplay';
 
 const { Text } = Typography;
 
@@ -288,9 +292,7 @@ function SidePanelToolCallItem({
 
   // 状态计算
   const hasOutput = toolCall.output != null && toolCall.output.length > 0;
-  const error =
-    typeof toolCall.output === 'string' &&
-    toolCall.output.toLowerCase().includes('error processing tool');
+  const error = isToolOutputError(toolCall.output);
   // cancelled 优先判断：只要不在提交中且没有输出且不是错误，就视为被终止
   const cancelled = !isSubmitting && !hasOutput && !error;
   // isLoading 只在提交中且无输出无错误时才为 true，避免终止后仍显示转圈

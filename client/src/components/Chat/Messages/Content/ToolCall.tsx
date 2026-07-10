@@ -9,7 +9,7 @@ import ToolCallInfo from './ToolCallInfo';
 import ProgressText from './ProgressText';
 import { logger, cn } from '~/utils';
 import { extractChartDataFromToolOutput } from './ChartRenderer';
-import { extractBecauseSkillsCommand } from '~/utils/toolCallDisplay';
+import { extractBecauseSkillsCommand, isToolOutputError } from '~/utils/toolCallDisplay';
 
 export default function ToolCall({
   initialProgress = 0.1,
@@ -67,8 +67,7 @@ export default function ToolCall({
     return extractBecauseSkillsCommand(_args) || function_name;
   }, [function_name, _args]);
 
-  const error =
-    typeof output === 'string' && output.toLowerCase().includes('error processing tool');
+  const error = isToolOutputError(output);
 
   const args = useMemo(() => {
     if (typeof _args === 'string') {

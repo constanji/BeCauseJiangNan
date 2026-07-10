@@ -73,3 +73,33 @@ export function mapStandaloneToolName(name?: string | null): string | null {
   }
   return standaloneToolNameMap[name] || null;
 }
+
+/**
+ * 判断工具输出内容是否代表业务失败（success: false），而非执行层异常。
+ * 很多结构化工具即使业务失败也不会抛异常，只会返回 { success: false, error: "..." }，
+ * 这类输出不应该被误判为成功（绿勾）。
+ */
+function hasExplicitSuccessFalse(source: string): boolean {
+  try {
+    const parsed = JSON.parse(source);
+    return !!(parsed && typeof parsed === 'object' && parsed.success === false);
+  } catch {
+    // 流式/截断阶段可能拿到不完整 JSON，用正则兜底匹配顶层 success 字段
+    const match = source.match(/^\s*\{[\s\S]*?"success"\s*:\s*(true|false)/);
+    return match ? match[1] === 'false' : false;
+  }
+}
+
+/**
+ * 统一判断工具调用结果是否应展示为「失败」（红叉），
+ * 覆盖两类情况：执行层异常（"error processing tool ..." 文案）与业务层失败（success: false）。
+ */
+export function isToolOutputError(output?: string | null): boolean {
+  if (typeof output !== 'string' || output.length === 0) {
+    return false;
+  }
+  if (output.toLowerCase().includes('error processing tool')) {
+    return true;
+  }
+  return hasExplicitSuccessFalse(output);
+}
