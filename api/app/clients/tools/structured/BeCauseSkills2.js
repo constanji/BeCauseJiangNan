@@ -27,14 +27,15 @@ class BeCauseSkillsTool2 extends Tool {
 
   description =
     'BeCause问数工具2.0 - 智能问数（自然语言转SQL）的完整能力集，新增波动归因能力。' +
-    'Commands: knowledge-discovery (结构化知识行检索，优先用于查询指标编码/定义/口径), ' +
+    'Commands: knowledge-discovery (结构化知识行检索，优先用于查询指标编码/定义/口径；可选 filename 限定单个 Excel), ' +
     'light-schema (从预生成缓存按需检索表结构，生成SQL前首选，0 DB开销), ' +
     'rag-retrieval (RAG知识检索), ' +
     'database-schema (数据库Schema实时获取，light-schema无结果时才用), reranker (结果重排序), ' +
     'sql-validation (SQL校验，支持7类关键字分类+双盲对比), ' +
     'result-analysis (结果分析，支持Adtributor归因+异常检测+趋势分析), ' +
-    'sql-executor (SQL执行), chart-generation (图表生成), ' +
-    'fluctuation-attribution (波动归因，维度归因+指标归因+时间对比+下钻)。';
+    'sql-executor (SQL执行), ' +
+    'fluctuation-attribution (波动归因，维度归因+指标归因+时间对比+下钻)。' +
+    '注意：图表可视化不在本工具内，需要画图时请调用独立的 echarts_generator_app 工具。';
 
   schema = z.object({
     command: z.enum([
@@ -46,7 +47,6 @@ class BeCauseSkillsTool2 extends Tool {
       'sql-validation',
       'result-analysis',
       'sql-executor',
-      'chart-generation',
       'fluctuation-attribution',
     ]),
     arguments: z
@@ -113,10 +113,6 @@ class BeCauseSkillsTool2 extends Tool {
         req: this.req,
         conversation: this.conversation,
       }),
-      'chart-generation': new BeCauseSkills2.ChartGenerationTool({
-        userId: this.userId,
-        req: this.req,
-      }),
       'fluctuation-attribution': new BeCauseSkills2.FluctuationAttributionTool({
         userId: this.userId,
         req: this.req,
@@ -124,6 +120,17 @@ class BeCauseSkillsTool2 extends Tool {
     };
   }
 
+  /**
+   * 解析 arguments 字符串为参数对象。
+   *
+   * 部分（尤其是低质量）模型会把 arguments 多包一层引号/转义（例如把已经是
+   * JSON 字符串的内容再 JSON.stringify 一次），导致一次 JSON.parse 后拿到的
+   * 还是字符串而不是对象。这里最多解包两层，并在最终仍无法得到对象时，
+   * 明确返回可读的错误信息，而不是静默退化成 {}（那样会导致后续报错
+   * 变成难以定位的"某个必填字段缺失"）。
+   *
+   * @returns {{ args: Record<string, unknown>, error: string | null }}
+   */
   parseArguments(argsString) {
     logger.info('[BeCauseSkillsTool2] parseArguments called with:', {
       argsStringLength: argsString?.length || 0,
@@ -131,26 +138,67 @@ class BeCauseSkillsTool2 extends Tool {
     });
 
     if (!argsString || !argsString.trim()) {
-      logger.warn('[BeCauseSkillsTool2] argsString is empty or null');
-      return {};
+      return { args: {}, error: null };
     }
-    try {
-      const parsed = JSON.parse(argsString);
-      logger.info('[BeCauseSkillsTool2] Successfully parsed arguments:', {
-        hasData: !!parsed.data,
-        dataType: typeof parsed.data,
-        dataLength: Array.isArray(parsed.data) ? parsed.data.length : 'N/A',
-        keys: Object.keys(parsed),
-      });
-      return parsed;
-    } catch (error) {
-      const preview = typeof argsString === 'string' ? argsString.substring(0, 500) : String(argsString);
-      logger.error('[BeCauseSkillsTool2] Failed to parse arguments:', {
-        error: error.message,
-        argsStringPreview: preview,
-      });
-      return {};
+
+    let text = argsString.trim();
+    let lastError = null;
+
+    // 部分中文场景下的低质量模型会把 JSON 里的结构性符号写成全角标点
+    // （，：""''），导致原本合法的 JSON 直接解析失败。只在严格解析失败时
+    // 才尝试纠正重试，避免误伤合法内容。
+    const sanitizeFullwidthPunctuation = (str) =>
+      str.replace(/，/g, ',').replace(/：/g, ':').replace(/[“”]/g, '"').replace(/[‘’]/g, "'");
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let value;
+      try {
+        value = JSON.parse(text);
+      } catch (e) {
+        const sanitized = sanitizeFullwidthPunctuation(text);
+        if (sanitized === text) {
+          lastError = e;
+          break;
+        }
+        try {
+          value = JSON.parse(sanitized);
+          logger.warn('[BeCauseSkillsTool2] arguments 含全角标点，已自动纠正后解析成功');
+        } catch (e2) {
+          lastError = e2;
+          break;
+        }
+      }
+
+      if (typeof value === 'string') {
+        // 外层多包了一层引号/转义，继续尝试解析内层
+        text = value.trim();
+        lastError = null;
+        continue;
+      }
+
+      if (value && typeof value === 'object') {
+        logger.info('[BeCauseSkillsTool2] Successfully parsed arguments:', {
+          unwrapCount: attempt,
+          keys: Object.keys(value),
+        });
+        return { args: value, error: null };
+      }
+
+      lastError = new Error(`arguments 解析结果既不是对象也不是字符串（实际为 ${typeof value}）`);
+      break;
     }
+
+    const preview = argsString.length > 300 ? `${argsString.slice(0, 300)}...` : argsString;
+    logger.error('[BeCauseSkillsTool2] Failed to parse arguments:', {
+      error: lastError?.message,
+      argsStringPreview: preview,
+    });
+    return {
+      args: {},
+      error:
+        `arguments 不是合法的 JSON 对象字符串（${lastError?.message || '解析失败'}）。` +
+        '请直接传入形如 {"key":"value"} 的 JSON 字符串，不要多层转义或用引号把整段 JSON 再包一层。',
+    };
   }
 
   async _call(input) {
@@ -174,46 +222,10 @@ class BeCauseSkillsTool2 extends Tool {
         );
       }
 
-      const args = this.parseArguments(argsString);
-
-      // chart-generation：自动先执行SQL获取数据
-      if (command === 'chart-generation' && args.sql && !args.data) {
-        logger.info('[BeCauseSkillsTool2] chart-generation需要SQL查询，先执行sql-executor...');
-
-        try {
-          const sqlExecutor = this.tools['sql-executor'];
-          if (!sqlExecutor) {
-            throw new Error('sql-executor工具不可用');
-          }
-
-          const sqlResult = await sqlExecutor._call({ sql: args.sql });
-
-          let sqlData;
-          if (typeof sqlResult === 'string') {
-            const parsed = JSON.parse(sqlResult);
-            // SqlExecutorTool 返回的是 rows 字段
-            sqlData = parsed.rows || parsed.data;
-          } else if (sqlResult) {
-            sqlData = sqlResult.rows || sqlResult.data;
-          }
-
-          if (!sqlData || !Array.isArray(sqlData)) {
-            throw new Error('SQL执行结果无效');
-          }
-
-          args.data = sqlData;
-          logger.info('[BeCauseSkillsTool2] SQL查询成功，获得数据:', {
-            rowCount: sqlData.length,
-            columns: sqlData.length > 0 ? Object.keys(sqlData[0]) : [],
-          });
-        } catch (sqlError) {
-          logger.error('[BeCauseSkillsTool2] SQL查询失败:', sqlError);
-          return JSON.stringify({
-            success: false,
-            error: `SQL查询失败: ${sqlError.message}`,
-            original_sql: args.sql,
-          }, null, 2);
-        }
+      const { args, error: parseError } = this.parseArguments(argsString);
+      if (parseError) {
+        logger.warn(`[BeCauseSkillsTool2] arguments 解析失败: ${parseError}`);
+        return JSON.stringify({ success: false, error: parseError }, null, 2);
       }
 
       // fluctuation-attribution：自动执行SQL获取基期/现期数据

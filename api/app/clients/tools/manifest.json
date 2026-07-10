@@ -205,7 +205,7 @@
   {
     "name": "BeCause问数2.0",
     "pluginKey": "because_skills_2",
-    "description": "BeCause问数工具2.0 - 智能问数增强版，新增波动归因能力。Commands: intent-classification (意图分类), rag-retrieval (RAG知识检索), database-schema (数据库Schema获取), reranker (结果重排序), sql-validation (SQL校验，支持7类关键字分类+双盲对比), result-analysis (结果分析，支持Adtributor归因+异常检测+趋势分析), sql-executor (SQL执行), chart-generation (图表生成), fluctuation-attribution (波动归因，维度归因+指标归因+时间对比+下钻)。核心算法：JS散度、解释力、惊喜度、简洁性、ElasticNet回归、SHAP特征重要性。",
+    "description": "BeCause问数工具2.0 - 智能问数增强版，新增波动归因能力。Commands: intent-classification (意图分类), rag-retrieval (RAG知识检索), database-schema (数据库Schema获取), reranker (结果重排序), sql-validation (SQL校验，支持7类关键字分类+双盲对比), result-analysis (结果分析，支持Adtributor归因+异常检测+趋势分析), sql-executor (SQL执行), fluctuation-attribution (波动归因，维度归因+指标归因+时间对比+下钻)。核心算法：JS散度、解释力、惊喜度、简洁性、ElasticNet回归、SHAP特征重要性。图表可视化请使用独立的 echarts_generator_app 工具。",
     "icon": "📈",
     "authConfig": []
   },
@@ -226,7 +226,7 @@
   {
     "name": "ECharts 图表生成",
     "pluginKey": "echarts_generator_app",
-    "description": "ECharts 多图生成工具。传入 charts 数组（每项含 id、title、echartsOption），验证后返回配置；模型在正文中用 @ec@type:id@ec@ 标记指定图表内联位置。支持柱状图、折线图、饼图、散点图、雷达图、热力图、桑基图等。",
+    "description": "ECharts 多图生成工具（金融指标样式规范）。传入 charts 数组（每项含 id、title、echartsOption），自动补齐柱状对比/折线趋势默认样式后返回；模型在正文中用 @ec@type:id@ec@ 标记内联位置。优先 bar/line。",
     "icon": "📈",
     "authConfig": []
   },

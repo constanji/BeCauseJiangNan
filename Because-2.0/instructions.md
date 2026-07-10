@@ -25,15 +25,21 @@
 | **light-schema** | 生成 SQL 前拿表结构（**首选**） | `query`+`top_k:8`；已知表名用 `tables:[]`；含 Cell 值对齐 → `value_hints` |
 | **database-schema** | light_schema 失败或要实时/全量结构 | `format:"semantic"`；仅兜底 |
 | **rag-retrieval** | SQL 前补业务术语、规则、同义词 | 默认 `top_k:10`；通用知识 |
-| **knowledge-discovery** | 指标编码 BMxxx、指标库 Excel 行 | 优先于 rag；一次查一个编码 |
+| **knowledge-discovery** | 指标编码 BMxxx、指标库 Excel 行 | 优先于 rag；一次查一个编码；可选 `filename` 限定单个 Excel |
 | **sql-validation** | 执行前**必调** | |
 | **sql-executor** | 验证通过后执行 | 仅 SELECT |
 | **result-analysis** | 执行后解读、异常、趋势 | `standard` / `deep` |
 | **fluctuation-attribution** | 为什么变化、同比环比、公式归因 | 需两期数据；读 `structured_attribution`、`sql_hint` |
-| **chart-generation** | 需要可视化时 | |
 | **reranker** | 需对非 RAG 结果重排时 | 少用 |
 
 **不要调用**：`intent-classification`。
+
+### 图表可视化（独立工具，非 because_skills_2 命令）
+
+需要可视化时调用独立的 **echarts_generator_app** 工具（不是 because_skills_2 的子命令），传入 `charts` 数组（每项含 `id`/`title`/`echartsOption`）。
+- `charts` 必须是**真正的 JSON 数组**（对象数组），不要整段序列化成字符串再传，也不要多层转义。
+- 数据量较大（维度值很多）时优先聚合/取 Top N 后再画图，避免单次输出过长被截断导致解析失败。
+- 图表数值必须与 sql-executor 返回结果一致，禁止编造或估算。
 
 ### 结构 vs 知识（勿混）
 
@@ -49,7 +55,7 @@
 2. 涉及指标编码 → 使用**knowledge-discovery**工具单次单个指标；否则 **rag-retrieval**
 3. 用 `semantic_models` + `value_hints` + 检索结果 → 生成 SQL
 4. **sql-validation** → **sql_executor**
-5. 需要解读 → **result-analysis**；需要图 → **chart-generation**
+5. 需要解读 → **result-analysis**；需要图 → 独立工具 **echarts_generator_app**（非 because_skills_2 命令）
 6. 输出：SQL + 结果 + 简要分析
 
 ---
