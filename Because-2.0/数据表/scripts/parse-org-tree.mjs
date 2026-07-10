@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
  * 解析 机构关系.txt → org_master.xlsx
+ * leaf_child_codes：仅填树状结构的**直接下一级**子节点（单层），不递归汇总所有末级网点
  * 用法: node Because-2.0/数据表/scripts/parse-org-tree.mjs
  */
 import fs from 'node:fs';
@@ -120,8 +121,8 @@ function findRegionCode(nodes, code) {
   return '';
 }
 
-function isLeafForDrilldown(node) {
-  return node.org_level >= 4 || node.org_level_name === '大客户团队' || node.org_level_name === '小微团队';
+function getDirectChildCodes(code, children) {
+  return (children.get(code) || []).filter((c) => c !== code);
 }
 
 function formatOrgList(codes, nodes, { separator = '；' } = {}) {
@@ -192,31 +193,6 @@ function buildRows(rawText) {
     children.get(node.parent_org_code).push(node.org_code);
   }
 
-  const leafMemo = new Map();
-  function collectLeafCodes(code, visiting = new Set()) {
-    if (leafMemo.has(code)) return leafMemo.get(code);
-    if (visiting.has(code)) return [];
-    visiting.add(code);
-    const n = nodes.get(code);
-    if (!n) {
-      leafMemo.set(code, []);
-      return [];
-    }
-    if (isLeafForDrilldown(n)) {
-      const self = [code];
-      leafMemo.set(code, self);
-      return self;
-    }
-    const out = [];
-    for (const child of children.get(code) || []) {
-      if (child === code) continue;
-      out.push(...collectLeafCodes(child, visiting));
-    }
-    const unique = [...new Set(out)];
-    leafMemo.set(code, unique);
-    return unique;
-  }
-
   const byName = new Map();
   for (const node of nodes.values()) {
     if (!byName.has(node.org_name)) byName.set(node.org_name, []);
@@ -227,11 +203,10 @@ function buildRows(rawText) {
     const node = nodes.get(code);
     node.region_org_code = findRegionCode(nodes, code);
 
-    const leaves = collectLeafCodes(code);
-    const childLeaves = leaves.filter((c) => c !== node.org_code);
-    if (childLeaves.length > 0) {
-      node.leaf_child_codes = childLeaves.join(',');
-      node.leaf_child_orgs = formatOrgList(childLeaves, nodes);
+    const directChildren = getDirectChildCodes(code, children);
+    if (directChildren.length > 0) {
+      node.leaf_child_codes = directChildren.join(',');
+      node.leaf_child_orgs = formatOrgList(directChildren, nodes);
     }
 
     if (node.parent_org_code) {
@@ -267,9 +242,9 @@ function levelDictSheet() {
     [1, '法人机构', 'FR001-FR003', '汇总/法人根节点'],
     [2, '区域分行', 'A0000/A0700/...', '区域全辖；排名 SQL 通常排除 A0000'],
     [2, '总行部室', 'A8000/80xxx', '总行条线，超级权限全行可见'],
-    [3, '管理行', 'A0001-A0010 等', "查本级: org_code='A0002'；下钻网点: 用 leaf_child_codes"],
+    [3, '管理行', 'A0001-A0010 等', "查本级: org_code='A0002'；下钻下一级: 用 leaf_child_codes（仅直接子节点）"],
     [4, '网点', '01xxx-13xxx 等', "查本级: org_code='01011'"],
-    [5, '大客户团队', 'D01xx', '按 leaf_child_codes 或单码查询'],
+    [5, '大客户团队', 'D01xx', '按单码查询；父级 leaf_child_codes 含本团队'],
     [5, '小微团队', 'W/WD 前缀', '垂直条线团队'],
   ];
 }
@@ -294,10 +269,18 @@ function main() {
   XLSX.writeFile(wb, OUTPUT);
 
   const a0002 = rows.find((r) => r.org_code === 'A0002');
+  const fr001 = rows.find((r) => r.org_code === 'FR001');
+  const root = rows.find((r) => r.org_code === '00000');
   console.log(`已生成 ${OUTPUT}`);
   console.log(`共 ${rows.length} 条机构`);
+  if (root) {
+    console.log(`00000: leaf_count=${root.leaf_child_codes.split(',').filter(Boolean).length}, children=${root.leaf_child_codes}`);
+  }
+  if (fr001) {
+    console.log(`FR001: leaf_count=${fr001.leaf_child_codes.split(',').filter(Boolean).length}, children=${fr001.leaf_child_codes}`);
+  }
   if (a0002) {
-    console.log(`A0002: level=${a0002.org_level_name}, leaf_count=${a0002.leaf_child_codes.split(',').length}, parent=${a0002.parent_org_code}`);
+    console.log(`A0002: level=${a0002.org_level_name}, leaf_count=${a0002.leaf_child_codes.split(',').filter(Boolean).length}, parent=${a0002.parent_org_code}`);
   }
 }
 
