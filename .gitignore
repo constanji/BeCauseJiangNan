@@ -178,6 +178,9 @@ claude-flow
 # Removed Windows wrapper files per user request
 hive-mind-prompt-*.txt
 
+# Excel 打开时生成的临时锁文件
+~$*
+
 # Deployment unnecessary folders
 JiangNan/
 Bc服务器用文件/
