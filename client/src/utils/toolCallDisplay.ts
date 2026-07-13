@@ -1,5 +1,5 @@
 const becauseSkillsCommandMap: Record<string, string> = {
-  'database-schema': '获取数据库Schema',
+  'database-schema': '检查数据库Schema',
   'intent-classification': '意图识别',
   'rag-retrieval': 'RAG检索',
   'sql-validation': 'SQL语句验证',
@@ -7,9 +7,9 @@ const becauseSkillsCommandMap: Record<string, string> = {
   'result-analysis': '归因调查',
   'chart-generation': '可视化图表生成',
   'reranker': '结果重排序',
-  'fluctuation-attribution': '波动归因分析',
-  'light-schema': 'Light Schema 检索',
-  'knowledge-discovery': '知识发现',
+  'fluctuation-attribution': '整理数据归因',
+  'light-schema': '获取数据表结构',
+  'knowledge-discovery': '业务理解',
   'cell-vectorization': '单元格向量化',
 };
 
