@@ -1,4 +1,4 @@
-import type { CatalogDetail, CatalogItem, RemoteTablePreview, SearchHit, Tag } from '../lib/uiState';
+import type { CatalogDetail, CatalogItem, SearchHit, Tag } from '../lib/uiState';
 import type { LightSchemaContent } from '../lib/lightSchemaTypes';
 
 export type ApiResponse<T> = { success: boolean; data?: T; error?: string; message?: string };
@@ -10,6 +10,23 @@ export type SchemasResponse = ApiResponse<Array<{ schemaName: string; tableCount
 };
 
 export type TablesResponse = ApiResponse<string[]> & { meta?: CatalogMeta };
+
+export type DataSearchResponse = ApiResponse<SearchHit[]> & {
+  meta?: {
+    totalTables?: number;
+    totalColumns?: number;
+    searchLight?: boolean;
+    schemaTableNames?: string[];
+  };
+};
+
+export type DeepSearchEvent =
+  | { type: 'start'; totalTables: number }
+  | { type: 'progress'; scanned: number; total: number; tableName: string }
+  | { type: 'hit'; data: SearchHit }
+  | { type: 'table_error'; tableName: string; error: string }
+  | { type: 'done'; elapsedMs: number; hitCount: number; scannedTables: number; errorCount: number }
+  | { type: 'error'; error: string };
 
 const qs = (params: Record<string, string | number | undefined>) => {
   const q = new URLSearchParams();
@@ -46,6 +63,58 @@ const blob = async (input: RequestInfo | URL, init?: RequestInit): Promise<Respo
     headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
     ...init,
   });
+
+async function consumeNdjsonStream(
+  response: Response,
+  onEvent: (event: DeepSearchEvent) => void,
+  signal?: AbortSignal,
+): Promise<{ ok: boolean; error?: string }> {
+  if (!response.ok) {
+    const text = await response.text();
+    try {
+      const payload = text ? JSON.parse(text) : {};
+      return { ok: false, error: payload.error || payload.message || `HTTP ${response.status}` };
+    } catch {
+      return { ok: false, error: text || `HTTP ${response.status}` };
+    }
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) return { ok: false, error: '响应无内容' };
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let streamError: string | undefined;
+
+  const flushLine = (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    try {
+      const event = JSON.parse(trimmed) as DeepSearchEvent;
+      onEvent(event);
+      if (event.type === 'error') streamError = event.error;
+    } catch {
+      // ignore malformed line
+    }
+  };
+
+  while (true) {
+    if (signal?.aborted) {
+      await reader.cancel();
+      return { ok: false, error: '已取消' };
+    }
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    for (const line of lines) flushLine(line);
+  }
+
+  flushLine(buffer);
+  if (streamError) return { ok: false, error: streamError };
+  return { ok: true };
+}
 
 export const api = {
   listDataSources: () => json('/api/data-sources'),
@@ -138,7 +207,7 @@ export const api = {
 
   getCatalogStats: () => json<{
     byDataSource: Array<{ dataSourceId: string; dataSourceName: string; count: number }>;
-    bySchema: Array<{ schemaName: string; count: number }>;
+    bySchema: Array<{ dataSourceId: string; schemaName: string; count: number }>;
     byTag: Array<{ tagId: number; tagName: string; color?: string; count: number }>;
     total: number;
   }>('/api/light-schemas/stats'),
@@ -159,25 +228,26 @@ export const api = {
     dataSourceId: params.dataSourceId,
     schemaName: params.schemaName,
     searchLight: '1',
-  })}`),
+  })}`) as Promise<DataSearchResponse>,
 
-  deepSearchLightSchemaData: (body: {
-    q: string;
-    dataSourceId: string;
-    schemaName: string;
-    tableNames?: string[];
-  }) => json<SearchHit[]>('/api/light-schemas/deep-data-search', {
-    method: 'POST',
-    body: JSON.stringify(body),
-  }),
-
-  searchSchemaExplore: (dataSourceId: string, params: { q: string; schemaName: string }) =>
-    json<SearchHit[]>(`/api/data-sources/${dataSourceId}/catalog/explore-search${qs(params)}`),
-
-  previewRemoteTable: (dataSourceId: string, schemaName: string, tableName: string) =>
-    json<RemoteTablePreview>(
-      `/api/data-sources/${dataSourceId}/schemas/${encodeURIComponent(schemaName)}/tables/${encodeURIComponent(tableName)}/preview`,
-    ),
+  deepSearchLightSchemaDataStream: async (
+    body: {
+      q: string;
+      dataSourceId: string;
+      schemaName: string;
+      tableNames?: string[];
+    },
+    onEvent: (event: DeepSearchEvent) => void,
+    signal?: AbortSignal,
+  ) => {
+    const response = await fetch('/api/light-schemas/deep-data-search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+    });
+    return consumeNdjsonStream(response, onEvent, signal);
+  },
 
   previewRemoteRows: (
     dataSourceId: string,

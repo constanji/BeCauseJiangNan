@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { api } from '../api/client';
 import Button from '../components/Button';
-import FilterBar from '../components/FilterBar';
+import CatalogTableSidebar from '../components/CatalogTableSidebar';
 import { HideInCartToggle } from '../components/ToggleSwitch';
 import LightSchemaEditor from '../components/LightSchemaEditor';
 import StatusBanner from '../components/StatusBanner';
@@ -150,6 +150,12 @@ function ReviewSchemaGroup({
 export default function ReviewPage({ cartOnly = false }: { cartOnly?: boolean }) {
   const { state, setReview, isInCart, toggleCart, removeFromCart } = useUiState();
   const { columnSearchQuery, hideInCart } = state.review;
+  const [debouncedColumnSearch, setDebouncedColumnSearch] = React.useState(columnSearchQuery);
+
+  React.useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedColumnSearch(columnSearchQuery), 350);
+    return () => window.clearTimeout(timer);
+  }, [columnSearchQuery]);
   const cartCount = state.exportCart.items.length;
   const { showToast } = useToast();
   const [dataSourceId, setDataSourceId] = React.useState('');
@@ -190,7 +196,7 @@ export default function ReviewPage({ cartOnly = false }: { cartOnly?: boolean })
       dataSourceId: dataSourceId || undefined,
       schemaName: schemaName || undefined,
       tagIds,
-      q: columnSearchQuery.trim() || undefined,
+      q: debouncedColumnSearch.trim() || undefined,
     })
       .then((r) => {
         if (!r.success) throw new Error(r.error || '加载失败');
@@ -206,7 +212,7 @@ export default function ReviewPage({ cartOnly = false }: { cartOnly?: boolean })
       })
       .catch((err) => setError(err.message || String(err)))
       .finally(() => setLoading(false));
-  }, [cartOnly, cartCount, dataSourceId, schemaName, tagIds, columnSearchQuery, isInCart]);
+  }, [cartOnly, cartCount, dataSourceId, schemaName, tagIds, debouncedColumnSearch, isInCart]);
 
   React.useEffect(() => { reload(); }, [reload]);
 
@@ -492,32 +498,12 @@ export default function ReviewPage({ cartOnly = false }: { cartOnly?: boolean })
       </div>
 
       <div className="flex h-[48rem] overflow-hidden rounded-lg border border-border-light bg-surface-primary">
-        <aside className="flex w-80 shrink-0 flex-col border-r border-border-light bg-surface-secondary">
-          <div className="shrink-0 border-b border-border-light p-3">
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-tertiary" />
-              <input
-                className="input py-2 pl-8 pr-8 text-sm"
-                placeholder="搜索表名…"
-                value={tableSearch}
-                onChange={(e) => setTableSearch(e.target.value)}
-              />
-              {tableSearch && (
-                <button
-                  type="button"
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-text-tertiary hover:text-text-primary"
-                  onClick={() => setTableSearch('')}
-                  aria-label="清空搜索"
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              )}
-            </div>
-          </div>
-          <div className="min-h-0 flex-1 overflow-y-auto p-3">
-            {loading ? (
-              <div className="py-8 text-center text-sm text-text-secondary">加载中…</div>
-            ) : visibleItems.length === 0 ? (
+        <CatalogTableSidebar
+          tableSearch={tableSearch}
+          onTableSearchChange={setTableSearch}
+          loading={loading}
+          emptyMessage={
+            visibleItems.length === 0 ? (
               <div className="py-8 text-center text-sm text-text-secondary">
                 {cartOnly
                   ? '导出篮为空，请先在主页加入表'
@@ -527,17 +513,19 @@ export default function ReviewPage({ cartOnly = false }: { cartOnly?: boolean })
                       ? '当前筛选下没有可显示的表'
                       : '暂无已生成的 LightSchema'}
               </div>
-            ) : (
-              renderSidebarGroups()
-            )}
-          </div>
-          <div className="flex min-h-[3rem] shrink-0 items-center border-t border-border-light px-4 py-3 text-xs text-text-tertiary">
-            共 {visibleItems.length} 张表
-            {hideInCart && items.length !== visibleItems.length && (
-              <span className="ml-2 text-text-tertiary">（已隐藏 {items.length - visibleItems.length} 张）</span>
-            )}
-          </div>
-        </aside>
+            ) : undefined
+          }
+          footer={(
+            <>
+              共 {visibleItems.length} 张表
+              {hideInCart && items.length !== visibleItems.length && (
+                <span className="ml-2 text-text-tertiary">（已隐藏 {items.length - visibleItems.length} 张）</span>
+              )}
+            </>
+          )}
+        >
+          {renderSidebarGroups()}
+        </CatalogTableSidebar>
 
         <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           {detailLoading ? (

@@ -349,6 +349,9 @@ export default function TableDataPreviewPanel({
     [displayColumns, rows, filtered],
   );
   const hiddenEmptyColumnCount = filtered ? displayColumns.length - visibleColumns.length : 0;
+  const tableMissingHint = error != null && (
+    error.includes('不存在') || error.includes('LightSchema 可能已过期')
+  );
 
   if (!open || !parsed) return null;
 
@@ -357,6 +360,11 @@ export default function TableDataPreviewPanel({
       {error && (
         <div className={cn('shrink-0', variant === 'modal' ? 'px-6 pt-4' : 'pb-3')}>
           <StatusBanner tone="error" title="加载失败" message={error} />
+          {tableMissingHint && (
+            <p className="mt-2 text-sm text-text-secondary">
+              建议在工作台删除该表或重新生成 LightSchema。
+            </p>
+          )}
         </div>
       )}
       <div className={cn(

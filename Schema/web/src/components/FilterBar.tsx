@@ -66,14 +66,18 @@ export default function FilterBar({
       if (!r.success || !r.data) return;
       const all = r.data.bySchema || [];
       if (!dataSourceId) {
-        setSchemas(all.map((item: any) => ({ schemaName: item.schemaName })));
+        setSchemas(all.map((item) => ({
+          schemaName: item.schemaName,
+          tableCount: item.count,
+        })));
         return;
       }
-      api.listCatalog({ dataSourceId }).then((listRes) => {
-        if (!listRes.success) return;
-        const names = [...new Set((listRes.data || []).map((item: any) => item.schemaName))];
-        setSchemas(names.sort().map((name) => ({ schemaName: name })));
-      });
+      setSchemas(
+        all
+          .filter((item) => item.dataSourceId === dataSourceId)
+          .map((item) => ({ schemaName: item.schemaName, tableCount: item.count }))
+          .sort((a, b) => a.schemaName.localeCompare(b.schemaName, 'zh-CN')),
+      );
     });
   }, [catalogMode, dataSourceId]);
 

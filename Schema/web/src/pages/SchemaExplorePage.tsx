@@ -10,10 +10,10 @@ import {
   ShoppingCart,
   Table2,
   Tags,
-  X,
 } from 'lucide-react';
 import { api } from '../api/client';
 import Button from '../components/Button';
+import CatalogTableSidebar from '../components/CatalogTableSidebar';
 import FilterBar from '../components/FilterBar';
 import LightSchemaEditor from '../components/LightSchemaEditor';
 import StatusBanner from '../components/StatusBanner';
@@ -194,13 +194,23 @@ function ExploreSchemaGroup({
 
 type DetailPanel = 'schema' | 'data';
 
+type DeepProgress = {
+  scanned: number;
+  total: number;
+  currentTable: string;
+  errors: Array<{ tableName: string; error: string }>;
+};
+
 export default function SchemaExplorePage() {
   const { state, setExplore, toggleCart, isInCart, removeFromCart } = useUiState();
   const { explore } = state;
   const { showToast } = useToast();
   const [results, setResults] = React.useState<SearchHit[]>([]);
-  const [loading, setLoading] = React.useState(false);
+  const [lightLoading, setLightLoading] = React.useState(false);
+  const [deepLoading, setDeepLoading] = React.useState(false);
+  const [deepProgress, setDeepProgress] = React.useState<DeepProgress | null>(null);
   const [error, setError] = React.useState<string | null>(null);
+  const searchAbortRef = React.useRef<AbortController | null>(null);
   const [searched, setSearched] = React.useState(false);
   const [lastSearchDeep, setLastSearchDeep] = React.useState(false);
   const [selectedId, setSelectedId] = React.useState<number | null>(null);
@@ -253,41 +263,123 @@ export default function SchemaExplorePage() {
     });
   };
 
+  const mergeHitIntoResults = React.useCallback((hit: SearchHit) => {
+    setResults((prev) => mergeSearchHits(prev, [hit]));
+    setExpandedGroups((prev) => ({
+      ...prev,
+      [`${hit.dataSourceId}|${hit.schemaName}`]: true,
+    }));
+    setSelectedId((prev) => {
+      if (prev != null) return prev;
+      return hit.lightSchemaId ?? null;
+    });
+  }, []);
+
   const runSearch = React.useCallback(async () => {
     const q = validateFilters();
     if (!q) return;
+
+    searchAbortRef.current?.abort();
+    const abort = new AbortController();
+    searchAbortRef.current = abort;
+
     const { searchLight, searchDeep, dataSourceId, schemaName } = explore;
-    setLoading(true);
     setError(null);
     setSearched(true);
     setLastSearchDeep(searchDeep);
+    setDeepProgress(null);
+    setResults([]);
+    setSelectedId(null);
+
+    let lightHits: SearchHit[] = [];
+    let schemaTableNames: string[] = [];
+
     try {
-      let merged: SearchHit[] = [];
       if (searchLight) {
+        setLightLoading(true);
         const lightRes = await api.searchLightSchemaData({ q, dataSourceId, schemaName });
+        if (abort.signal.aborted) return;
         if (!lightRes.success) throw new Error(lightRes.error || '轻量搜索失败');
-        merged = lightRes.data || [];
+        lightHits = lightRes.data || [];
+        schemaTableNames = lightRes.meta?.schemaTableNames || [];
+        applyHits(lightHits);
       }
+
       if (searchDeep) {
-        const deepRes = await api.deepSearchLightSchemaData({ q, dataSourceId, schemaName });
-        if (!deepRes.success) throw new Error(deepRes.error || '深度搜索失败');
-        merged = searchLight
-          ? mergeSearchHits(merged, deepRes.data || [])
-          : (deepRes.data || []);
-        const deepCount = deepRes.data?.length || 0;
+        const lightHitTables = new Set(lightHits.map((hit) => hit.tableName));
+        let tablesToScan: string[] | undefined;
+        if (searchLight && schemaTableNames.length > 0) {
+          const remaining = schemaTableNames.filter((name) => !lightHitTables.has(name));
+          if (remaining.length === 0) {
+            showToast('轻量已覆盖全部表，无需深度扫描');
+            return;
+          }
+          tablesToScan = remaining;
+        }
+
+        setDeepLoading(true);
+        let extraHitCount = 0;
+        let errorCount = 0;
+
+        const streamResult = await api.deepSearchLightSchemaDataStream(
+          { q, dataSourceId, schemaName, tableNames: tablesToScan },
+          (event) => {
+            if (abort.signal.aborted) return;
+            if (event.type === 'start') {
+              setDeepProgress({
+                scanned: 0,
+                total: event.totalTables,
+                currentTable: '',
+                errors: [],
+              });
+            } else if (event.type === 'progress') {
+              setDeepProgress((prev) => ({
+                scanned: event.scanned,
+                total: event.total,
+                currentTable: event.tableName,
+                errors: prev?.errors || [],
+              }));
+            } else if (event.type === 'hit') {
+              extraHitCount += 1;
+              mergeHitIntoResults(event.data);
+            } else if (event.type === 'table_error') {
+              errorCount += 1;
+              setDeepProgress((prev) => ({
+                scanned: prev?.scanned ?? 0,
+                total: prev?.total ?? 0,
+                currentTable: prev?.currentTable ?? '',
+                errors: [...(prev?.errors || []), { tableName: event.tableName, error: event.error }],
+              }));
+            }
+          },
+          abort.signal,
+        );
+
+        if (abort.signal.aborted) return;
+        if (!streamResult.ok) throw new Error(streamResult.error || '深度搜索失败');
+
         if (searchLight) {
-          showToast(deepCount > 0 ? `深度搜索额外命中 ${deepCount} 张表` : '深度搜索无额外命中');
-        } else if (deepCount === 0) {
-          showToast('深度搜索未找到匹配表');
+          const suffix = errorCount > 0 ? `，${errorCount} 张表跳过` : '';
+          showToast(
+            extraHitCount > 0
+              ? `深度搜索额外命中 ${extraHitCount} 张表${suffix}`
+              : `深度搜索无额外命中${suffix}`,
+          );
+        } else if (extraHitCount === 0) {
+          showToast(errorCount > 0 ? `深度搜索未找到匹配表，${errorCount} 张表出错` : '深度搜索未找到匹配表');
         }
       }
-      applyHits(merged);
     } catch (err: any) {
+      if (abort.signal.aborted) return;
       setError(err?.message || String(err));
     } finally {
-      setLoading(false);
+      if (!abort.signal.aborted) {
+        setLightLoading(false);
+        setDeepLoading(false);
+        setDeepProgress(null);
+      }
     }
-  }, [explore, showToast]);
+  }, [explore, showToast, mergeHitIntoResults]);
 
   const lockSingleSchema = Boolean(explore.schemaName);
   const groups = React.useMemo(
@@ -456,12 +548,42 @@ export default function SchemaExplorePage() {
     );
   };
 
+  const searching = lightLoading || deepLoading;
+
+  const renderDeepProgress = () => {
+    if (!deepLoading || !deepProgress) return null;
+    const { scanned, total, currentTable, errors } = deepProgress;
+    const pct = total > 0 ? Math.round((scanned / total) * 100) : 0;
+    return (
+      <div className="shrink-0 border-b border-border-light bg-surface-secondary px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-text-secondary">
+          <span>
+            深度扫描 {scanned}/{total}
+            {currentTable ? ` · 当前 ${currentTable}` : ''}
+          </span>
+          <span>{pct}%</span>
+        </div>
+        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-surface-tertiary">
+          <div
+            className="h-full rounded-full bg-brand transition-all duration-300"
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+        {errors.length > 0 && (
+          <p className="mt-2 text-xs text-amber-600">
+            {errors.length} 张表扫描失败（如远程表已删除）
+          </p>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="flex h-full flex-col overflow-hidden px-4 py-4">
       <div className="mb-4">
         <h2 className="text-xl font-semibold text-text-primary">找表</h2>
         <p className="mt-1 text-sm text-text-secondary">
-          在已生成 LightSchema 的表中搜索；轻量搜索覆盖列名、注释与采样值，深度搜索连库扫描文本列
+          在已生成 LightSchema 的表中搜索；须先在工作台生成 LightSchema。轻量搜索覆盖列名、注释与采样值，深度搜索连库扫描文本列
         </p>
       </div>
 
@@ -480,9 +602,9 @@ export default function SchemaExplorePage() {
             placeholder="搜索关键词，例如：贷款、OWNER、居民数"
             onKeyDown={(e) => { if (e.key === 'Enter') runSearch(); }}
           />
-          <Button variant="primary" className="px-4 py-2 shrink-0" disabled={loading} onClick={runSearch}>
+          <Button variant="primary" className="px-4 py-2 shrink-0" disabled={searching} onClick={runSearch}>
             <Search className="h-4 w-4" />
-            搜索
+            {deepLoading ? '深度扫描中…' : '搜索'}
           </Button>
         </div>
         <div className="flex flex-wrap items-center gap-6 text-sm">
@@ -516,46 +638,38 @@ export default function SchemaExplorePage() {
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-border-light bg-surface-primary">
-        {loading ? (
-          <div className="flex flex-1 items-center justify-center text-text-secondary">
-            {explore.searchDeep && !explore.searchLight ? '深度搜索中…' : '搜索中…'}
-          </div>
-        ) : !searched ? (
+        {!searched ? (
           <div className="flex flex-1 items-center justify-center text-text-secondary">输入关键词开始找表</div>
-        ) : results.length === 0 ? (
+        ) : lightLoading && results.length === 0 && !deepLoading ? (
+          <div className="flex flex-1 items-center justify-center text-text-secondary">轻量搜索中…</div>
+        ) : results.length === 0 && deepLoading ? (
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            {renderDeepProgress()}
+            <div className="flex flex-1 items-center justify-center text-text-secondary">深度搜索中，等待命中…</div>
+          </div>
+        ) : results.length === 0 && !searching ? (
           <div className="flex flex-1 items-center justify-center text-text-secondary">未找到相关表</div>
         ) : (
-          <div className="flex h-[48rem] min-h-0 overflow-hidden">
-            <aside className="flex w-80 shrink-0 flex-col border-r border-border-light bg-surface-secondary">
-              <div className="shrink-0 border-b border-border-light p-3">
-                <div className="relative">
-                  <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-tertiary" />
-                  <input
-                    className="input py-2 pl-8 pr-8 text-sm"
-                    placeholder="搜索表名…"
-                    value={tableSearch}
-                    onChange={(e) => setTableSearch(e.target.value)}
-                  />
-                  {tableSearch && (
-                    <button
-                      type="button"
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-text-tertiary hover:text-text-primary"
-                      onClick={() => setTableSearch('')}
-                      aria-label="清空搜索"
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  )}
-                </div>
-              </div>
-              <div className="min-h-0 flex-1 overflow-y-auto p-3">
-                {renderSidebar()}
-              </div>
-              <div className="flex min-h-[3rem] shrink-0 items-center border-t border-border-light px-4 py-3 text-xs text-text-tertiary">
-                共 {flatVisibleHits.length} 张表
-                {lastSearchDeep && <span className="ml-2">· 含深度搜索</span>}
-              </div>
-            </aside>
+          <div className="flex h-[48rem] min-h-0 flex-col overflow-hidden">
+            {renderDeepProgress()}
+            <div className="flex min-h-0 flex-1 overflow-hidden">
+            <CatalogTableSidebar
+              tableSearch={tableSearch}
+              onTableSearchChange={setTableSearch}
+              emptyMessage={
+                flatVisibleHits.length === 0 ? (
+                  <div className="py-8 text-center text-sm text-text-secondary">无匹配表</div>
+                ) : undefined
+              }
+              footer={(
+                <>
+                  共 {flatVisibleHits.length} 张表
+                  {lastSearchDeep && <span className="ml-2">· 含深度搜索</span>}
+                </>
+              )}
+            >
+              {renderSidebar()}
+            </CatalogTableSidebar>
 
             <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
               {detailLoading ? (
@@ -692,6 +806,7 @@ export default function SchemaExplorePage() {
                 </div>
               )}
             </main>
+            </div>
           </div>
         )}
       </div>
