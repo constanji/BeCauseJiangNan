@@ -18,7 +18,7 @@ function hasColumn(database, table, column) {
   return rows.some((row) => row.name === column);
 }
 
-const DB_SCHEMA_VERSION = 1;
+const DB_SCHEMA_VERSION = 2;
 
 function getDbSchemaVersion(database) {
   return Number(database.pragma('user_version', { simple: true }) || 0);
@@ -218,8 +218,20 @@ function getDb() {
   return db;
 }
 
+function initDatabase(database) {
+  migrate(database);
+  return database;
+}
+
+function closeDb() {
+  if (db) {
+    db.close();
+    db = null;
+  }
+}
+
 function now() {
   return new Date().toISOString();
 }
 
-module.exports = { getDb, now };
+module.exports = { getDb, now, initDatabase, closeDb };

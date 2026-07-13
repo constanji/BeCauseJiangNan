@@ -14,6 +14,9 @@ const {
   queryTableRows,
   queryDistinctColumnValues,
   normalizePreviewColumns,
+  tableExists,
+  formatTableNotFoundMessage,
+  shortenDbError,
 } = require('../services/DatabaseService');
 const {
   columnMatchesQuery,
@@ -168,6 +171,7 @@ function groupSchemaSearchHits(rows, query) {
   ));
 }
 
+// 远程元数据找表（无需预生成 LightSchema）；当前未接入找表 UI，保留供脚本/后续扩展
 router.get('/catalog/explore-search', async (req, res) => {
   const source = getSource(req.params.id);
   if (!source) return res.status(404).json({ success: false, error: '数据源不存在' });
@@ -271,6 +275,13 @@ router.post('/schemas/:schemaName/tables/:tableName/preview-rows', async (req, r
   try {
     const config = creds(source);
     const password = decrypt(source.password_enc);
+    const exists = await tableExists(config, password, schemaName, tableName);
+    if (!exists) {
+      return res.status(404).json({
+        success: false,
+        error: formatTableNotFoundMessage(schemaName, tableName),
+      });
+    }
     const result = await queryTableRows(config, password, {
       schemaName,
       tableName,
@@ -281,7 +292,10 @@ router.post('/schemas/:schemaName/tables/:tableName/preview-rows', async (req, r
     });
     res.json({ success: true, data: result });
   } catch (err) {
-    handleDbError(err, res);
+    if (err.code === 'UNSUPPORTED_DB_TYPE' || err.name === 'UnsupportedDbTypeError') {
+      return res.status(501).json({ success: false, error: err.message, code: 'UNSUPPORTED_DB_TYPE' });
+    }
+    return res.status(500).json({ success: false, error: shortenDbError(err) });
   }
 });
 

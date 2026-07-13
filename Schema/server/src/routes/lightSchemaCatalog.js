@@ -23,11 +23,21 @@ const {
   normalizePreviewColumns,
   deepSearchTableValues,
   isTextType,
+  tableExists,
+  formatTableNotFoundMessage,
+  shortenDbError,
 } = require('../services/DatabaseService');
 const { toConnectionConfig } = require('../lib/dataSourceConfig');
 const { isSupportedType } = require('../lib/dbTypes');
 
 const router = express.Router();
+const DEEP_SEARCH_CONCURRENCY = 4;
+
+function writeNdjsonEvent(res, type, payload = {}) {
+  res.write(`${JSON.stringify({ type, ...payload })}\n`);
+}
+
+const { runConcurrentScan } = require('../lib/concurrentScan');
 
 function parseTagIds(raw) {
   if (raw == null || raw === '') return [];
@@ -115,11 +125,12 @@ router.get('/stats', (req, res) => {
   }));
 
   const bySchema = db.prepare(`
-    SELECT schema_name, COUNT(*) AS count
+    SELECT data_source_id, schema_name, COUNT(*) AS count
     FROM light_schemas
-    GROUP BY schema_name
+    GROUP BY data_source_id, schema_name
     ORDER BY schema_name COLLATE NOCASE
   `).all().map((row) => ({
+    dataSourceId: String(row.data_source_id),
     schemaName: row.schema_name,
     count: Number(row.count || 0),
   }));
@@ -220,13 +231,22 @@ router.get('/data-search', (req, res) => {
 
   const filters = { dataSourceId, schemaName };
   const { where, params } = buildListQuery(filters);
+  const like = normalizeSearchLike(q);
   const rows = getDb().prepare(`
     SELECT ls.*, ds.name AS data_source_name
     FROM light_schemas ls
     JOIN data_sources ds ON ds.id = ls.data_source_id
     WHERE ${where}
+      AND (LOWER(IFNULL(ls.column_search_text, '')) LIKE ? OR LOWER(ls.table_name) LIKE ?)
     ORDER BY ds.name, ls.schema_name, ls.table_name
-  `).all(...params);
+  `).all(...params, like, like);
+
+  const schemaTableNames = getDb().prepare(`
+    SELECT ls.table_name
+    FROM light_schemas ls
+    WHERE ${where}
+    ORDER BY ls.table_name
+  `).all(...params).map((row) => row.table_name);
 
   const tagMap = fetchTagsForSchemaIds(rows.map((row) => row.id));
   const data = [];
@@ -280,6 +300,7 @@ router.get('/data-search', (req, res) => {
       totalTables: data.length,
       totalColumns,
       searchLight: true,
+      schemaTableNames,
     },
   });
 });
@@ -322,31 +343,20 @@ router.post('/deep-data-search', async (req, res) => {
   const startedAt = Date.now();
   const password = decrypt(source.password_enc);
   const tagMap = fetchTagsForSchemaIds(rows.map((row) => row.id));
-  const data = [];
-  let totalColumns = 0;
+  const totalTables = rows.length;
 
-  for (const row of rows) {
-    const parsed = parseContent(row.content);
-    if (!parsed?.columns) continue;
-    const textColumns = parsed.columns
-      .filter((col) => isTextType(col.type))
-      .map((col) => col.name);
-    if (textColumns.length === 0) continue;
+  res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  if (typeof res.flushHeaders === 'function') res.flushHeaders();
 
-    let columnHits = [];
-    try {
-      columnHits = await deepSearchTableValues(dataSource, password, {
-        schemaName: row.schema_name,
-        tableName: row.table_name,
-        textColumns,
-        q,
-        limitPerColumn: 5,
-      });
-    } catch {
-      continue;
-    }
-    if (columnHits.length === 0) continue;
+  writeNdjsonEvent(res, 'start', { totalTables });
 
+  let scanned = 0;
+  let hitCount = 0;
+  let errorCount = 0;
+
+  const buildHit = (row, columnHits, parsed) => {
     const colDesc = new Map(parsed.columns.map((col) => [col.name, String(col.description || '')]));
     const matches = columnHits.map((hit) => ({
       columnName: hit.columnName,
@@ -355,8 +365,7 @@ router.post('/deep-data-search', async (req, res) => {
       matchSource: 'live',
       matchedValues: hit.values,
     }));
-    totalColumns += matches.length;
-    data.push({
+    return {
       lightSchemaId: row.id,
       dataSourceId: String(row.data_source_id),
       dataSourceName: row.data_source_name,
@@ -365,20 +374,70 @@ router.post('/deep-data-search', async (req, res) => {
       tags: tagMap.get(row.id) || [],
       columnCount: getColumnCount(row.content),
       matches,
-    });
-  }
+    };
+  };
 
-  res.json({
-    success: true,
-    data,
-    meta: {
-      totalTables: data.length,
-      totalColumns,
-      scannedTables: rows.length,
+  try {
+    await runConcurrentScan(rows, DEEP_SEARCH_CONCURRENCY, async (row) => {
+      writeNdjsonEvent(res, 'progress', {
+        scanned,
+        total: totalTables,
+        tableName: row.table_name,
+      });
+
+      const parsed = parseContent(row.content);
+      if (!parsed?.columns) {
+        scanned += 1;
+        writeNdjsonEvent(res, 'progress', { scanned, total: totalTables, tableName: row.table_name });
+        return;
+      }
+
+      const textColumns = parsed.columns
+        .filter((col) => isTextType(col.type))
+        .map((col) => col.name);
+
+      if (textColumns.length === 0) {
+        scanned += 1;
+        writeNdjsonEvent(res, 'progress', { scanned, total: totalTables, tableName: row.table_name });
+        return;
+      }
+
+      try {
+        const columnHits = await deepSearchTableValues(dataSource, password, {
+          schemaName: row.schema_name,
+          tableName: row.table_name,
+          textColumns,
+          q,
+          limitPerColumn: 5,
+        });
+        scanned += 1;
+        writeNdjsonEvent(res, 'progress', { scanned, total: totalTables, tableName: row.table_name });
+        if (columnHits.length > 0) {
+          hitCount += 1;
+          writeNdjsonEvent(res, 'hit', { data: buildHit(row, columnHits, parsed) });
+        }
+      } catch (error) {
+        scanned += 1;
+        errorCount += 1;
+        writeNdjsonEvent(res, 'table_error', {
+          tableName: row.table_name,
+          error: shortenDbError(error?.message || String(error)),
+        });
+        writeNdjsonEvent(res, 'progress', { scanned, total: totalTables, tableName: row.table_name });
+      }
+    });
+
+    writeNdjsonEvent(res, 'done', {
       elapsedMs: Date.now() - startedAt,
-      source: 'live',
-    },
-  });
+      hitCount,
+      scannedTables: scanned,
+      errorCount,
+    });
+    res.end();
+  } catch (error) {
+    writeNdjsonEvent(res, 'error', { error: shortenDbError(error?.message || String(error)) });
+    res.end();
+  }
 });
 
 router.get('/', (req, res) => {
@@ -509,6 +568,13 @@ router.post('/:id/preview-rows', async (req, res) => {
 
   try {
     const password = decrypt(source.password_enc);
+    const exists = await tableExists(dataSource, password, row.schema_name, row.table_name);
+    if (!exists) {
+      return res.status(404).json({
+        success: false,
+        error: formatTableNotFoundMessage(row.schema_name, row.table_name),
+      });
+    }
     const result = await queryTableRows(dataSource, password, {
       schemaName: row.schema_name,
       tableName: row.table_name,
@@ -519,7 +585,7 @@ router.post('/:id/preview-rows', async (req, res) => {
     });
     res.json({ success: true, data: result });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message || String(error) });
+    res.status(500).json({ success: false, error: shortenDbError(error.message || String(error)) });
   }
 });
 

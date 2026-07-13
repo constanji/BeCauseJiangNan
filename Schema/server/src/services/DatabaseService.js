@@ -735,6 +735,71 @@ async function deepSearchTableValues(config, password, options = {}) {
   return matches;
 }
 
+function formatTableNotFoundMessage(schemaName, tableName) {
+  return `远程库中不存在表 ${schemaName}.${tableName}，LightSchema 可能已过期，请删除后重新生成`;
+}
+
+function shortenDbError(message) {
+  const text = String(message || '').trim();
+  if (!text) return '数据库查询失败';
+  const relationMatch = text.match(/relation "([^"]+)" does not exist/i);
+  if (relationMatch) {
+    const parts = relationMatch[1].split('.');
+    if (parts.length >= 2) {
+      return formatTableNotFoundMessage(parts[0], parts.slice(1).join('.'));
+    }
+    return `远程库中不存在表 ${relationMatch[1]}，LightSchema 可能已过期`;
+  }
+  if (text.includes('does not exist')) {
+    const firstLine = text.split('\n').find((line) => line.includes('does not exist')) || text;
+    return firstLine.slice(0, 240);
+  }
+  const firstLine = text.split('\n')[0] || text;
+  return firstLine.slice(0, 240);
+}
+
+async function gaussTableExists(config, password, schemaName, tableName) {
+  const rows = await gaussdbJdbcQuery(
+    `SELECT 1 AS ok
+     FROM information_schema.tables
+     WHERE table_schema = ? AND table_name = ?
+     LIMIT 1`,
+    [schemaName, tableName],
+    config,
+    password,
+  );
+  return rows.length > 0;
+}
+
+async function mysqlTableExists(config, password, schemaName, tableName) {
+  const mysql = loadMysql();
+  const dbName = schemaName || config.database;
+  const connection = await mysql.createConnection(mysqlConnectionConfig(config, password));
+  try {
+    const [rows] = await connection.query(
+      `SELECT 1 AS ok
+       FROM information_schema.tables
+       WHERE table_schema = ? AND table_name = ?
+       LIMIT 1`,
+      [dbName, tableName],
+    );
+    return rows.length > 0;
+  } finally {
+    await connection.end();
+  }
+}
+
+async function tableExists(config, password, schemaName, tableName) {
+  const type = config.type || 'gaussdb';
+  assertSupported(type);
+  const schema = String(schemaName || '').trim();
+  const table = String(tableName || '').trim();
+  if (!schema || !table) throw new Error('schemaName 与 tableName 不能为空');
+  if (type === 'gaussdb') return gaussTableExists(config, password, schema, table);
+  if (type === 'mysql') return mysqlTableExists(config, password, schema, table);
+  throw new UnsupportedDbTypeError(type);
+}
+
 module.exports = {
   testConnection,
   listSchemas,
@@ -747,6 +812,9 @@ module.exports = {
   countTableColumns,
   deepSearchTableValues,
   normalizePreviewColumns,
+  tableExists,
+  formatTableNotFoundMessage,
+  shortenDbError,
   normalizeExportColumns,
   toDDL,
   isTextType,

@@ -30,6 +30,8 @@
     "dev": "node scripts/dev.mjs",
     "build:web": "vite build --config web/vite.config.ts",
     "build": "npm run build:web",
-    "start": "NODE_ENV=production node server/src/index.js"
+    "start": "NODE_ENV=production node server/src/index.js",
+    "test": "node --test server/test/**/*.test.js",
+    "test:server": "node --test server/test/**/*.test.js"
   }
 }

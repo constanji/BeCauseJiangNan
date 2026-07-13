@@ -11,15 +11,18 @@ function parseContent(content) {
 function columnSearchParts(col) {
   const name = String(col.name || '').trim();
   const desc = String(col.description || '').trim();
-  return [name, desc].filter(Boolean);
+  const samples = columnSampleParts(col);
+  return [name, desc, ...samples].filter(Boolean);
 }
 
 function buildColumnSearchText(content) {
   const obj = parseContent(content);
   if (!obj?.columns) return '';
-  return obj.columns
+  const tableDesc = String(obj.tableDescription || '').trim();
+  const columnText = obj.columns
     .flatMap(columnSearchParts)
     .join(' ');
+  return [tableDesc, columnText].filter(Boolean).join(' ');
 }
 
 function columnMatchesQuery(col, query) {
