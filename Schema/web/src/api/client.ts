@@ -155,7 +155,7 @@ export const api = {
   exportExcel: (id: string, body: unknown, signal?: AbortSignal) => blob(`/api/data-sources/${id}/export/excel`, { method: 'POST', body: JSON.stringify(body), signal }),
 
   listTags: () => json<Tag[]>('/api/tags'),
-  createTag: (body: { name: string; color?: string }) => json<Tag>('/api/tags', { method: 'POST', body: JSON.stringify(body) }),
+  createTag: (body: { name: string; color?: string; parentId?: number }) => json<Tag>('/api/tags', { method: 'POST', body: JSON.stringify(body) }),
   updateTag: (id: number, body: { name?: string; color?: string }) => json<Tag>(`/api/tags/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   deleteTag: (id: number) => json(`/api/tags/${id}`, { method: 'DELETE' }),
 

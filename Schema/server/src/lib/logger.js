@@ -20,6 +20,22 @@ function formatExtra(extra) {
       parts.push(`耗时 ${formatDuration(Number(value))}`);
       continue;
     }
+    if (key === 'lightSchemaId') {
+      parts.push(`LS#${value}`);
+      continue;
+    }
+    if (key === 'dataSourceId') {
+      parts.push(`数据源#${value}`);
+      continue;
+    }
+    if (key === 'rowCount') {
+      parts.push(`${value} 行`);
+      continue;
+    }
+    if (key === 'columnCount') {
+      parts.push(`${value} 列`);
+      continue;
+    }
     parts.push(`${key}=${value}`);
   }
   return parts.length > 0 ? ` | ${parts.join(' | ')}` : '';

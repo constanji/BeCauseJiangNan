@@ -18,7 +18,7 @@ function hasColumn(database, table, column) {
   return rows.some((row) => row.name === column);
 }
 
-const DB_SCHEMA_VERSION = 2;
+const DB_SCHEMA_VERSION = 3;
 
 function getDbSchemaVersion(database) {
   return Number(database.pragma('user_version', { simple: true }) || 0);
@@ -89,10 +89,12 @@ function migrate(database) {
 
     CREATE TABLE IF NOT EXISTS tags (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
       color TEXT,
+      parent_id INTEGER,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(parent_id) REFERENCES tags(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS light_schema_tags (
@@ -141,6 +143,7 @@ function migrate(database) {
   `);
 
   migrateCatalogSchemasNullable(database);
+  migrateTagsHierarchy(database);
 
   if (!hasColumn(database, 'light_schemas', 'column_search_text')) {
     database.exec('ALTER TABLE light_schemas ADD COLUMN column_search_text TEXT');
@@ -154,6 +157,9 @@ function migrate(database) {
     CREATE INDEX IF NOT EXISTS idx_light_schemas_ds_schema ON light_schemas(data_source_id, schema_name);
     CREATE INDEX IF NOT EXISTS idx_light_schema_tags_tag ON light_schema_tags(tag_id);
     CREATE INDEX IF NOT EXISTS idx_light_schemas_search ON light_schemas(column_search_text);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_tags_root_name ON tags(name) WHERE parent_id IS NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_tags_child_name ON tags(parent_id, name) WHERE parent_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_tags_parent ON tags(parent_id);
   `);
 
   backfillColumnSearchText(database);
@@ -162,6 +168,28 @@ function migrate(database) {
     rebuildColumnSearchTextIndex(database);
     setDbSchemaVersion(database, DB_SCHEMA_VERSION);
   }
+}
+
+function migrateTagsHierarchy(database) {
+  if (hasColumn(database, 'tags', 'parent_id')) return;
+  database.exec(`
+    CREATE TABLE tags_hierarchy (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      color TEXT,
+      parent_id INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(parent_id) REFERENCES tags_hierarchy(id) ON DELETE CASCADE
+    );
+    INSERT INTO tags_hierarchy (id, name, color, parent_id, created_at, updated_at)
+      SELECT id, name, color, NULL, created_at, updated_at FROM tags;
+    DROP TABLE tags;
+    ALTER TABLE tags_hierarchy RENAME TO tags;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_tags_root_name ON tags(name) WHERE parent_id IS NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_tags_child_name ON tags(parent_id, name) WHERE parent_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_tags_parent ON tags(parent_id);
+  `);
 }
 
 function migrateCatalogSchemasNullable(database) {

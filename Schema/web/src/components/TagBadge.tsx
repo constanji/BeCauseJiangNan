@@ -1,5 +1,6 @@
 import React from 'react';
 import { Tag } from '../lib/uiState';
+import { getTagDisplayName } from '../lib/tagDisplay';
 import { cn } from '../lib/cn';
 
 export default function TagBadge({
@@ -31,7 +32,7 @@ export default function TagBadge({
         className="block h-1.5 w-1.5 shrink-0 rounded-full"
         style={{ backgroundColor: color }}
       />
-      {tag.name}
+      {getTagDisplayName(tag)}
     </span>
   );
 }

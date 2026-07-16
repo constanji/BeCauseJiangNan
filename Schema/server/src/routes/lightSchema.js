@@ -3,9 +3,10 @@ const { getDb, now } = require('../db/sqlite');
 const { decrypt } = require('../services/crypto');
 const { getTableSchema, isTableEmpty } = require('../services/DatabaseService');
 const { buildColumnSearchText } = require('../lib/lightSchemaIndex');
-const { updateLightSchemaById, deleteLightSchemaById } = require('../lib/lightSchemaContent');
+const { updateLightSchemaById, deleteLightSchemaById, getLightSchemaRow } = require('../lib/lightSchemaContent');
 const { toConnectionConfig } = require('../lib/dataSourceConfig');
 const logger = require('../lib/logger');
+const { logLightSchemaUpdate, logLightSchemaDelete } = require('../lib/operationLog');
 const { formatDuration, progressPrefix } = require('../lib/formatDuration');
 const { withTimeout, TimeoutError, slowTableThresholdMs } = require('../lib/withTimeout');
 
@@ -203,11 +204,21 @@ router.get('/:tableName', (req, res) => {
 router.put('/:tableName', (req, res) => {
   const schemaName = typeof req.query.schemaName === 'string' ? req.query.schemaName : 'public';
   const row = getDb()
-    .prepare('SELECT id FROM light_schemas WHERE data_source_id = ? AND schema_name = ? AND table_name = ?')
+    .prepare(`
+      SELECT ls.*, ds.name AS data_source_name
+      FROM light_schemas ls
+      JOIN data_sources ds ON ds.id = ls.data_source_id
+      WHERE ls.data_source_id = ? AND ls.schema_name = ? AND ls.table_name = ?
+    `)
     .get(req.params.id, schemaName, req.params.tableName);
-  if (!row) return res.status(404).json({ success: false, error: '未找到 LightSchema' });
+  if (!row) {
+    logger.error(`LightSchema 更新失败 · 数据源#${req.params.id} · ${schemaName}.${req.params.tableName} · 未找到`);
+    return res.status(404).json({ success: false, error: '未找到 LightSchema' });
+  }
+  const beforeContent = row.content;
   try {
     const { normalized, ddlText, updatedAt } = updateLightSchemaById(row.id, req.body?.content);
+    logLightSchemaUpdate(row, beforeContent, normalized);
     res.json({
       success: true,
       data: {
@@ -221,16 +232,29 @@ router.put('/:tableName', (req, res) => {
       },
     });
   } catch (error) {
+    logLightSchemaUpdate(row, beforeContent, null, error);
     res.status(400).json({ success: false, error: error.message });
   }
 });
 
 router.delete('/:tableName', (req, res) => {
   const schemaName = typeof req.query.schemaName === 'string' ? req.query.schemaName : 'public';
-  const result = getDb()
-    .prepare('DELETE FROM light_schemas WHERE data_source_id = ? AND schema_name = ? AND table_name = ?')
-    .run(req.params.id, schemaName, req.params.tableName);
-  res.json({ success: true, deleted: result.changes > 0 });
+  const idRow = getDb()
+    .prepare('SELECT id FROM light_schemas WHERE data_source_id = ? AND schema_name = ? AND table_name = ?')
+    .get(req.params.id, schemaName, req.params.tableName);
+  if (!idRow) {
+    logger.warn(`LightSchema 整表删除 · 数据源#${req.params.id} · ${schemaName}.${req.params.tableName} · 未找到记录`);
+    return res.json({ success: true, deleted: false });
+  }
+  const row = getLightSchemaRow(idRow.id);
+  try {
+    deleteLightSchemaById(idRow.id);
+    logLightSchemaDelete(row, true);
+    res.json({ success: true, deleted: true });
+  } catch (error) {
+    logLightSchemaDelete(row, false, error);
+    res.status(400).json({ success: false, error: error.message });
+  }
 });
 
 module.exports = router;

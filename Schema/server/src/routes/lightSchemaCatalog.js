@@ -23,12 +23,22 @@ const {
   normalizePreviewColumns,
   deepSearchTableValues,
   isTextType,
-  tableExists,
   formatTableNotFoundMessage,
   shortenDbError,
 } = require('../services/DatabaseService');
 const { toConnectionConfig } = require('../lib/dataSourceConfig');
 const { isSupportedType } = require('../lib/dbTypes');
+const {
+  buildCtxFromRow,
+  buildCtxFromSource,
+  logLightSchemaUpdate,
+  logLightSchemaDelete,
+  logDbQueryStart,
+  logDbQueryOk,
+  logDbQueryFail,
+  logDbTableMissing,
+} = require('../lib/operationLog');
+const logger = require('../lib/logger');
 
 const router = express.Router();
 const DEEP_SEARCH_CONCURRENCY = 4;
@@ -38,6 +48,7 @@ function writeNdjsonEvent(res, type, payload = {}) {
 }
 
 const { runConcurrentScan } = require('../lib/concurrentScan');
+const { fetchTagsForSchemaIds: loadTagsForSchemaIds } = require('../lib/tagHelpers');
 
 function parseTagIds(raw) {
   if (raw == null || raw === '') return [];
@@ -46,21 +57,7 @@ function parseTagIds(raw) {
 }
 
 function fetchTagsForSchemaIds(ids) {
-  if (ids.length === 0) return new Map();
-  const placeholders = ids.map(() => '?').join(',');
-  const rows = getDb().prepare(`
-    SELECT lst.light_schema_id, t.id, t.name, t.color
-    FROM light_schema_tags lst
-    JOIN tags t ON t.id = lst.tag_id
-    WHERE lst.light_schema_id IN (${placeholders})
-    ORDER BY t.name COLLATE NOCASE
-  `).all(...ids);
-  const map = new Map();
-  for (const row of rows) {
-    if (!map.has(row.light_schema_id)) map.set(row.light_schema_id, []);
-    map.get(row.light_schema_id).push({ id: row.id, name: row.name, color: row.color });
-  }
-  return map;
+  return loadTagsForSchemaIds(getDb(), ids);
 }
 
 function toCatalogItem(row, tags = []) {
@@ -136,14 +133,20 @@ router.get('/stats', (req, res) => {
   }));
 
   const byTag = db.prepare(`
-    SELECT t.id, t.name, t.color, COUNT(lst.light_schema_id) AS count
+    SELECT t.id, t.name, t.color, t.parent_id, p.name AS parent_name,
+      COUNT(lst.light_schema_id) AS count
     FROM tags t
+    LEFT JOIN tags p ON p.id = t.parent_id
     LEFT JOIN light_schema_tags lst ON lst.tag_id = t.id
     GROUP BY t.id
-    ORDER BY t.name COLLATE NOCASE
+    ORDER BY COALESCE(p.name, t.name) COLLATE NOCASE,
+      CASE WHEN t.parent_id IS NULL THEN 0 ELSE 1 END,
+      t.name COLLATE NOCASE
   `).all().map((row) => ({
     tagId: row.id,
     tagName: row.name,
+    displayName: row.parent_name ? `${row.parent_name}：${row.name}` : row.name,
+    parentId: row.parent_id ?? null,
     color: row.color,
     count: Number(row.count || 0),
   }));
@@ -524,20 +527,28 @@ router.put('/:id', (req, res) => {
   if (!Number.isInteger(id) || id <= 0) {
     return res.status(400).json({ success: false, error: '无效的 ID' });
   }
+  const row = getLightSchemaRow(id);
+  if (!row) {
+    logger.error(`LightSchema 更新失败 · LS#${id} · 未找到`);
+    return res.status(404).json({ success: false, error: '未找到 LightSchema' });
+  }
+  const beforeContent = row.content;
   try {
     const { normalized, ddlText, updatedAt } = updateLightSchemaById(id, req.body?.content);
+    logLightSchemaUpdate(row, beforeContent, normalized);
     const tags = fetchTagsForSchemaIds([id]).get(id) || [];
-    const row = getLightSchemaRow(id);
+    const updatedRow = getLightSchemaRow(id);
     res.json({
       success: true,
       data: {
-        ...toCatalogItem(row, tags),
+        ...toCatalogItem(updatedRow, tags),
         content: normalized,
         ddlText,
-        createdAt: row.created_at,
+        createdAt: updatedRow.created_at,
       },
     });
   } catch (error) {
+    logLightSchemaUpdate(row, beforeContent, null, error);
     const status = error.message === '未找到 LightSchema' ? 404 : 400;
     res.status(status).json({ success: false, error: error.message });
   }
@@ -548,10 +559,17 @@ router.delete('/:id', (req, res) => {
   if (!Number.isInteger(id) || id <= 0) {
     return res.status(400).json({ success: false, error: '无效的 ID' });
   }
+  const row = getLightSchemaRow(id);
+  if (!row) {
+    logger.warn(`LightSchema 整表删除 · LS#${id} · 未找到记录`);
+    return res.status(404).json({ success: false, error: '未找到 LightSchema' });
+  }
   try {
     deleteLightSchemaById(id);
+    logLightSchemaDelete(row, true);
     res.json({ success: true, deleted: true });
   } catch (error) {
+    logLightSchemaDelete(row, false, error);
     const status = error.message === '未找到 LightSchema' ? 404 : 400;
     res.status(status).json({ success: false, error: error.message });
   }
@@ -599,15 +617,18 @@ router.post('/:id/preview-rows', async (req, res) => {
     return res.status(501).json({ success: false, error: `暂不支持的数据源类型: ${dataSource.type}` });
   }
 
+  const ctx = buildCtxFromRow(row, dataSource);
+  const startedAt = Date.now();
+  logDbQueryStart('查看数据', ctx, {
+    columns: columns.length,
+    limit,
+    filters: rawFilters.length,
+    dedupeBy: dedupeBy || undefined,
+  });
+
   try {
     const password = decrypt(source.password_enc);
-    const exists = await tableExists(dataSource, password, row.schema_name, row.table_name);
-    if (!exists) {
-      return res.status(404).json({
-        success: false,
-        error: formatTableNotFoundMessage(row.schema_name, row.table_name),
-      });
-    }
+    // 不做 tableExists 预检：GaussDB 每次 JDBC 都会冷启动 Java 进程，预检会使耗时接近翻倍
     const result = await queryTableRows(dataSource, password, {
       schemaName: row.schema_name,
       tableName: row.table_name,
@@ -616,9 +637,21 @@ router.post('/:id/preview-rows', async (req, res) => {
       limit,
       dedupeBy,
     });
+    logDbQueryOk('查看数据', ctx, result, Date.now() - startedAt);
     res.json({ success: true, data: result });
   } catch (error) {
-    res.status(500).json({ success: false, error: shortenDbError(error.message || String(error)) });
+    const friendly = shortenDbError(error.message || String(error));
+    const missing = /不存在表|does not exist/i.test(friendly)
+      || /不存在表|does not exist/i.test(String(error.message || error));
+    if (missing) {
+      logDbTableMissing('查看数据', ctx);
+      return res.status(404).json({
+        success: false,
+        error: formatTableNotFoundMessage(row.schema_name, row.table_name),
+      });
+    }
+    logDbQueryFail('查看数据', ctx, error, Date.now() - startedAt);
+    res.status(500).json({ success: false, error: friendly });
   }
 });
 
@@ -657,6 +690,10 @@ router.post('/:id/preview-distinct', async (req, res) => {
     return res.status(501).json({ success: false, error: `暂不支持的数据源类型: ${dataSource.type}` });
   }
 
+  const ctx = buildCtxFromRow(row, dataSource);
+  const startedAt = Date.now();
+  logDbQueryStart('列 distinct 值', ctx, { column, limit });
+
   try {
     const password = decrypt(source.password_enc);
     const result = await queryDistinctColumnValues(dataSource, password, {
@@ -665,8 +702,10 @@ router.post('/:id/preview-distinct', async (req, res) => {
       column,
       limit,
     });
+    logDbQueryOk('列 distinct 值', ctx, { values: result, rowCount: result.length }, Date.now() - startedAt);
     res.json({ success: true, data: result });
   } catch (error) {
+    logDbQueryFail('列 distinct 值', ctx, error, Date.now() - startedAt);
     res.status(500).json({ success: false, error: error.message || String(error) });
   }
 });

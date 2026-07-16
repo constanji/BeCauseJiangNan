@@ -14,7 +14,6 @@ const {
   queryTableRows,
   queryDistinctColumnValues,
   normalizePreviewColumns,
-  tableExists,
   formatTableNotFoundMessage,
   shortenDbError,
 } = require('../services/DatabaseService');
@@ -24,6 +23,14 @@ const {
   getColumnCount,
 } = require('../lib/lightSchemaIndex');
 const { toConnectionConfig } = require('../lib/dataSourceConfig');
+const {
+  buildCtxFromSource,
+  logDbQueryStart,
+  logDbQueryOk,
+  logDbQueryFail,
+  logDbTableMissing,
+} = require('../lib/operationLog');
+const { fetchTagsForSchemaIds: loadTagsForSchemaIds } = require('../lib/tagHelpers');
 
 const router = express.Router({ mergeParams: true });
 
@@ -119,22 +126,8 @@ function fetchLightSchemaByTables(dataSourceId, schemaName, tableNames) {
     JOIN data_sources ds ON ds.id = ls.data_source_id
     WHERE ls.data_source_id = ? AND ls.schema_name = ? AND ls.table_name IN (${placeholders})
   `).all(dataSourceId, schemaName, ...tableNames);
-  const tagIds = rows.map((row) => row.id);
-  const tagMap = new Map();
-  if (tagIds.length > 0) {
-    const tagPlaceholders = tagIds.map(() => '?').join(',');
-    const tagRows = getDb().prepare(`
-      SELECT lst.light_schema_id, t.id, t.name, t.color
-      FROM light_schema_tags lst
-      JOIN tags t ON t.id = lst.tag_id
-      WHERE lst.light_schema_id IN (${tagPlaceholders})
-      ORDER BY t.name COLLATE NOCASE
-    `).all(...tagIds);
-    for (const row of tagRows) {
-      if (!tagMap.has(row.light_schema_id)) tagMap.set(row.light_schema_id, []);
-      tagMap.get(row.light_schema_id).push({ id: row.id, name: row.name, color: row.color });
-    }
-  }
+  const schemaIds = rows.map((row) => row.id);
+  const tagMap = schemaIds.length > 0 ? loadTagsForSchemaIds(getDb(), schemaIds) : new Map();
   const map = new Map();
   for (const row of rows) {
     map.set(row.table_name, {
@@ -220,7 +213,11 @@ router.get('/schemas/:schemaName/tables/:tableName/preview', async (req, res) =>
   try {
     const config = creds(source);
     const password = decrypt(source.password_enc);
+    const ctx = buildCtxFromSource(source, config, schemaName, tableName);
+    const startedAt = Date.now();
+    logDbQueryStart('查看表结构', ctx, { sampleLimit: 5 });
     const schema = await getTableSchema(config, password, schemaName, tableName, 5, 'text_only');
+    logDbQueryOk('查看表结构', ctx, { rowCount: schema.columns?.length || 0 }, Date.now() - startedAt);
     const ls = getDb().prepare(`
       SELECT id FROM light_schemas
       WHERE data_source_id = ? AND schema_name = ? AND table_name = ?
@@ -243,6 +240,8 @@ router.get('/schemas/:schemaName/tables/:tableName/preview', async (req, res) =>
       },
     });
   } catch (err) {
+    const config = creds(source);
+    logDbQueryFail('查看表结构', buildCtxFromSource(source, config, schemaName, tableName), err);
     handleDbError(err, res);
   }
 });
@@ -275,13 +274,15 @@ router.post('/schemas/:schemaName/tables/:tableName/preview-rows', async (req, r
   try {
     const config = creds(source);
     const password = decrypt(source.password_enc);
-    const exists = await tableExists(config, password, schemaName, tableName);
-    if (!exists) {
-      return res.status(404).json({
-        success: false,
-        error: formatTableNotFoundMessage(schemaName, tableName),
-      });
-    }
+    const ctx = buildCtxFromSource(source, config, schemaName, tableName);
+    const startedAt = Date.now();
+    logDbQueryStart('查看数据', ctx, {
+      columns: columns.length,
+      limit,
+      filters: rawFilters.length,
+      dedupeBy: dedupeBy || undefined,
+    });
+    // 不做 tableExists 预检：GaussDB 每次 JDBC 都会冷启动 Java 进程，预检会使耗时接近翻倍
     const result = await queryTableRows(config, password, {
       schemaName,
       tableName,
@@ -290,12 +291,25 @@ router.post('/schemas/:schemaName/tables/:tableName/preview-rows', async (req, r
       limit,
       dedupeBy,
     });
+    logDbQueryOk('查看数据', ctx, result, Date.now() - startedAt);
     res.json({ success: true, data: result });
   } catch (err) {
+    const config = creds(source);
+    const friendly = shortenDbError(err);
+    const missing = /不存在表|does not exist/i.test(String(friendly))
+      || /不存在表|does not exist/i.test(String(err?.message || err));
+    if (missing) {
+      logDbTableMissing('查看数据', buildCtxFromSource(source, config, schemaName, tableName));
+      return res.status(404).json({
+        success: false,
+        error: formatTableNotFoundMessage(schemaName, tableName),
+      });
+    }
+    logDbQueryFail('查看数据', buildCtxFromSource(source, config, schemaName, tableName), err);
     if (err.code === 'UNSUPPORTED_DB_TYPE' || err.name === 'UnsupportedDbTypeError') {
       return res.status(501).json({ success: false, error: err.message, code: 'UNSUPPORTED_DB_TYPE' });
     }
-    return res.status(500).json({ success: false, error: shortenDbError(err) });
+    return res.status(500).json({ success: false, error: friendly });
   }
 });
 
@@ -311,14 +325,20 @@ router.post('/schemas/:schemaName/tables/:tableName/preview-distinct', async (re
   try {
     const config = creds(source);
     const password = decrypt(source.password_enc);
+    const ctx = buildCtxFromSource(source, config, schemaName, tableName);
+    const startedAt = Date.now();
+    logDbQueryStart('列 distinct 值', ctx, { column, limit });
     const result = await queryDistinctColumnValues(config, password, {
       schemaName,
       tableName,
       column,
       limit,
     });
+    logDbQueryOk('列 distinct 值', ctx, { values: result, rowCount: result.length }, Date.now() - startedAt);
     res.json({ success: true, data: result });
   } catch (err) {
+    const config = creds(source);
+    logDbQueryFail('列 distinct 值', buildCtxFromSource(source, config, schemaName, tableName), err);
     handleDbError(err, res);
   }
 });

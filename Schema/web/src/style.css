@@ -42,6 +42,7 @@ body {
   .border-border-medium { border-color: var(--border-medium); }
   .border-brand { border-color: var(--brand); }
   .text-brand { color: var(--brand); }
+  .bg-brand { background-color: var(--brand); }
   .bg-brand-muted { background-color: var(--brand-muted); }
 }
 
