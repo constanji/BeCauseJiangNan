@@ -103,3 +103,70 @@ export function isToolOutputError(output?: string | null): boolean {
   }
   return hasExplicitSuccessFalse(output);
 }
+
+const toolErrorCategoryLabelMap: Record<string, string> = {
+  SQL_POLICY: 'SQL策略拒绝',
+  DATASOURCE_CONFIG: '数据源配置',
+  CONNECTION: '连接失败',
+  AUTH: '认证失败',
+  SQL_SYNTAX: 'SQL语法错误',
+  SQL_SEMANTIC: '表/字段错误',
+  TIMEOUT: '查询超时',
+  PERMISSION: '权限不足',
+  UNKNOWN: '执行失败',
+};
+
+export type StructuredToolFailure = {
+  error: string;
+  code?: string;
+  category?: string;
+  categoryLabel?: string;
+  hint?: string;
+};
+
+/**
+ * 解析结构化工具失败（success:false + error/code/category/hint），供 UI 展示。
+ */
+export function parseStructuredToolFailure(output?: string | null): StructuredToolFailure | null {
+  if (typeof output !== 'string' || output.length === 0) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(output);
+    if (!parsed || typeof parsed !== 'object' || parsed.success !== false) {
+      return null;
+    }
+    const error = typeof parsed.error === 'string' ? parsed.error : '';
+    if (!error) {
+      return null;
+    }
+    const category = typeof parsed.category === 'string' ? parsed.category : undefined;
+    return {
+      error,
+      code: typeof parsed.code === 'string' ? parsed.code : undefined,
+      category,
+      categoryLabel: category ? toolErrorCategoryLabelMap[category] || category : undefined,
+      hint: typeof parsed.hint === 'string' ? parsed.hint : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** 一行可读的失败摘要：【类别】错误。提示 */
+export function formatToolFailureSummary(output?: string | null): string | null {
+  const failure = parseStructuredToolFailure(output);
+  if (!failure) {
+    return null;
+  }
+  const parts: string[] = [];
+  if (failure.categoryLabel) {
+    parts.push(`【${failure.categoryLabel}】${failure.error}`);
+  } else {
+    parts.push(failure.error);
+  }
+  if (failure.hint) {
+    parts.push(failure.hint);
+  }
+  return parts.join('。');
+}

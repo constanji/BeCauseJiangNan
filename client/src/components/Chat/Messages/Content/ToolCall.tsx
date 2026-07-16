@@ -9,7 +9,7 @@ import ToolCallInfo from './ToolCallInfo';
 import ProgressText from './ProgressText';
 import { logger, cn } from '~/utils';
 import { extractChartDataFromToolOutput } from './ChartRenderer';
-import { extractBecauseSkillsCommand, isToolOutputError } from '~/utils/toolCallDisplay';
+import { extractBecauseSkillsCommand, formatToolFailureSummary, isToolOutputError } from '~/utils/toolCallDisplay';
 
 export default function ToolCall({
   initialProgress = 0.1,
@@ -68,6 +68,7 @@ export default function ToolCall({
   }, [function_name, _args]);
 
   const error = isToolOutputError(output);
+  const failureSummary = useMemo(() => (error ? formatToolFailureSummary(output) : null), [error, output]);
 
   const args = useMemo(() => {
     if (typeof _args === 'string') {
@@ -219,6 +220,12 @@ export default function ToolCall({
           error={cancelled}
         />
       </div>
+      {failureSummary && (
+        <p className="mb-2 mt-0.5 flex items-start gap-1.5 text-xs text-red-600 dark:text-red-400">
+          <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span className="leading-relaxed">{failureSummary}</span>
+        </p>
+      )}
       <div
         className="relative"
         style={{

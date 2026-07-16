@@ -6,6 +6,11 @@ const { logger } = require('@because/data-schemas');
 const { decryptV2 } = require('@because/api');
 const path = require('path');
 const { gaussdbJdbcQuery } = require(path.join(__dirname, '../../utils/gaussdbJdbcBridge'));
+const {
+  CATEGORY,
+  stringifySqlExecutorError,
+  formatSqlExecutorError,
+} = require(path.join(__dirname, '../../../api/server/utils/formatSqlExecutorError'));
 // 延迟加载模型函数，避免路径别名问题
 let getDataSourceById = null;
 let getProjectById = null;
@@ -435,28 +440,26 @@ class SqlExecutorTool extends Tool {
     const isSelectQuery = upper.startsWith('SELECT');
     
     if (!isWithClause && !isSelectQuery) {
-      return JSON.stringify(
-        {
-          success: false,
-          error: '只允许执行SELECT查询或WITH子句（CTE），请不要包含INSERT/UPDATE/DELETE/DDL等写操作。',
-        },
-        null,
-        2,
-      );
+      return stringifySqlExecutorError({
+        error: '只允许执行SELECT查询或WITH子句（CTE），请不要包含INSERT/UPDATE/DELETE/DDL等写操作。',
+        code: 'NOT_READONLY',
+        category: CATEGORY.SQL_POLICY,
+        hint: '请改写为 SELECT 或 WITH ... AS (SELECT ...) 只读查询',
+        sql: trimmedSql,
+      });
     }
 
     // 如果是以WITH开头，验证其结构：WITH ... AS (SELECT ...)
     if (isWithClause) {
       // 检查WITH子句是否包含SELECT（这是只读查询的标志）
       if (!upper.includes('SELECT')) {
-        return JSON.stringify(
-          {
-            success: false,
-            error: 'WITH子句必须包含SELECT查询，不允许包含写操作。',
-          },
-          null,
-          2,
-        );
+        return stringifySqlExecutorError({
+          error: 'WITH子句必须包含SELECT查询，不允许包含写操作。',
+          code: 'WITH_MISSING_SELECT',
+          category: CATEGORY.SQL_POLICY,
+          hint: '每个 CTE 体应为 SELECT；禁止在 WITH 中写 INSERT/UPDATE/DELETE',
+          sql: trimmedSql,
+        });
       }
 
       // 确保WITH子句中没有写操作
@@ -464,8 +467,7 @@ class SqlExecutorTool extends Tool {
       const withMatches = trimmedSql.matchAll(/\bWITH\s+(\w+)\s+AS\s*\(([\s\S]*?)\)/gi);
       for (const match of withMatches) {
         const cteBody = match[2];
-        const cteUpper = cteBody.toUpperCase();
-        
+
         // 检查CTE体中是否有写操作
         const writeOps = [
           /\bINSERT\s+INTO\b/i,
@@ -474,17 +476,16 @@ class SqlExecutorTool extends Tool {
           /\bDROP\s+(TABLE|DATABASE)\b/i,
           /\bCREATE\s+(TABLE|DATABASE)\b/i,
         ];
-        
+
         for (const pattern of writeOps) {
           if (pattern.test(cteBody)) {
-            return JSON.stringify(
-              {
-                success: false,
-                error: `WITH子句 "${match[1]}" 中包含写操作，不允许执行。`,
-              },
-              null,
-              2,
-            );
+            return stringifySqlExecutorError({
+              error: `WITH子句 "${match[1]}" 中包含写操作，不允许执行。`,
+              code: 'WITH_WRITE_FORBIDDEN',
+              category: CATEGORY.SQL_POLICY,
+              hint: 'CTE 仅允许只读 SELECT；请移除写操作后重试',
+              sql: trimmedSql,
+            });
           }
         }
       }
@@ -509,36 +510,35 @@ class SqlExecutorTool extends Tool {
     for (const pattern of dangerousPatterns) {
       if (pattern.test(trimmedSql)) {
         const match = trimmedSql.match(pattern);
-        return JSON.stringify(
-          {
-            success: false,
-            error: `检测到危险操作 "${match[0].trim()}"，出于安全考虑拒绝执行该查询。`,
-          },
-          null,
-          2,
-        );
+        return stringifySqlExecutorError({
+          error: `检测到危险操作 "${match[0].trim()}"，出于安全考虑拒绝执行该查询。`,
+          code: 'DANGEROUS_SQL',
+          category: CATEGORY.SQL_POLICY,
+          hint: '本工具仅允许只读查询；请删除 DDL/DML 后重试',
+          sql: trimmedSql,
+        });
       }
     }
 
+    let activeDataSource = null;
     try {
       // 获取数据源ID
       const dataSourceId = await this.getDataSourceId(input);
 
       if (!dataSourceId) {
-        // 如果没有配置数据源，返回错误
-        return JSON.stringify(
-          {
-            success: false,
-            error:
-              '未配置数据源。请先在左侧业务列表中选择数据源，或在调用工具时提供data_source_id参数。',
-          },
-          null,
-          2,
-        );
+        return stringifySqlExecutorError({
+          error:
+            '未配置数据源。请先在左侧业务列表中选择数据源，或在调用工具时提供data_source_id参数。',
+          code: 'DATASOURCE_NOT_CONFIGURED',
+          category: CATEGORY.DATASOURCE_CONFIG,
+          hint: '在 Agent/会话中绑定数据源，或调用时传入 data_source_id',
+          sql: trimmedSql,
+        });
       }
 
       // 获取连接池和数据源信息
       const { pool, dataSource } = await this.getConnectionPool(dataSourceId);
+      activeDataSource = dataSource;
 
       // 执行查询
       let rows = await this.executeQuery(trimmedSql, pool, dataSource);
@@ -566,6 +566,8 @@ class SqlExecutorTool extends Tool {
           ? {
               truncated: true,
               totalRowsInDB: totalRows,
+              warning: 'ROW_LIMIT',
+              warning_code: 'ROW_LIMIT',
               truncation_hint:
                 `结果已截断：数据库共返回 ${totalRows} 行，当前仅展示前 ${effectiveMax} 行。` +
                 `如需更多行，请在调用时传入 max_rows（最大 1000），` +
@@ -599,11 +601,7 @@ class SqlExecutorTool extends Tool {
       });
 
       return JSON.stringify(
-        {
-          success: false,
-          error: error.message || 'SQL执行失败',
-          sql: trimmedSql,
-        },
+        formatSqlExecutorError(error, { sql: trimmedSql, dataSource: activeDataSource }),
         null,
         2,
       );
