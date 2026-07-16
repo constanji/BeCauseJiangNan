@@ -16,6 +16,7 @@ import {
 import { api } from '../api/client';
 import Button from '../components/Button';
 import CatalogTableSidebar from '../components/CatalogTableSidebar';
+import FilterBar from '../components/FilterBar';
 import { HideInCartToggle } from '../components/ToggleSwitch';
 import LightSchemaEditor from '../components/LightSchemaEditor';
 import StatusBanner from '../components/StatusBanner';

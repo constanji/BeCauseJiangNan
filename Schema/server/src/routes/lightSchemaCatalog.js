@@ -252,14 +252,39 @@ router.get('/data-search', (req, res) => {
   const data = [];
   let totalColumns = 0;
 
+  const needle = q.toLowerCase();
   for (const row of rows) {
     const parsed = parseContent(row.content);
     if (!parsed?.columns) continue;
     const matches = [];
+    const tableNameHit = String(row.table_name || '').toLowerCase().includes(needle);
+    const tableDesc = String(parsed.tableDescription || '');
+    const tableDescHit = tableDesc.toLowerCase().includes(needle);
+
+    if (tableNameHit) {
+      matches.push({
+        columnName: '',
+        description: '',
+        snippet: row.table_name,
+        matchSource: 'table',
+        matchedValues: [],
+      });
+    } else if (tableDescHit) {
+      matches.push({
+        columnName: '',
+        description: tableDesc,
+        snippet: buildSnippet(tableDesc, q),
+        matchSource: 'comment',
+        matchedValues: [],
+      });
+    }
+
     for (const col of parsed.columns) {
+      const name = String(col.name || '');
       const desc = String(col.description || '');
       const sampleHit = columnMatchesSampleQuery(col, q);
-      const metaHit = columnMatchesQuery(col, q);
+      const nameHit = name.toLowerCase().includes(needle);
+      const descHit = desc.toLowerCase().includes(needle);
       if (sampleHit) {
         const hits = matchedSampleValues(col, q);
         matches.push({
@@ -269,18 +294,26 @@ router.get('/data-search', (req, res) => {
           matchSource: 'sample',
           matchedValues: hits,
         });
-      } else if (metaHit) {
+      } else if (nameHit) {
         matches.push({
           columnName: col.name,
           description: desc,
           snippet: buildColumnMatchSnippet(col, q),
-          matchSource: 'meta',
+          matchSource: 'column',
+          matchedValues: [],
+        });
+      } else if (descHit) {
+        matches.push({
+          columnName: col.name,
+          description: desc,
+          snippet: buildColumnMatchSnippet(col, q),
+          matchSource: 'comment',
           matchedValues: [],
         });
       }
     }
     if (matches.length === 0) continue;
-    totalColumns += matches.length;
+    totalColumns += matches.filter((m) => m.columnName).length;
     data.push({
       lightSchemaId: row.id,
       dataSourceId: String(row.data_source_id),

@@ -21,6 +21,7 @@ import {
 } from '../lib/reviewTableDataCache';
 import Button from './Button';
 import StatusBanner from './StatusBanner';
+import { highlightText } from '../lib/highlightText';
 
 const DEBOUNCE_MS = 400;
 const DISTINCT_LIMIT = 200;
@@ -53,6 +54,14 @@ function computeVisibleColumns(
   return allColumns.filter((column) => (
     rows.some((row) => !isCellEmpty(getRowValue(row, column)))
   ));
+}
+
+function orderColumnsWithPriority(allColumns: string[], priorityColumns: string[]) {
+  if (priorityColumns.length === 0) return allColumns;
+  const prioritySet = new Set(priorityColumns);
+  const first = priorityColumns.filter((col) => allColumns.includes(col));
+  const rest = allColumns.filter((col) => !prioritySet.has(col));
+  return [...first, ...rest];
 }
 
 function ColumnValuePicker({
@@ -212,6 +221,8 @@ export default function TableDataPreviewPanel({
   onClose,
   variant = 'modal',
   initialFilters,
+  highlightQuery = '',
+  priorityColumns = [],
 }: {
   catalogId?: number;
   remoteRef?: { dataSourceId: string; schemaName: string; tableName: string };
@@ -220,6 +231,10 @@ export default function TableDataPreviewPanel({
   onClose?: () => void;
   variant?: 'modal' | 'inline';
   initialFilters?: Record<string, string>;
+  /** 在命中列单元格内高亮关键词 */
+  highlightQuery?: string;
+  /** 优先展示并高亮的列（通常为搜索命中列） */
+  priorityColumns?: string[];
 }) {
   const parsed = parseLightSchemaContent(detail.content, detail.tableName);
   const columnNamesKey = React.useMemo(() => {
@@ -344,10 +359,15 @@ export default function TableDataPreviewPanel({
   const displayColumns = payload?.columns?.length ? payload.columns : columnNames;
   const rows = payload?.rows || [];
   const filtered = hasActiveFilters(filtersByColumn) || Boolean(payload?.filtered);
-  const visibleColumns = React.useMemo(
-    () => computeVisibleColumns(displayColumns, rows, filtered),
-    [displayColumns, rows, filtered],
+  const highlightQ = highlightQuery.trim();
+  const highlightColumnSet = React.useMemo(
+    () => new Set(priorityColumns.filter(Boolean)),
+    [priorityColumns],
   );
+  const visibleColumns = React.useMemo(() => {
+    const base = computeVisibleColumns(displayColumns, rows, filtered);
+    return orderColumnsWithPriority(base, priorityColumns);
+  }, [displayColumns, rows, filtered, priorityColumns]);
   const hiddenEmptyColumnCount = filtered ? displayColumns.length - visibleColumns.length : 0;
   const tableMissingHint = error != null && (
     error.includes('不存在') || error.includes('LightSchema 可能已过期')
@@ -376,10 +396,23 @@ export default function TableDataPreviewPanel({
             <table className="w-full min-w-max text-sm">
               <thead className="sticky top-0 z-10 bg-surface-secondary">
                 <tr className="border-b border-border-light text-left text-text-secondary">
-                  {visibleColumns.map((col) => (
-                    <th key={col} className="whitespace-nowrap px-3 py-2 font-medium text-text-primary">
+                  {visibleColumns.map((col) => {
+                    const isHitColumn = highlightColumnSet.has(col);
+                    return (
+                    <th
+                      key={col}
+                      className={cn(
+                        'whitespace-nowrap px-3 py-2 font-medium text-text-primary',
+                        isHitColumn && 'bg-brand/10',
+                      )}
+                    >
                       <div className="flex items-center gap-1">
                         <span className="truncate">{col}</span>
+                        {isHitColumn && (
+                          <span className="shrink-0 rounded bg-brand/15 px-1 py-0.5 text-[10px] font-normal leading-none text-brand">
+                            命中
+                          </span>
+                        )}
                         <button
                           type="button"
                           className={cn(
@@ -400,7 +433,8 @@ export default function TableDataPreviewPanel({
                         </button>
                       </div>
                     </th>
-                  ))}
+                    );
+                  })}
                 </tr>
                 <tr className="border-b border-border-light bg-surface-secondary text-left">
                   {visibleColumns.map((col) => {
@@ -473,15 +507,23 @@ export default function TableDataPreviewPanel({
                 ) : (
                   rows.map((row, rowIndex) => (
                     <tr key={rowIndex} className="border-t border-border-light hover:bg-surface-tertiary/30">
-                      {visibleColumns.map((col) => (
+                      {visibleColumns.map((col) => {
+                        const cellText = formatCell(getRowValue(row, col));
+                        const isHitColumn = highlightColumnSet.has(col);
+                        const shouldHighlight = isHitColumn && highlightQ.length > 0;
+                        return (
                         <td
                           key={`${rowIndex}-${col}`}
-                          className="max-w-[16rem] truncate px-3 py-2 text-text-primary"
-                          title={formatCell(getRowValue(row, col))}
+                          className={cn(
+                            'max-w-[16rem] truncate px-3 py-2 text-text-primary',
+                            isHitColumn && 'bg-brand/5',
+                          )}
+                          title={cellText}
                         >
-                          {formatCell(getRowValue(row, col))}
+                          {shouldHighlight ? highlightText(cellText, highlightQ) : cellText}
                         </td>
-                      ))}
+                        );
+                      })}
                     </tr>
                   ))
                 )}

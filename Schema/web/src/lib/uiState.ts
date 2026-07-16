@@ -35,11 +35,14 @@ export type CatalogDetail = CatalogItem & {
   createdAt?: string;
 };
 
+/** 命中来源：表名 / 列名 / 注释 / 采样值 / 实际数据（meta 为旧版兼容） */
+export type MatchSource = 'table' | 'column' | 'comment' | 'sample' | 'live' | 'meta';
+
 export type SearchMatch = {
   columnName: string;
   description: string;
   snippet: string;
-  matchSource?: 'meta' | 'sample' | 'live';
+  matchSource?: MatchSource;
   matchedValues?: string[];
 };
 
@@ -99,10 +102,6 @@ export type ExploreUiState = {
   q: string;
   dataSourceId: string;
   schemaName: string;
-  /** 轻量搜索：列名、列注释、采样值（本地 LightSchema） */
-  searchLight: boolean;
-  /** 深度搜索：连库扫描文本列全表数据 */
-  searchDeep: boolean;
 };
 
 export type ExportCartState = {
@@ -138,8 +137,6 @@ export const DEFAULT_UI_STATE: UiState = {
     q: '',
     dataSourceId: '',
     schemaName: '',
-    searchLight: true,
-    searchDeep: false,
   },
   review: {
     columnSearchQuery: '',
@@ -152,18 +149,10 @@ export const DEFAULT_UI_STATE: UiState = {
 };
 
 export function normalizeExploreState(raw: Partial<ExploreUiState> & Record<string, unknown> = {}): ExploreUiState {
-  let searchLight = true;
-  if (typeof raw.searchLight === 'boolean') {
-    searchLight = raw.searchLight;
-  } else if ('searchColumnMeta' in raw || 'searchSampleValues' in raw) {
-    searchLight = raw.searchColumnMeta === true || raw.searchSampleValues === true;
-  }
   return {
     q: typeof raw.q === 'string' ? raw.q : '',
     dataSourceId: typeof raw.dataSourceId === 'string' ? raw.dataSourceId : '',
     schemaName: typeof raw.schemaName === 'string' ? raw.schemaName : '',
-    searchLight,
-    searchDeep: raw.searchDeep === true,
   };
 }
 
