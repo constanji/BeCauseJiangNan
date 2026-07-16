@@ -1,5 +1,6 @@
 const { gaussdbJdbcQuery, gaussdbTestConnection } = require('../lib/gaussdbJdbcBridge');
 const { isSupportedType, UnsupportedDbTypeError } = require('../lib/dbTypes');
+const mockGaussdb = require('../mock/mockGaussdb');
 
 const TEXT_TYPES = new Set([
   'char', 'varchar', 'text', 'bpchar', 'name', 'citext', 'character varying', 'character',
@@ -173,6 +174,8 @@ async function queryTableRows(config, password, options) {
     rows = await gaussQueryTableRows(config, password, schemaName, tableName, columns, filters, limit, dedupeBy);
   } else if (type === 'mysql') {
     rows = await mysqlQueryTableRows(config, password, schemaName, tableName, columns, filters, limit, dedupeBy);
+  } else if (type === 'mock') {
+    rows = mockGaussdb.queryTableRows({ schemaName, tableName, columns, filters, limit, dedupeBy }).rows;
   } else {
     throw new UnsupportedDbTypeError(type);
   }
@@ -224,6 +227,8 @@ async function queryDistinctColumnValues(config, password, options) {
     values = await gaussQueryDistinctValues(config, password, schemaName, tableName, column, limit);
   } else if (type === 'mysql') {
     values = await mysqlQueryDistinctValues(config, password, schemaName, tableName, column, limit);
+  } else if (type === 'mock') {
+    values = mockGaussdb.queryDistinctColumnValues({ schemaName, tableName, column, limit }).values;
   } else {
     throw new UnsupportedDbTypeError(type);
   }
@@ -389,6 +394,7 @@ async function isTableEmpty(config, password, schemaName, tableName) {
   assertSupported(type);
   if (type === 'gaussdb') return gaussIsTableEmpty(config, password, schemaName, tableName);
   if (type === 'mysql') return mysqlIsTableEmpty(config, password, schemaName, tableName);
+  if (type === 'mock') return mockGaussdb.isTableEmpty(schemaName, tableName);
   throw new UnsupportedDbTypeError(type);
 }
 
@@ -491,6 +497,7 @@ async function mysqlListSchemas(config, password) {
 async function testConnection(config, password) {
   const type = config.type || 'gaussdb';
   assertSupported(type);
+  if (type === 'mock') return;
   if (type === 'gaussdb') {
     await gaussdbTestConnection(config, password);
     return;
@@ -509,6 +516,7 @@ async function testConnection(config, password) {
 async function listSchemas(config, password) {
   const type = config.type || 'gaussdb';
   assertSupported(type);
+  if (type === 'mock') return mockGaussdb.listSchemas();
   if (type === 'gaussdb') return gaussListSchemas(config, password);
   if (type === 'mysql') return mysqlListSchemas(config, password);
   return [];
@@ -517,6 +525,7 @@ async function listSchemas(config, password) {
 async function listTables(config, password, schemaName) {
   const type = config.type || 'gaussdb';
   assertSupported(type);
+  if (type === 'mock') return mockGaussdb.listTables(schemaName);
   if (type === 'gaussdb') return gaussListTables(config, password, schemaName);
   if (type === 'mysql') return mysqlListTables(config, password, schemaName);
   return [];
@@ -525,6 +534,10 @@ async function listTables(config, password, schemaName) {
 async function getTableSchema(config, password, schemaName, tableName, sampleLimit = 5, sampleScope = 'text_only') {
   const type = config.type || 'gaussdb';
   assertSupported(type);
+  if (type === 'mock') {
+    const table = mockGaussdb.getTableSchema(schemaName, tableName, sampleLimit, sampleScope);
+    return { ...table, ddlText: toDDL(table, sampleLimit) };
+  }
   if (type === 'gaussdb') {
     return gaussGetTableSchema(config, password, schemaName, tableName, sampleLimit, sampleScope);
   }
@@ -612,6 +625,7 @@ async function searchSchemaTables(config, password, options = {}) {
   const query = String(options.q || '').trim();
   if (!schemaName) throw new Error('schemaName 不能为空');
   if (!query) throw new Error('搜索关键词不能为空');
+  if (type === 'mock') return mockGaussdb.searchSchemaTables(schemaName, query);
   if (type === 'gaussdb') return gaussSearchSchemaTables(config, password, schemaName, query);
   if (type === 'mysql') return mysqlSearchSchemaTables(config, password, schemaName, query);
   throw new UnsupportedDbTypeError(type);
@@ -661,6 +675,7 @@ async function mysqlCountTableColumns(config, password, schemaName, tableNames) 
 async function countTableColumns(config, password, schemaName, tableNames) {
   const type = config.type || 'gaussdb';
   assertSupported(type);
+  if (type === 'mock') return mockGaussdb.countTableColumns(schemaName, tableNames);
   if (type === 'gaussdb') return gaussCountTableColumns(config, password, schemaName, tableNames);
   if (type === 'mysql') return mysqlCountTableColumns(config, password, schemaName, tableNames);
   throw new UnsupportedDbTypeError(type);
@@ -713,6 +728,15 @@ async function deepSearchTableValues(config, password, options = {}) {
   const limitPerColumn = Math.max(1, Math.min(Number(options.limitPerColumn || 5), 20));
   if (!schemaName || !tableName) throw new Error('schemaName 与 tableName 不能为空');
   if (!query) throw new Error('搜索关键词不能为空');
+  if (type === 'mock') {
+    return mockGaussdb.deepSearchTableValues({
+      schemaName,
+      tableName,
+      textColumns,
+      q: query,
+      limitPerColumn,
+    });
+  }
 
   const matches = [];
   for (const column of textColumns) {
@@ -795,6 +819,7 @@ async function tableExists(config, password, schemaName, tableName) {
   const schema = String(schemaName || '').trim();
   const table = String(tableName || '').trim();
   if (!schema || !table) throw new Error('schemaName 与 tableName 不能为空');
+  if (type === 'mock') return mockGaussdb.tableExists(schema, table);
   if (type === 'gaussdb') return gaussTableExists(config, password, schema, table);
   if (type === 'mysql') return mysqlTableExists(config, password, schema, table);
   throw new UnsupportedDbTypeError(type);

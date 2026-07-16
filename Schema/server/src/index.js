@@ -10,6 +10,7 @@ const exportRoutes = require('./routes/export');
 const tags = require('./routes/tags');
 const lightSchemaExport = require('./routes/lightSchemaExport');
 const lightSchemaCatalog = require('./routes/lightSchemaCatalog');
+const { seedMockDataSource, mockEnabled } = require('./mock/seedMockDataSource');
 
 const app = express();
 const port = Number(process.env.PORT || 4100);
@@ -37,6 +38,13 @@ app.use('/api/data-sources/:id', catalog);
 app.use('/api/data-sources/:id/light-schema', lightSchema);
 app.use('/api/data-sources/:id/light-schemas', lightSchema);
 app.use('/api/data-sources/:id/export', exportRoutes);
+
+const mockDataSourceId = seedMockDataSource();
+if (mockDataSourceId) {
+  logger.info(`mock data source ready · id=${mockDataSourceId}`, {
+    enabled: mockEnabled(),
+  });
+}
 
 if (fs.existsSync(webDist)) {
   app.use(express.static(webDist));

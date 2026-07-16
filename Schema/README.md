@@ -19,6 +19,7 @@ npm run dev
 
 - API: `http://localhost:4100`
 - Web: `http://localhost:5178`（Vite 代理 `/api` 到后端）
+- 开发环境默认会自动创建 `Mock GaussDB 数仓` 数据源，用于无 JDBC / 无真实 GaussDB 时测试多 Schema、生成、找表、深挖和导出链路。可设置 `SCHEMA_ENABLE_MOCK=0` 关闭。
 
 若 Java 未安装，`npm run compile-jdbc` 会提示手动编译：
 
@@ -68,6 +69,7 @@ docker run -p 4100:4100 -e SCHEMA_SERVER_SECRET=your-secret -v schema-data:/app/
 | `GAUSSDB_JDBC_PROTOCOL` | 默认 `postgresql` |
 | `GAUSSDB_JDBC_JAR` | JDBC jar 路径 |
 | `SCHEMA_DATA_DIR` | SQLite 数据目录 |
+| `SCHEMA_ENABLE_MOCK` | 是否启用内置 Mock GaussDB；开发默认启用，生产默认关闭 |
 
 ## 联调检查清单
 

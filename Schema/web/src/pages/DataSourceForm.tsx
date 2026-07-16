@@ -59,6 +59,7 @@ export default function DataSourceForm({ mode }: { mode: 'create' | 'edit' }) {
 
   const supported = isBackendSupported(form.type);
   const comingSoon = isComingSoon(form.type);
+  const isMock = form.type === 'mock';
 
   React.useEffect(() => {
     if (mode !== 'edit' || !params.id) return;
@@ -106,12 +107,12 @@ export default function DataSourceForm({ mode }: { mode: 'create' | 'edit' }) {
       setMessage(UNSUPPORTED_TYPE_MSG);
       return;
     }
-    if (!form.host || !form.port || !form.database || !form.username) {
+    if (!form.host || (!isMock && !form.port) || !form.database || !form.username) {
       setMessageTone('warning');
       setMessage('请先填写完整的连接信息');
       return;
     }
-    if (!form.password && !isEditing) {
+    if (!form.password && !isEditing && !isMock) {
       setMessageTone('warning');
       setMessage('测连需要填写密码');
       return;
@@ -123,13 +124,14 @@ export default function DataSourceForm({ mode }: { mode: 'create' | 'edit' }) {
       const res = isEditing
         ? await api.testDataSource(params.id!)
         : await api.testDataSourceConfig({ ...payload(), password: form.password });
-      if (!res.success) throw new Error(res.error || '连接失败');
-      setMessageTone('success');
-      setMessage('连接成功');
+      if (!res.success) {
+        showToast(`连接测试失败：${res.error || '未知错误'}`, 'error');
+        return;
+      }
       setTestPassed(true);
+      showToast('连接测试成功', 'success');
     } catch (error: any) {
-      setMessageTone('error');
-      setMessage(error?.message || String(error));
+      showToast(`连接测试失败：${error?.message || String(error)}`, 'error');
     } finally {
       setTesting(false);
     }
@@ -143,7 +145,7 @@ export default function DataSourceForm({ mode }: { mode: 'create' | 'edit' }) {
     }
     setMessage(null);
     const body = payload();
-    if (mode === 'create' && !form.password) {
+    if (mode === 'create' && !form.password && !isMock) {
       setMessageTone('warning');
       setMessage('请填写密码');
       return;
@@ -167,6 +169,10 @@ export default function DataSourceForm({ mode }: { mode: 'create' | 'edit' }) {
       ...prev,
       type: value,
       port: hit?.defaultPort ?? prev.port,
+      host: value === 'mock' ? 'mock.local' : prev.host,
+      database: value === 'mock' ? 'mock_warehouse' : prev.database,
+      username: value === 'mock' ? 'mock' : prev.username,
+      password: value === 'mock' ? 'mock' : prev.password,
     }));
     setTestPassed(false);
   };

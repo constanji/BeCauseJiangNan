@@ -5,6 +5,7 @@ import {
   Clock,
   Database,
   Edit,
+  Loader2,
   Plus,
   Sparkles,
   TestTube,
@@ -13,7 +14,7 @@ import {
 } from 'lucide-react';
 import { api } from '../api/client';
 import Button from '../components/Button';
-import StatusBanner from '../components/StatusBanner';
+import { useToast } from '../context/ToastProvider';
 import { cn } from '../lib/cn';
 import { typeLabel } from '../lib/dbTypes';
 
@@ -25,30 +26,75 @@ function StatusIcon({ ds }: { ds: any }) {
 
 function StatusBadge({ ds }: { ds: any }) {
   if (ds.last_test_ok || ds.status === 'active') {
-    return <span className="badge badge-success">已启用</span>;
+    return (
+      <span className="rounded bg-green-500/15 px-2 py-1 text-xs font-medium text-green-400">
+        已启用
+      </span>
+    );
   }
   if (ds.status === 'inactive') {
-    return <span className="badge badge-danger">未连通</span>;
+    return (
+      <span className="rounded bg-red-500/15 px-2 py-1 text-xs font-medium text-red-400">
+        未连通
+      </span>
+    );
   }
-  return <span className="badge badge-muted">未测试</span>;
+  return (
+    <span className="rounded bg-surface-tertiary px-2 py-1 text-xs font-medium text-text-tertiary">
+      未测试
+    </span>
+  );
+}
+
+function IconActionButton({
+  title,
+  onClick,
+  disabled,
+  children,
+  danger = false,
+}: {
+  title: string;
+  onClick: () => void;
+  disabled?: boolean;
+  children: React.ReactNode;
+  danger?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      aria-label={title}
+      className={cn(
+        'rounded-lg border border-border-light bg-surface-secondary p-2 transition-colors disabled:opacity-50',
+        danger
+          ? 'text-red-500 hover:bg-red-500/10'
+          : 'text-text-primary hover:bg-surface-tertiary',
+      )}
+    >
+      {children}
+    </button>
+  );
 }
 
 export default function DataSourceList() {
   const nav = useNavigate();
+  const { showToast } = useToast();
   const [items, setItems] = React.useState<any[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [testingId, setTestingId] = React.useState<string | null>(null);
-  const [error, setError] = React.useState<string | null>(null);
 
   const reload = () => {
     setLoading(true);
-    setError(null);
     api.listDataSources()
       .then((r) => {
         if (!r.success) throw new Error(r.error || '加载数据源失败');
         setItems(r.data || []);
       })
-      .catch((err) => setError(err.message || String(err)))
+      .catch((err) => {
+        showToast(err.message || String(err), 'error');
+      })
       .finally(() => setLoading(false));
   };
 
@@ -56,20 +102,18 @@ export default function DataSourceList() {
 
   const handleTest = async (id: string) => {
     setTestingId(id);
-    setError(null);
-    let testError: string | null = null;
     try {
       const res = await api.testDataSource(id);
-      if (!res.success) throw new Error(res.error || '测试连接失败');
+      if (!res.success) {
+        showToast(`连接测试失败：${res.error || '未知错误'}`, 'error');
+        return;
+      }
+      showToast('连接测试成功', 'success');
     } catch (err: any) {
-      testError = err?.message || String(err);
+      showToast(`连接测试失败：${err?.message || String(err)}`, 'error');
     } finally {
       setTestingId(null);
-      try {
-        await reload();
-      } finally {
-        if (testError) setError(testError);
-      }
+      reload();
     }
   };
 
@@ -77,9 +121,10 @@ export default function DataSourceList() {
     if (!window.confirm(`确定删除数据源「${name}」？关联 LightSchema 将一并删除。`)) return;
     const res = await api.deleteDataSource(id);
     if (!res.success) {
-      setError(res.error || '删除失败');
+      showToast(res.error || '删除失败', 'error');
       return;
     }
+    showToast('数据源删除成功', 'success');
     reload();
   };
 
@@ -87,7 +132,8 @@ export default function DataSourceList() {
     <div className="flex h-full flex-col overflow-hidden px-4 py-4">
       <div className="mb-4 flex items-center justify-between">
         <div>
-          <p className="text-sm text-text-secondary">
+          <h2 className="text-xl font-semibold text-text-primary">数据源管理</h2>
+          <p className="mt-1 text-sm text-text-secondary">
             管理数据库连接配置，生成 LightSchema 并导出 Excel
           </p>
         </div>
@@ -96,8 +142,6 @@ export default function DataSourceList() {
           新建数据源
         </Button>
       </div>
-
-      {error && <div className="mb-4"><StatusBanner tone="error" title="操作失败" message={error} /></div>}
 
       <div className="flex-1 overflow-auto">
         {loading ? (
@@ -124,7 +168,7 @@ export default function DataSourceList() {
                       <StatusIcon ds={ds} />
                       <StatusBadge ds={ds} />
                     </div>
-                    <div className="mt-4 grid grid-cols-1 gap-4 text-sm md:grid-cols-2">
+                    <div className="mt-4 grid grid-cols-2 gap-4 text-sm">
                       <div>
                         <span className="text-text-secondary">类型:</span>
                         <span className="ml-2 font-medium text-text-primary">{typeLabel(ds.type)}</span>
@@ -151,7 +195,7 @@ export default function DataSourceList() {
                       </div>
                     )}
                   </div>
-                  <div className="flex shrink-0 flex-wrap justify-end gap-2">
+                  <div className="ml-4 flex shrink-0 flex-wrap items-center justify-end gap-1">
                     <Button
                       variant="neutral"
                       className="px-3 py-2"
@@ -170,32 +214,27 @@ export default function DataSourceList() {
                       <Database className="h-4 w-4" />
                       数据库结构
                     </Button>
-                    <Button
-                      variant="neutral"
-                      className="px-3 py-2"
+                    <IconActionButton
+                      title={testingId === ds.id ? '测试中…' : '测试连接'}
                       disabled={testingId === ds.id}
-                      title="测试连接"
                       onClick={() => handleTest(ds.id)}
                     >
-                      <TestTube className="h-4 w-4" />
-                      {testingId === ds.id ? '测试中…' : '测试'}
-                    </Button>
-                    <Button
-                      variant="neutral"
-                      className="px-3 py-2"
-                      title="编辑"
-                      onClick={() => nav(`/edit/${ds.id}`)}
-                    >
+                      {testingId === ds.id ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <TestTube className="h-4 w-4" />
+                      )}
+                    </IconActionButton>
+                    <IconActionButton title="编辑" onClick={() => nav(`/edit/${ds.id}`)}>
                       <Edit className="h-4 w-4" />
-                    </Button>
-                    <Button
-                      variant="neutral"
-                      className={cn('px-3 py-2 text-red-400 hover:text-red-300')}
+                    </IconActionButton>
+                    <IconActionButton
                       title="删除"
+                      danger
                       onClick={() => handleDelete(ds.id, ds.name)}
                     >
                       <Trash2 className="h-4 w-4" />
-                    </Button>
+                    </IconActionButton>
                   </div>
                 </div>
               </div>

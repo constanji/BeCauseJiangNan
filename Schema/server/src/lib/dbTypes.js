@@ -1,6 +1,6 @@
-const VALID_TYPES = ['mysql', 'postgresql', 'gaussdb'];
+const VALID_TYPES = ['mysql', 'postgresql', 'gaussdb', 'mock'];
 
-const UNSUPPORTED_MSG = '该数据库类型后端尚未支持，当前仅 GaussDB 与 MySQL 可用';
+const UNSUPPORTED_MSG = '该数据库类型后端尚未支持，当前仅 GaussDB、MySQL 与 Mock 可用';
 
 function normalizeType(value) {
   const type = String(value || 'gaussdb').toLowerCase();
@@ -9,7 +9,7 @@ function normalizeType(value) {
 }
 
 function isSupportedType(type) {
-  return type === 'gaussdb' || type === 'mysql';
+  return type === 'gaussdb' || type === 'mysql' || type === 'mock';
 }
 
 class UnsupportedDbTypeError extends Error {

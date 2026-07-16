@@ -1,4 +1,4 @@
-export type DataSourceType = 'mysql' | 'postgresql' | 'gaussdb';
+export type DataSourceType = 'mysql' | 'postgresql' | 'gaussdb' | 'mock';
 
 export const DB_TYPES: Array<{
   value: DataSourceType;
@@ -36,6 +36,15 @@ export const DB_TYPES: Array<{
     activeBorder: 'border-orange-500',
     logo: '🔴',
   },
+  {
+    value: 'mock',
+    label: 'Mock GaussDB',
+    defaultPort: 0,
+    color: 'text-sky-400',
+    bg: 'bg-sky-500/10',
+    activeBorder: 'border-sky-500',
+    logo: '🧪',
+  },
 ];
 
 export function typeLabel(type?: string) {
@@ -44,11 +53,11 @@ export function typeLabel(type?: string) {
 }
 
 export function isBackendSupported(type: DataSourceType) {
-  return type === 'gaussdb' || type === 'mysql';
+  return type === 'gaussdb' || type === 'mysql' || type === 'mock';
 }
 
 export function isComingSoon(type: DataSourceType) {
   return type === 'postgresql';
 }
 
-export const UNSUPPORTED_TYPE_MSG = '该数据库类型后端尚未支持，当前仅 GaussDB 与 MySQL 可用';
+export const UNSUPPORTED_TYPE_MSG = '该数据库类型后端尚未支持，当前仅 GaussDB、MySQL 与 Mock 可用';

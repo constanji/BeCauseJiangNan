@@ -35,6 +35,7 @@ function getOne(id) {
 function defaultPort(type) {
   if (type === 'mysql') return 3306;
   if (type === 'postgresql') return 5432;
+  if (type === 'mock') return 0;
   return 8000;
 }
 
