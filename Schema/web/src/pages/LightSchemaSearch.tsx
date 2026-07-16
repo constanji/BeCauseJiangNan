@@ -11,8 +11,9 @@ import { highlightText } from '../lib/highlightText';
 import { ExportCartItem, SearchHit } from '../lib/uiState';
 
 export default function LightSchemaSearch({ cartOnly = false }: { cartOnly?: boolean }) {
-  const { state, setSearch, setReview, toggleCart, isInCart } = useUiState();
+  const { state, catalogScope, setCatalogScope, setSearch, setReview, toggleCart, isInCart } = useUiState();
   const { search } = state;
+  const { dataSourceId, schemaName } = catalogScope;
   const { hideInCart } = state.review;
   const cartCount = state.exportCart.items.length;
   const [results, setResults] = React.useState<SearchHit[]>([]);
@@ -38,8 +39,8 @@ export default function LightSchemaSearch({ cartOnly = false }: { cartOnly?: boo
     setSearched(true);
     api.searchLightSchemas({
       q,
-      dataSourceId: search.dataSourceId || undefined,
-      schemaName: search.schemaName || undefined,
+      dataSourceId: dataSourceId || undefined,
+      schemaName: schemaName || undefined,
       tagId: search.tagId || undefined,
     })
       .then((r) => {
@@ -52,7 +53,7 @@ export default function LightSchemaSearch({ cartOnly = false }: { cartOnly?: boo
       })
       .catch((err) => setError(err.message || String(err)))
       .finally(() => setLoading(false));
-  }, [cartOnly, cartCount, search.q, search.dataSourceId, search.schemaName, search.tagId]);
+  }, [cartOnly, cartCount, search.q, dataSourceId, schemaName, search.tagId]);
 
   const visibleResults = React.useMemo(() => {
     if (cartOnly) return results.filter((hit) => isInCart(hit.lightSchemaId));
@@ -90,12 +91,12 @@ export default function LightSchemaSearch({ cartOnly = false }: { cartOnly?: boo
           </Button>
         </div>
         <FilterBar
-          dataSourceId={search.dataSourceId}
-          schemaName={search.schemaName}
+          dataSourceId={dataSourceId}
+          schemaName={schemaName}
           tagIds={search.tagId ? [Number(search.tagId)] : []}
           singleTag
-          onDataSourceChange={(v) => setSearch({ dataSourceId: v })}
-          onSchemaChange={(v) => setSearch({ schemaName: v })}
+          onDataSourceChange={(v) => setCatalogScope({ dataSourceId: v, schemaName: '' })}
+          onSchemaChange={(v) => setCatalogScope({ schemaName: v })}
           onTagIdsChange={(ids) => setSearch({ tagId: ids[0] ? String(ids[0]) : '' })}
         />
         {!cartOnly && (

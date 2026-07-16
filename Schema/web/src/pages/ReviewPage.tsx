@@ -149,8 +149,9 @@ function ReviewSchemaGroup({
 }
 
 export default function ReviewPage({ cartOnly = false }: { cartOnly?: boolean }) {
-  const { state, setReview, isInCart, toggleCart, removeFromCart } = useUiState();
+  const { state, catalogScope, setCatalogScope, setReview, isInCart, toggleCart, removeFromCart } = useUiState();
   const { columnSearchQuery, hideInCart } = state.review;
+  const { dataSourceId, schemaName } = catalogScope;
   const [debouncedColumnSearch, setDebouncedColumnSearch] = React.useState(columnSearchQuery);
 
   React.useEffect(() => {
@@ -159,8 +160,6 @@ export default function ReviewPage({ cartOnly = false }: { cartOnly?: boolean })
   }, [columnSearchQuery]);
   const cartCount = state.exportCart.items.length;
   const { showToast } = useToast();
-  const [dataSourceId, setDataSourceId] = React.useState('');
-  const [schemaName, setSchemaName] = React.useState('');
   const [tagIds, setTagIds] = React.useState<number[]>([]);
   const [tableSearch, setTableSearch] = React.useState('');
   const [items, setItems] = React.useState<CatalogItem[]>([]);
@@ -462,8 +461,8 @@ export default function ReviewPage({ cartOnly = false }: { cartOnly?: boolean })
           dataSourceId={dataSourceId}
           schemaName={schemaName}
           tagIds={tagIds}
-          onDataSourceChange={setDataSourceId}
-          onSchemaChange={setSchemaName}
+          onDataSourceChange={(v) => setCatalogScope({ dataSourceId: v, schemaName: '' })}
+          onSchemaChange={(v) => setCatalogScope({ schemaName: v })}
           onTagIdsChange={setTagIds}
         />
         <div className="flex flex-col gap-3 md:flex-row md:items-center">

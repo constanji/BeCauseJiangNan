@@ -130,9 +130,6 @@ export default function Workbench() {
   const [tableStartedAt, setTableStartedAt] = React.useState<number | null>(null);
   const [interruptedJob, setInterruptedJob] = React.useState<WorkbenchGenJob | null>(null);
   const [, tick] = React.useState(0);
-  const [error, setError] = React.useState<string | null>(null);
-  const [warning, setWarning] = React.useState<string | null>(null);
-  const [success, setSuccess] = React.useState<string | null>(null);
   const [exporting, setExporting] = React.useState(false);
   const [viewerTable, setViewerTable] = React.useState<string | null>(null);
   const abortRef = React.useRef<AbortController | null>(null);
@@ -155,7 +152,7 @@ export default function Workbench() {
         if (!r.success) throw new Error(r.error || '加载数据源失败');
         setDataSource(r.data || null);
       })
-      .catch((e) => setError(String(e?.message || e)));
+      .catch((e) => showToast(String(e?.message || e), 'error'));
   }, [id]);
 
   React.useEffect(() => {
@@ -168,7 +165,6 @@ export default function Workbench() {
     setGenerated([]);
     setTableListFilter('all');
     setTableOutcomes({});
-    setError(null);
 
     const local = loadWorkbenchCatalog(id);
     if (local?.schemas?.length) {
@@ -195,7 +191,7 @@ export default function Workbench() {
           lastSchemaName: preferred || local?.lastSchemaName,
         });
       })
-      .catch((e) => setError(String(e?.message || e)))
+      .catch((e) => showToast(String(e?.message || e), 'error'))
       .finally(() => {
         setLoadingSchemas(false);
         setSchemasReady(true);
@@ -257,7 +253,6 @@ export default function Workbench() {
     if (!schemasReady || !schemaName) return;
     const seq = ++tablesLoadSeq.current;
     setLoadingTables(true);
-    setError(null);
 
     const local = loadWorkbenchCatalog(id);
     const cachedTables = local?.tablesBySchema?.[schemaName];
@@ -280,7 +275,7 @@ export default function Workbench() {
       })
       .catch((e) => {
         if (seq !== tablesLoadSeq.current) return;
-        setError(String(e?.message || e));
+        showToast(String(e?.message || e), 'error');
       })
       .finally(() => {
         if (seq === tablesLoadSeq.current) setLoadingTables(false);
@@ -290,7 +285,6 @@ export default function Workbench() {
   const handleRefreshCatalog = async () => {
     if (generating || refreshingCatalog) return;
     setRefreshingCatalog(true);
-    setError(null);
     clearWorkbenchCatalog(id);
     try {
       const r = await api.refreshCatalog(id, schemaName || '');
@@ -313,13 +307,12 @@ export default function Workbench() {
       });
       const tablesErr = (r as { meta?: { tables?: { error?: string } } }).meta?.tables?.error;
       if (tablesErr) {
-        setWarning(`Schema 列表已刷新，但表名加载失败：${tablesErr}`);
-        showToast('目录已刷新（表名加载失败）');
+        showToast(`Schema 列表已刷新，但表名加载失败：${tablesErr}`, 'warning');
       } else {
         showToast(`目录已刷新（${list.length} 个 Schema）`);
       }
     } catch (e: any) {
-      setError(e?.message || String(e));
+      showToast(e?.message || String(e), 'error');
     } finally {
       setRefreshingCatalog(false);
     }
@@ -328,7 +321,6 @@ export default function Workbench() {
   const handleRefreshCurrentSchema = async () => {
     if (generating || refreshingSchema || !schemaName) return;
     setRefreshingSchema(true);
-    setError(null);
     try {
       const r = await api.refreshSchemaTables(id, schemaName);
       if (!r.success) throw new Error(r.error || '刷新 Schema 失败');
@@ -341,7 +333,7 @@ export default function Workbench() {
       });
       showToast(`「${schemaName}」表名已刷新（${list.length} 张）`);
     } catch (e: any) {
-      setError(e?.message || String(e));
+      showToast(e?.message || String(e), 'error');
     } finally {
       setRefreshingSchema(false);
     }
@@ -462,7 +454,7 @@ export default function Workbench() {
   const handleGenerate = async (resumeFrom?: WorkbenchGenJob) => {
     const runSchemaName = resumeFrom?.schemaName || schemaName;
     if (!runSchemaName) {
-      setWarning('Schema 尚未加载完成，请稍候');
+      showToast('Schema 尚未加载完成，请稍候', 'warning');
       return;
     }
     const fullTableNames = resumeFrom?.tableNames || [...selected];
@@ -476,7 +468,10 @@ export default function Workbench() {
     const runTimeoutMs = runTableTimeoutMinutes > 0 ? runTableTimeoutMinutes * 60 * 1000 : 0;
 
     if (pendingTables.length === 0) {
-      setWarning(resumeFrom ? '剩余未处理表已全部跑完（已跳过/失败的表需手动重选后重试）' : '请先选择要处理的表');
+      showToast(
+        resumeFrom ? '剩余未处理表已全部跑完（已跳过/失败的表需手动重选后重试）' : '请先选择要处理的表',
+        'warning',
+      );
       return;
     }
     setInterruptedJob(null);
@@ -487,9 +482,6 @@ export default function Workbench() {
     setSkippingCurrent(false);
     setCancelling(false);
     setGenerating(true);
-    setError(null);
-    setWarning(null);
-    setSuccess(null);
     setShowSlowTables(false);
     const runStart = Date.now();
     setRunStartedAt(runStart);
@@ -544,7 +536,7 @@ export default function Workbench() {
       try {
         await refreshGenerated(runSchemaName).then(setGenerated);
       } catch (e: any) {
-        setError(e?.message || String(e));
+        showToast(e?.message || String(e), 'error');
       }
       setGenerating(false);
       setCancelling(false);
@@ -557,48 +549,53 @@ export default function Workbench() {
       setSlowTables(slowTableRecords);
 
       const { cancelled, emptySkipped, failedSkipped } = opts;
-      const warnings: string[] = [];
+      const notes: string[] = [];
+      let toastTone: 'success' | 'warning' | 'error' = 'success';
 
       if (cancelled) {
         persistJob({ status: 'cancelled', currentTable: undefined, currentIndex: completedTables.length });
-        warnings.push(`已终止，已完成 ${generatedCount}/${fullTableNames.length} 张`);
+        notes.push(`已终止，已完成 ${generatedCount}/${fullTableNames.length} 张`);
+        toastTone = 'warning';
       } else {
         clearGenJob(id);
         if (generatedCount > 0) {
-          const msg = `生成成功 ${generatedCount}/${fullTableNames.length} 张`;
-          setSuccess(msg);
-          showToast(msg);
+          notes.push(`生成成功 ${generatedCount}/${fullTableNames.length} 张`);
         }
       }
 
       if (emptySkipped.length > 0) {
-        warnings.push(`跳过空表 ${emptySkipped.length} 张：${emptySkipped.map((x) => x.tableName).join('、')}`);
+        notes.push(`跳过空表 ${emptySkipped.length} 张：${emptySkipped.map((x) => x.tableName).join('、')}`);
       }
       if (failedSkipped.length > 0) {
         const failMsg = `生成失败 ${failedSkipped.length} 张：${failedSkipped.map((x) => x.tableName).join('、')}`;
         if (!cancelled && generatedCount === 0 && emptySkipped.length === 0) {
-          setError(failMsg);
+          notes.push(failMsg);
+          toastTone = 'error';
         } else {
-          warnings.push(failMsg);
+          notes.push(failMsg);
+          if (toastTone === 'success') toastTone = 'warning';
         }
       }
       const timeoutSkipped = skippedTables.filter((x) => x.reason === 'timeout');
       const manualSkipped = skippedTables.filter((x) => x.reason === 'skipped_by_user');
       if (timeoutSkipped.length > 0) {
-        warnings.push(`超时跳过 ${timeoutSkipped.length} 张：${timeoutSkipped.map((x) => x.tableName).join('、')}`);
+        notes.push(`超时跳过 ${timeoutSkipped.length} 张：${timeoutSkipped.map((x) => x.tableName).join('、')}`);
       }
       if (manualSkipped.length > 0) {
-        warnings.push(`手动跳过 ${manualSkipped.length} 张：${manualSkipped.map((x) => x.tableName).join('、')}`);
+        notes.push(`手动跳过 ${manualSkipped.length} 张：${manualSkipped.map((x) => x.tableName).join('、')}`);
       }
       if (slowTableRecords.length > 0) {
-        warnings.push(`慢表记录 ${slowTableRecords.length} 张（可展开查看详情）`);
+        notes.push(`慢表记录 ${slowTableRecords.length} 张（可展开查看详情）`);
         setShowSlowTables(true);
       }
       if (sampleWarnings.length > 0) {
-        warnings.push(`采样警告 ${sampleWarnings.length} 条`);
+        notes.push(`采样警告 ${sampleWarnings.length} 条`);
       }
-      if (warnings.length > 0) {
-        setWarning(warnings.join('；'));
+      if (notes.length > 0) {
+        if (toastTone !== 'error' && (cancelled || notes.length > 1)) {
+          toastTone = 'warning';
+        }
+        showToast(notes.join('；'), toastTone);
       }
       setGenProgress(cancelled
         ? `已终止 ${generatedCount}/${fullTableNames.length}`
@@ -807,7 +804,7 @@ export default function Workbench() {
           // refresh 失败不覆盖原始错误
         }
         setSlowTables(slowTableRecords);
-        setError(e?.message || String(e));
+        showToast(e?.message || String(e), 'error');
         setGenerating(false);
         setCancelling(false);
         setSkippingCurrent(false);
@@ -970,9 +967,6 @@ export default function Workbench() {
         </div>
       </div>
 
-      {error && <StatusBanner tone="error" title="生成失败" message={error} />}
-      {warning && <StatusBanner tone="warning" title="提示" message={warning} />}
-      {success && <StatusBanner tone="success" title="完成" message={success} />}
       {interruptedJob && !generating && (() => {
         const processed = processedTableNames(interruptedJob).size;
         const remaining = pendingTableNames(interruptedJob).length;
@@ -1331,8 +1325,6 @@ export default function Workbench() {
             disabled={generated.length === 0 || exporting}
             onClick={async () => {
               setExporting(true);
-              setError(null);
-              setWarning(null);
               try {
                 const res = await api.exportExcel(id, {
                   schemaName,
@@ -1346,7 +1338,7 @@ export default function Workbench() {
                   } catch {
                     msg = '操作失败';
                   }
-                  setError(msg);
+                  showToast(msg, 'error');
                   return;
                 }
                 const skippedHeader = res.headers.get('X-Export-Skipped');
@@ -1354,10 +1346,10 @@ export default function Workbench() {
                   try {
                     const skipped = JSON.parse(decodeURIComponent(skippedHeader));
                     if (Array.isArray(skipped) && skipped.length > 0) {
-                      setWarning(`导出跳过：${skipped.map((x: any) => x.tableName).join('、')}`);
+                      showToast(`导出跳过：${skipped.map((x: any) => x.tableName).join('、')}`, 'warning');
                     }
                   } catch {
-                    setWarning('导出时有部分表被跳过');
+                    showToast('导出时有部分表被跳过', 'warning');
                   }
                 }
                 const blob = await res.blob();

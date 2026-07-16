@@ -3,7 +3,12 @@ import { api } from '../api/client';
 import { Tag } from '../lib/uiState';
 import TagPicker from './TagPicker';
 
-type SchemaOption = { schemaName: string; tableCount?: number | null };
+type SchemaOption = {
+  schemaName: string;
+  tableCount?: number | null;
+  dataSourceId?: string;
+  label?: string;
+};
 
 export default function FilterBar({
   dataSourceId,
@@ -31,6 +36,7 @@ export default function FilterBar({
   const [dataSources, setDataSources] = React.useState<any[]>([]);
   const [schemas, setSchemas] = React.useState<SchemaOption[]>([]);
   const [tags, setTags] = React.useState<Tag[]>([]);
+  const schemasLoadSeq = React.useRef(0);
 
   React.useEffect(() => {
     if (catalogMode) {
@@ -53,7 +59,9 @@ export default function FilterBar({
         setSchemas([]);
         return;
       }
+      const seq = ++schemasLoadSeq.current;
       api.listSchemas(dataSourceId, 'auto').then((r) => {
+        if (seq !== schemasLoadSeq.current) return;
         if (!r.success) return;
         setSchemas((r.data || []).map((item: SchemaOption) => ({
           schemaName: item.schemaName,
@@ -62,20 +70,39 @@ export default function FilterBar({
       });
       return;
     }
+
+    const seq = ++schemasLoadSeq.current;
+    const requestedDataSourceId = dataSourceId;
+
     api.getCatalogStats().then((r) => {
+      if (seq !== schemasLoadSeq.current) return;
       if (!r.success || !r.data) return;
+
       const all = r.data.bySchema || [];
-      if (!dataSourceId) {
-        setSchemas(all.map((item) => ({
-          schemaName: item.schemaName,
-          tableCount: item.count,
-        })));
+      const dsNames = new Map(
+        (r.data.byDataSource || []).map((ds) => [String(ds.dataSourceId), ds.dataSourceName]),
+      );
+
+      if (!requestedDataSourceId) {
+        setSchemas(
+          all.map((item) => ({
+            schemaName: item.schemaName,
+            tableCount: item.count,
+            dataSourceId: String(item.dataSourceId),
+            label: `${dsNames.get(String(item.dataSourceId)) || item.dataSourceId} · ${item.schemaName} (${item.count})`,
+          })).sort((a, b) => (a.label || a.schemaName).localeCompare(b.label || b.schemaName, 'zh-CN')),
+        );
         return;
       }
+
       setSchemas(
         all
-          .filter((item) => item.dataSourceId === dataSourceId)
-          .map((item) => ({ schemaName: item.schemaName, tableCount: item.count }))
+          .filter((item) => String(item.dataSourceId) === String(requestedDataSourceId))
+          .map((item) => ({
+            schemaName: item.schemaName,
+            tableCount: item.count,
+            dataSourceId: String(item.dataSourceId),
+          }))
           .sort((a, b) => a.schemaName.localeCompare(b.schemaName, 'zh-CN')),
       );
     });
@@ -111,8 +138,11 @@ export default function FilterBar({
         <select className="input" value={schemaName} onChange={(e) => onSchemaChange(e.target.value)}>
           <option value="">{requireSchema ? '请选择' : '全部'}</option>
           {schemas.map((item) => (
-            <option key={item.schemaName} value={item.schemaName}>
-              {item.tableCount != null ? `${item.schemaName} (${item.tableCount})` : item.schemaName}
+            <option
+              key={item.dataSourceId ? `${item.dataSourceId}:${item.schemaName}` : item.schemaName}
+              value={item.schemaName}
+            >
+              {item.label ?? (item.tableCount != null ? `${item.schemaName} (${item.tableCount})` : item.schemaName)}
             </option>
           ))}
         </select>

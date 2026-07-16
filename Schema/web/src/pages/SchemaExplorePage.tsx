@@ -270,8 +270,9 @@ function ExploreSchemaGroup({
 }
 
 export default function SchemaExplorePage() {
-  const { state, setExplore, toggleCart, isInCart, removeFromCart } = useUiState();
+  const { state, catalogScope, setCatalogScope, setExplore, toggleCart, isInCart, removeFromCart } = useUiState();
   const { explore } = state;
+  const { dataSourceId, schemaName } = catalogScope;
   const { showToast } = useToast();
   const [results, setResults] = React.useState<SearchHit[]>([]);
   const [quickLoading, setQuickLoading] = React.useState(false);
@@ -307,11 +308,11 @@ export default function SchemaExplorePage() {
       setError('请输入搜索关键词');
       return null;
     }
-    if (!explore.dataSourceId) {
+    if (!dataSourceId) {
       setError('请选择数据源');
       return null;
     }
-    if (!explore.schemaName) {
+    if (!schemaName) {
       setError('请选择 Schema');
       return null;
     }
@@ -361,7 +362,6 @@ export default function SchemaExplorePage() {
     const abort = new AbortController();
     searchAbortRef.current = abort;
 
-    const { dataSourceId, schemaName } = explore;
     setError(null);
     setSearched(true);
     setHasDeepHits(false);
@@ -388,7 +388,7 @@ export default function SchemaExplorePage() {
     } finally {
       if (!abort.signal.aborted) setQuickLoading(false);
     }
-  }, [explore]);
+  }, [explore.q, dataSourceId, schemaName]);
 
   const executeDeepSearch = React.useCallback(async (tableNames: string[]) => {
     const q = validateFilters();
@@ -402,7 +402,6 @@ export default function SchemaExplorePage() {
     const abort = new AbortController();
     searchAbortRef.current = abort;
 
-    const { dataSourceId, schemaName } = explore;
     setError(null);
     setDeepConfirm(null);
     setDeepLoading(true);
@@ -508,7 +507,7 @@ export default function SchemaExplorePage() {
     setDeepConfirm({ mode: 'all', tableNames: schemaTableNames });
   };
 
-  const lockSingleSchema = Boolean(explore.schemaName);
+  const lockSingleSchema = Boolean(schemaName);
   const groups = React.useMemo(
     () => buildExploreGroups(results, lockSingleSchema),
     [results, lockSingleSchema],
@@ -817,13 +816,13 @@ export default function SchemaExplorePage() {
           </Button>
         </div>
         <FilterBar
-          dataSourceId={explore.dataSourceId}
-          schemaName={explore.schemaName}
+          dataSourceId={dataSourceId}
+          schemaName={schemaName}
           tagIds={[]}
           showTags={false}
           requireSchema
-          onDataSourceChange={(v) => setExplore({ dataSourceId: v })}
-          onSchemaChange={(v) => setExplore({ schemaName: v })}
+          onDataSourceChange={(v) => setCatalogScope({ dataSourceId: v, schemaName: '' })}
+          onSchemaChange={(v) => setCatalogScope({ schemaName: v })}
           onTagIdsChange={() => {}}
         />
         <p className="text-xs text-text-tertiary">

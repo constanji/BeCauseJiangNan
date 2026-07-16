@@ -10,10 +10,10 @@ type ToastContextValue = {
 const ToastContext = React.createContext<ToastContextValue | null>(null);
 
 const toneStyles: Record<ToastTone, string> = {
-  success: 'border-green-500 bg-green-600',
-  error: 'border-red-500 bg-red-600',
-  warning: 'border-amber-500 bg-amber-600',
-  info: 'border-gray-500 bg-gray-600',
+  success: 'border-brand bg-brand',
+  error: 'border-red-500 bg-red-500',
+  warning: 'border-orange-500 bg-orange-500',
+  info: 'border-gray-500 bg-gray-500',
 };
 
 export function ToastProvider({ children }: { children: React.ReactNode }) {
@@ -34,12 +34,12 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     <ToastContext.Provider value={{ showToast }}>
       {children}
       {toast && (
-        <div className="pointer-events-none fixed inset-x-0 bottom-6 z-[100] flex justify-center px-4">
+        <div className="pointer-events-none fixed inset-x-0 top-6 z-[100] flex justify-center px-4">
           <div
             role="status"
             aria-live="polite"
             className={cn(
-              'toast-popup max-w-lg rounded-md border px-4 py-3 text-sm font-medium text-white shadow-lg',
+              'toast-popup pointer-events-auto inline-flex max-w-lg rounded-md border px-3 py-2 text-sm font-medium text-white shadow-[0_0_1px_rgba(67,90,111,0.3),0_5px_8px_-4px_rgba(67,90,111,0.3)]',
               toneStyles[toast.tone],
             )}
           >

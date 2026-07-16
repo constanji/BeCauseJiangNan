@@ -275,12 +275,15 @@ export default function LightSchemaLibrary() {
   const nav = useNavigate();
   const {
     state,
+    catalogScope,
+    setCatalogScope,
     setLibrary,
     addToCart,
     toggleCart,
     isInCart,
   } = useUiState();
   const { library } = state;
+  const { dataSourceId, schemaName } = catalogScope;
 
   const [items, setItems] = React.useState<CatalogItem[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -305,8 +308,8 @@ export default function LightSchemaLibrary() {
       setRefreshing(true);
     }
     api.listCatalog({
-      dataSourceId: library.dataSourceId || undefined,
-      schemaName: library.schemaName || undefined,
+      dataSourceId: dataSourceId || undefined,
+      schemaName: schemaName || undefined,
       tagIds: library.tagIds,
       q: library.searchQuery || undefined,
     })
@@ -323,7 +326,7 @@ export default function LightSchemaLibrary() {
           listScrollRef.current.scrollTop = scrollTop;
         }
       });
-  }, [library.dataSourceId, library.schemaName, library.tagIds, library.searchQuery]);
+  }, [dataSourceId, schemaName, library.tagIds, library.searchQuery]);
 
   React.useEffect(() => { reload(); }, [reload]);
   React.useEffect(() => {
@@ -390,7 +393,7 @@ export default function LightSchemaLibrary() {
     setExpandedGroups((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
-  const showDataSourceInSchema = !library.dataSourceId;
+  const showDataSourceInSchema = !dataSourceId;
   const sortedItems = React.useMemo(
     () => sortCatalogItemsForDisplay(items, isInCart),
     [items, isInCart],
@@ -425,11 +428,11 @@ export default function LightSchemaLibrary() {
 
       <div className="mb-4 space-y-4 rounded-lg border border-border-light bg-surface-primary p-4">
         <FilterBar
-          dataSourceId={library.dataSourceId}
-          schemaName={library.schemaName}
+          dataSourceId={dataSourceId}
+          schemaName={schemaName}
           tagIds={library.tagIds}
-          onDataSourceChange={(v) => setLibrary({ dataSourceId: v })}
-          onSchemaChange={(v) => setLibrary({ schemaName: v })}
+          onDataSourceChange={(v) => setCatalogScope({ dataSourceId: v, schemaName: '' })}
+          onSchemaChange={(v) => setCatalogScope({ schemaName: v })}
           onTagIdsChange={(ids) => setLibrary({ tagIds: ids })}
         />
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">

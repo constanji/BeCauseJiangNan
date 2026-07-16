@@ -270,7 +270,8 @@ export default function TableDataPreviewPanel({
   const dedupeColumnRef = React.useRef<string | null>(null);
   dedupeColumnRef.current = dedupeColumn;
   const requestSeq = React.useRef(0);
-  const skipFilterEffect = React.useRef(true);
+  /** >0 时跳过筛选 effect；打开表时设为 2，避免挂载当次 + setFilters 再触发各打一遍请求 */
+  const skipFilterEffect = React.useRef(0);
   const persistFilters = variant === 'modal' && !initialFilters;
   const initialFiltersKey = React.useMemo(
     () => JSON.stringify(initialFilters || {}),
@@ -322,9 +323,11 @@ export default function TableDataPreviewPanel({
     }
   }, [catalogId, remoteRefKey]);
 
+  // 打开/切换表时做首次加载；筛选项变化另走 debounce。
+  // skip=2：同一轮挂载 effect 吃掉 1 次，setFilters 引发的再渲染再吃掉 1 次，避免连库打两遍。
   React.useEffect(() => {
     if (!open || columnNames.length === 0) return;
-    skipFilterEffect.current = true;
+    skipFilterEffect.current = 2;
     const preset = initialFilters && Object.keys(initialFilters).length > 0
       ? initialFilters
       : null;
@@ -335,21 +338,21 @@ export default function TableDataPreviewPanel({
     setError(null);
     setOpenPickerColumn(null);
     setDedupeColumn(null);
-    fetchRows(savedFilters);
+    void fetchRows(savedFilters);
   }, [open, catalogId, remoteRefKey, columnNamesKey, initialFiltersKey, fetchRows]);
 
   React.useEffect(() => {
     if (!open) return;
     if (persistFilters && !remoteRef && catalogId != null) saveFilters(catalogId, filtersByColumn);
-    if (skipFilterEffect.current) {
-      skipFilterEffect.current = false;
+    if (skipFilterEffect.current > 0) {
+      skipFilterEffect.current -= 1;
       return;
     }
     const timer = window.setTimeout(() => {
-      fetchRows(filtersByColumn);
+      void fetchRows(filtersByColumn);
     }, DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [open, catalogId, remoteRefKey, filtersByColumn, fetchRows, persistFilters]);
+  }, [filtersByColumn, open, catalogId, remoteRefKey, fetchRows, persistFilters]);
 
   const openColumnPicker = (column: string, button: HTMLButtonElement) => {
     setOpenPickerColumn(column);

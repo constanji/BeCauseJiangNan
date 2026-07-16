@@ -1,5 +1,6 @@
 import React from 'react';
 import {
+  CatalogScope,
   DEFAULT_UI_STATE,
   ExportCartItem,
   GroupMode,
@@ -8,13 +9,17 @@ import {
   SearchUiState,
   ReviewUiState,
   UiState,
+  applyCatalogScope,
   cartItemKey,
   loadUiState,
+  normalizeCatalogScope,
   saveUiState,
 } from '../lib/uiState';
 
 type UiStateContextValue = {
   state: UiState;
+  catalogScope: CatalogScope;
+  setCatalogScope: (patch: Partial<CatalogScope>) => void;
   setLibrary: (patch: Partial<LibraryUiState>) => void;
   setSearch: (patch: Partial<SearchUiState>) => void;
   setExplore: (patch: Partial<ExploreUiState>) => void;
@@ -30,6 +35,10 @@ type UiStateContextValue = {
 
 const UiStateContext = React.createContext<UiStateContextValue | null>(null);
 
+function patchTouchesScope(patch: { dataSourceId?: string; schemaName?: string }) {
+  return patch.dataSourceId !== undefined || patch.schemaName !== undefined;
+}
+
 export function UiStateProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = React.useState<UiState>(() => loadUiState());
 
@@ -37,16 +46,44 @@ export function UiStateProvider({ children }: { children: React.ReactNode }) {
     saveUiState(state);
   }, [state]);
 
+  const setCatalogScope = React.useCallback((patch: Partial<CatalogScope>) => {
+    setState((prev) => {
+      const nextScope = normalizeCatalogScope({ ...prev.catalogScope, ...patch });
+      return applyCatalogScope(prev, nextScope);
+    });
+  }, []);
+
   const setLibrary = React.useCallback((patch: Partial<LibraryUiState>) => {
-    setState((prev) => ({ ...prev, library: { ...prev.library, ...patch } }));
+    setState((prev) => {
+      const next = { ...prev, library: { ...prev.library, ...patch } };
+      if (!patchTouchesScope(patch)) return next;
+      return applyCatalogScope(next, normalizeCatalogScope({
+        dataSourceId: patch.dataSourceId ?? prev.catalogScope.dataSourceId,
+        schemaName: patch.schemaName ?? prev.catalogScope.schemaName,
+      }));
+    });
   }, []);
 
   const setSearch = React.useCallback((patch: Partial<SearchUiState>) => {
-    setState((prev) => ({ ...prev, search: { ...prev.search, ...patch } }));
+    setState((prev) => {
+      const next = { ...prev, search: { ...prev.search, ...patch } };
+      if (!patchTouchesScope(patch)) return next;
+      return applyCatalogScope(next, normalizeCatalogScope({
+        dataSourceId: patch.dataSourceId ?? prev.catalogScope.dataSourceId,
+        schemaName: patch.schemaName ?? prev.catalogScope.schemaName,
+      }));
+    });
   }, []);
 
   const setExplore = React.useCallback((patch: Partial<ExploreUiState>) => {
-    setState((prev) => ({ ...prev, explore: { ...prev.explore, ...patch } }));
+    setState((prev) => {
+      const next = { ...prev, explore: { ...prev.explore, ...patch } };
+      if (!patchTouchesScope(patch)) return next;
+      return applyCatalogScope(next, normalizeCatalogScope({
+        dataSourceId: patch.dataSourceId ?? prev.catalogScope.dataSourceId,
+        schemaName: patch.schemaName ?? prev.catalogScope.schemaName,
+      }));
+    });
   }, []);
 
   const setReview = React.useCallback((patch: Partial<ReviewUiState>) => {
@@ -101,6 +138,8 @@ export function UiStateProvider({ children }: { children: React.ReactNode }) {
 
   const value: UiStateContextValue = {
     state,
+    catalogScope: state.catalogScope,
+    setCatalogScope,
     setLibrary,
     setSearch,
     setExplore,
