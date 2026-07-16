@@ -83,7 +83,10 @@ export interface DataSourceResponse {
 
 export interface DataSourceTestResponse {
   success: boolean;
+  status?: 'connected' | 'disconnected' | 'error';
   message?: string;
   error?: string;
+  code?: string;
+  hint?: string;
 }
 

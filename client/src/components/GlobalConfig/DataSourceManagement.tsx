@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Button, useToastContext } from '@because/client';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
+import { formatConnectionTestErrorFromThrown, formatConnectionTestErrorMessage } from '~/utils/formatConnectionTestError';
 import {
   useListDataSourcesQuery,
   useCreateDataSourceMutation,
@@ -158,14 +159,14 @@ export default function DataSourceManagement() {
         });
       } else {
         showToast({
-          message: `连接测试失败: ${result.error || '未知错误'}`,
+          message: `连接测试失败：${formatConnectionTestErrorMessage(result)}`,
           status: 'error',
         });
       }
       refetch();
     } catch (error) {
       showToast({
-        message: `连接测试失败: ${error instanceof Error ? error.message : '未知错误'}`,
+        message: `连接测试失败：${formatConnectionTestErrorFromThrown(error)}`,
         status: 'error',
       });
     } finally {

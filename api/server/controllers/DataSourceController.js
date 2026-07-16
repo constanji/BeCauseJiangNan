@@ -11,6 +11,10 @@ const {
   updateDataSource,
   deleteDataSource,
 } = require('~/models/DataSource');
+const {
+  formatConnectionTestError,
+  buildConnectionTestApiPayload,
+} = require('~/server/utils/formatConnectionTestError');
 
 // GaussDB Java JDBC 桥（企业定制安全协议，无法用标准 pg 包连接）
 const { gaussdbJdbcQuery, gaussdbTestConnection } = require(
@@ -185,9 +189,13 @@ async function testDatabaseConnection(config) {
     }
   } catch (error) {
     logger.error('[testDatabaseConnection] Connection test failed:', error);
+    const formatted = formatConnectionTestError(error, config);
     return {
       success: false,
-      error: error.message || '连接测试失败',
+      error: formatted.error,
+      code: formatted.code,
+      hint: formatted.hint,
+      raw: formatted.raw,
     };
   }
 }
@@ -1181,17 +1189,17 @@ async function testDataSourceConnectionHandler(req, res) {
       });
     }
 
-    return res.status(200).json({
-      success: result.success,
-      status: result.success ? 'connected' : 'disconnected',
-      message: result.success ? '连接测试成功' : result.error || '连接测试失败',
-    });
+    return res.status(200).json(buildConnectionTestApiPayload(result));
   } catch (error) {
     logger.error('[testDataSourceConnectionHandler] Error:', error);
+    const formatted = formatConnectionTestError(error);
     return res.status(500).json({
       success: false,
       status: 'error',
-      error: error.message || '连接测试失败',
+      message: formatted.error,
+      error: formatted.error,
+      code: formatted.code,
+      ...(formatted.hint ? { hint: formatted.hint } : {}),
     });
   }
 }
@@ -1221,17 +1229,17 @@ async function testConnectionHandler(req, res) {
       ssl,
     });
 
-    return res.status(200).json({
-      success: result.success,
-      status: result.success ? 'connected' : 'disconnected',
-      message: result.success ? '连接测试成功' : result.error || '连接测试失败',
-    });
+    return res.status(200).json(buildConnectionTestApiPayload(result));
   } catch (error) {
     logger.error('[testConnectionHandler] Error:', error);
+    const formatted = formatConnectionTestError(error, { type: req.body?.type });
     return res.status(500).json({
       success: false,
       status: 'error',
-      error: error.message || '连接测试失败',
+      message: formatted.error,
+      error: formatted.error,
+      code: formatted.code,
+      ...(formatted.hint ? { hint: formatted.hint } : {}),
     });
   }
 }

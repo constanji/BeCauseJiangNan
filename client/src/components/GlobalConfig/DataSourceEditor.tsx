@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useToastContext } from '@because/client';
 import { useForm, Controller } from 'react-hook-form';
 import { cn, defaultTextProps } from '~/utils';
+import { formatConnectionTestErrorFromThrown, formatConnectionTestErrorMessage } from '~/utils/formatConnectionTestError';
 import { useTestConnectionMutation } from '~/data-provider/DataSources';
 import type { DataSource, DataSourceCreateParams } from '@because/data-provider';
 import {
@@ -174,11 +175,14 @@ export default function DataSourceEditor({ dataSource, onSave, onCancel }: DataS
         setTestPassed(true);
         showToast({ message: '连接测试成功', status: 'success' });
       } else {
-        showToast({ message: `连接测试失败: ${result.error || '未知错误'}`, status: 'error' });
+        showToast({
+          message: `连接测试失败：${formatConnectionTestErrorMessage(result)}`,
+          status: 'error',
+        });
       }
     } catch (error) {
       showToast({
-        message: `连接测试失败: ${error instanceof Error ? error.message : '未知错误'}`,
+        message: `连接测试失败：${formatConnectionTestErrorFromThrown(error)}`,
         status: 'error',
       });
     } finally {
