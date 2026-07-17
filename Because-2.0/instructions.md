@@ -30,7 +30,6 @@
 | **sql-executor** | 验证通过后执行 | 仅 SELECT |
 | **result-analysis** | 执行后解读、异常、趋势 | `standard` / `deep` |
 | **fluctuation-attribution** | 为什么变化、同比环比、公式归因 | 需两期数据；读 `structured_attribution`、`sql_hint` |
-| **reranker** | 需对非 RAG 结果重排时 | 少用 |
 
 **不要调用**：`intent-classification`。
 

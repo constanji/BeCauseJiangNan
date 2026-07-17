@@ -3,14 +3,14 @@
  *
  * 重构后的智能问数工具系统，新增波动归因能力：
  * 1. intent-classification-tool: 意图分类
- * 2. rag-retrieval-tool: RAG知识检索
+ * 2. rag-retrieval-tool: RAG知识检索（内置重排序）
  * 3. database-schema-tool: 数据库Schema获取
- * 4. reranker-tool: 结果重排序
- * 5. sql-validation-tool: SQL校验（增强：7类关键字分类 + 双盲对比 + 对齐检查）
- * 6. result-analysis-tool: 结果分析（增强：Adtributor归因 + 异常检测 + 趋势分析 + sql_hint下钻）
- * 7. sql-executor-tool: SQL执行
- * 8. chart-generation-tool: 图表生成
- * 9. fluctuation-attribution-tool: 波动归因（三类公式引擎 + sql_hint下钻闭环）
+ * 4. sql-validation-tool: SQL校验（增强：7类关键字分类 + 双盲对比 + 对齐检查）
+ * 5. result-analysis-tool: 结果分析（增强：Adtributor归因 + 异常检测 + 趋势分析 + sql_hint下钻）
+ * 6. sql-executor-tool: SQL执行
+ * 7. chart-generation-tool: 图表生成
+ * 8. fluctuation-attribution-tool: 波动归因（三类公式引擎 + sql_hint下钻闭环）
+ * 9. knowledge-discovery-tool / light-schema-tool
  *
  * 核心算法模块：
  * - utils/statisticsEngine: 统计算法引擎（KL/JS散度、解释力、简洁性、惊喜度）
@@ -30,7 +30,6 @@
 const IntentClassificationTool = require('./intent-classification-tool/scripts/IntentClassificationTool');
 const RAGRetrievalTool = require('./rag-retrieval-tool/scripts/RAGRetrievalTool');
 const DatabaseSchemaTool = require('./database-schema-tool/scripts/DatabaseSchemaTool');
-const RerankerTool = require('./reranker-tool/scripts/RerankerTool');
 const SQLValidationTool = require('./sql-validation-tool/scripts/SQLValidationTool');
 const ResultAnalysisTool = require('./result-analysis-tool/scripts/ResultAnalysisTool');
 const SqlExecutorTool = require('./sql-executor-tool/scripts/SqlExecutorTool');
@@ -57,7 +56,6 @@ module.exports = {
   IntentClassificationTool,
   RAGRetrievalTool,
   DatabaseSchemaTool,
-  RerankerTool,
   SQLValidationTool,
   ResultAnalysisTool,
   SqlExecutorTool,

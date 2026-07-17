@@ -29,8 +29,8 @@ class BeCauseSkillsTool2 extends Tool {
     'BeCause问数工具2.0 - 智能问数（自然语言转SQL）的完整能力集，新增波动归因能力。' +
     'Commands: knowledge-discovery (结构化知识行检索，优先用于查询指标编码/定义/口径；可选 filename 限定单个 Excel), ' +
     'light-schema (从预生成缓存按需检索表结构，生成SQL前首选，0 DB开销), ' +
-    'rag-retrieval (RAG知识检索), ' +
-    'database-schema (数据库Schema实时获取，light-schema无结果时才用), reranker (结果重排序), ' +
+    'rag-retrieval (RAG知识检索，内置重排序), ' +
+    'database-schema (数据库Schema实时获取，light-schema无结果时才用), ' +
     'sql-validation (SQL校验，支持7类关键字分类+双盲对比), ' +
     'result-analysis (结果分析，支持Adtributor归因+异常检测+趋势分析), ' +
     'sql-executor (SQL执行), ' +
@@ -43,7 +43,6 @@ class BeCauseSkillsTool2 extends Tool {
       'light-schema',
       'rag-retrieval',
       'database-schema',
-      'reranker',
       'sql-validation',
       'result-analysis',
       'sql-executor',
@@ -95,10 +94,6 @@ class BeCauseSkillsTool2 extends Tool {
         userId: this.userId,
         req: this.req,
         conversation: this.conversation,
-      }),
-      'reranker': new BeCauseSkills2.RerankerTool({
-        userId: this.userId,
-        req: this.req,
       }),
       'sql-validation': new BeCauseSkills2.SQLValidationTool({
         userId: this.userId,
