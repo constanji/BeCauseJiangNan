@@ -10,17 +10,11 @@ import {
 import { useUpdateKnowledgeMutation } from '~/data-provider/KnowledgeBase';
 import { useListDataSourcesQuery } from '~/data-provider/DataSources';
 import { useUploadFileMutation, useFileDownload } from '~/data-provider/Files';
-import { useListAgentsQuery } from '~/data-provider';
 import { useAuthContext } from '~/hooks/AuthContext';
-import { EToolResources, EModelEndpoint, Constants, QueryKeys } from '@because/data-provider';
-import type { DataSource, Agent } from '@because/data-provider';
+import { EToolResources, EModelEndpoint } from '@because/data-provider';
+import type { DataSource } from '@because/data-provider';
 import { dataService, request, apiBaseUrl } from '@because/data-provider';
 import { cn } from '~/utils';
-import { useNavigate } from 'react-router-dom';
-import { useQueryClient } from '@tanstack/react-query';
-import { useNewConvo } from '~/hooks';
-import { clearMessagesCache } from '~/utils';
-import store from '~/store';
 
 // 类型定义
 type KnowledgeEntry = {
@@ -1148,10 +1142,6 @@ interface AddKnowledgeModalProps {
 
 function AddKnowledgeModal({ type, dataSourceId, onClose, onAdd, isLoading }: AddKnowledgeModalProps) {
   const { showToast } = useToastContext();
-  const navigate = useNavigate();
-  const queryClient = useQueryClient();
-  const { newConversation } = useNewConvo();
-  const { conversation } = store.useCreateConversationAtom(0);
   const [formData, setFormData] = useState<Record<string, any>>({});
   const [fileContent, setFileContent] = useState<string>('');
   const [fileName, setFileName] = useState<string>('');
@@ -1172,69 +1162,15 @@ function AddKnowledgeModal({ type, dataSourceId, onClose, onAdd, isLoading }: Ad
   const { data: dataSourcesResponse } = useListDataSourcesQuery();
   const dataSources = dataSourcesResponse?.data || [];
   
-  // 获取Agent列表（用于Agent生成方式）
-  const { data: agentsResponse } = useListAgentsQuery();
-  const agents = agentsResponse?.data || [];
   const [selectedAgentId, setSelectedAgentId] = useState<string>('');
   const [agentRequirement, setAgentRequirement] = useState<string>('');
   
   // 处理Agent调用生成语义模型
   const handleStartAgentGeneration = () => {
-    if (!selectedAgentId) {
-      showToast({
-        message: '请选择Agent',
-        status: 'error',
-      });
-      return;
-    }
-
-    const selectedAgent = agents.find((agent: Agent) => agent.id === selectedAgentId);
-    if (!selectedAgent) {
-      showToast({
-        message: '选择的Agent不存在',
-        status: 'error',
-      });
-      return;
-    }
-
-    // 清除当前对话的消息缓存
-    clearMessagesCache(queryClient, conversation?.conversationId);
-    queryClient.invalidateQueries([QueryKeys.messages]);
-
-    // 创建新对话并设置智能体
-    newConversation({
-      preset: {
-        endpoint: EModelEndpoint.agents,
-        agent_id: selectedAgentId,
-        model: selectedAgent.model || '',
-        conversationId: Constants.NEW_CONVO as string,
-      },
-      keepLatestMessage: false,
-    });
-
-    // 构建初始消息
-    const requirementText = agentRequirement.trim()
-      ? `\n\n需求描述：\n${agentRequirement}`
-      : '';
-    const initialMessage = `请使用 semantic_model_generator 工具生成语义模型。${requirementText}`;
-
-    // 导航到新对话，并在URL中传递初始消息
-    navigate(`/c/new?agent_id=${selectedAgentId}&message=${encodeURIComponent(initialMessage)}`, {
-      replace: false,
-      state: {
-        agentId: selectedAgentId,
-        agentName: selectedAgent.name,
-        initialMessage: initialMessage,
-      },
-    });
-
     showToast({
-      message: '正在打开新对话，您可以在对话中使用Agent生成语义模型',
-      status: 'success',
+      message: 'Agent 生成语义模型暂不可用',
+      status: 'warning',
     });
-
-    // 关闭当前模态框
-    onClose();
   };
   
   // 文件上传 mutation（用于业务知识文档上传）
@@ -1612,13 +1548,18 @@ function AddKnowledgeModal({ type, dataSourceId, onClose, onAdd, isLoading }: Ad
               </button>
               <button
                 type="button"
-                onClick={() => setSemanticModelImportMode('agent')}
-                className="flex items-start gap-4 rounded-lg border-2 border-border-light bg-surface-secondary p-4 hover:border-primary hover:bg-surface-hover transition-colors text-left"
+                disabled
+                aria-disabled="true"
+                title="暂不可用"
+                className="flex items-start gap-4 rounded-lg border-2 border-border-light bg-surface-secondary p-4 text-left opacity-50 cursor-not-allowed grayscale"
               >
-                <Bot className="h-6 w-6 text-primary mt-0.5 flex-shrink-0" />
+                <Bot className="h-6 w-6 text-text-tertiary mt-0.5 flex-shrink-0" />
                 <div className="flex-1">
-                  <div className="font-medium text-text-primary mb-1">Agent调用生成语义模型</div>
-                  <div className="text-sm text-text-secondary">
+                  <div className="font-medium text-text-tertiary mb-1">
+                    Agent调用生成语义模型
+                    <span className="ml-2 text-xs font-normal">（暂不可用）</span>
+                  </div>
+                  <div className="text-sm text-text-tertiary">
                     使用AI Agent基于模板系统生成高质量的语义模型，支持自定义需求描述
                   </div>
                 </div>
@@ -1899,16 +1840,9 @@ function AddKnowledgeModal({ type, dataSourceId, onClose, onAdd, isLoading }: Ad
                       aria-label="选择Agent"
                     >
                       <option value="">请选择Agent</option>
-                      {agents
-                        .filter((agent: Agent) => agent.tools?.includes('semantic_model_generator'))
-                        .map((agent: Agent) => (
-                          <option key={agent.id} value={agent.id}>
-                            {agent.name || agent.id}
-                          </option>
-                        ))}
                     </select>
                     <p className="mt-1 text-xs text-text-tertiary">
-                      只有配置了 semantic_model_generator 工具的Agent才会显示
+                      Agent 生成语义模型暂不可用，请使用文件上传或手动配置。
                     </p>
                   </div>
 

@@ -1,52 +1,15 @@
 const manifest = require('./manifest');
 
-// Structured Tools
-const DALLE3 = require('./structured/DALLE3');
-const FluxAPI = require('./structured/FluxAPI');
-const OpenWeather = require('./structured/OpenWeather');
-const StructuredWolfram = require('./structured/Wolfram');
-const createYouTubeTools = require('./structured/YouTube');
-const StructuredACS = require('./structured/AzureAISearch');
-const StructuredSD = require('./structured/StableDiffusion');
-const GoogleSearchAPI = require('./structured/GoogleSearch');
-const TraversaalSearch = require('./structured/TraversaalSearch');
-const createOpenAIImageTools = require('./structured/OpenAIImageTools');
-const TavilySearchResults = require('./structured/TavilySearchResults');
-const Speckit = require('./structured/Speckit');
-const SocialMedia = require('./structured/SocialMedia');
-const BaziAstrology = require('./structured/BaziAstrology');
-const DatabaseSchema = require('./structured/DatabaseSchema');
+// Structured Tools (internal / no external API key)
 const SqlExecutor = require('./structured/SqlExecutor');
-const BeCause = require('./structured/BeCause');
-const BeCauseSkills = require('./structured/BeCauseSkills');
 const BeCauseSkills2 = require('./structured/BeCauseSkills2');
-const SemanticModelGenerator = require('./structured/SemanticModelGenerator');
 const GenerateExcel = require('./structured/GenerateExcel');
 const EChartsGeneratorAPP = require('./structured/EChartsGeneratorAPP');
 
 module.exports = {
   ...manifest,
-  // Structured Tools
-  DALLE3,
-  FluxAPI,
-  OpenWeather,
-  StructuredSD,
-  StructuredACS,
-  GoogleSearchAPI,
-  TraversaalSearch,
-  StructuredWolfram,
-  createYouTubeTools,
-  TavilySearchResults,
-  createOpenAIImageTools,
-  Speckit,
-  SocialMedia,
-  BaziAstrology,
-  DatabaseSchema,
   SqlExecutor,
-  BeCause,
-  BeCauseSkills,
   BeCauseSkills2,
-  SemanticModelGenerator,
   GenerateExcel,
   EChartsGeneratorAPP,
 };

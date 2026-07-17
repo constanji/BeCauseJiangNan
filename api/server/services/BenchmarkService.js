@@ -654,10 +654,8 @@ SELECT ...
    */
   static createBenchmarkAgent(agent) {
     const BENCHMARK_ALLOWED_TOOLS = new Set([
-      'because_skills',
-      'database_schema',
+      'because_skills_2',
       'sql_executor',
-      'sql_validation',
     ]);
 
     const filteredTools = (agent.tools || []).filter((t) => {

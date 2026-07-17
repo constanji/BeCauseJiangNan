@@ -225,35 +225,6 @@ const formatAgentMessages = (payload) => {
         tool_call.args = args;
         lastAIMessage.tool_calls.push(tool_call);
 
-        // 如果是speckit工具，记录工具结果如何被格式化并返回给LLM
-        if (tool_call.name === 'speckit') {
-          logger.info('[Agent-LLM交互] ========== 格式化工具结果返回给LLM ==========');
-          const outputPreview = typeof output === 'string' 
-            ? (output.length > 500 ? output.substring(0, 500) + '...' : output)
-            : JSON.stringify(output || '').substring(0, 500);
-          const messageHistoryInfo = {
-            toolName: tool_call.name,
-            toolCallId: tool_call.id,
-            outputLength: typeof output === 'string' ? output.length : JSON.stringify(output || '').length,
-            outputPreview,
-            parsedArgs: args,
-            timestamp: new Date().toISOString(),
-          };
-          logger.info(`[Agent-LLM交互] 工具结果将被添加到消息历史: ${JSON.stringify(messageHistoryInfo, null, 2)}`);
-          
-          const contentPreview = typeof output === 'string' 
-            ? (output.length > 500 ? output.substring(0, 500) + '...' : output)
-            : (output || '').toString().substring(0, 500);
-          const toolMessageInfo = {
-            toolCallId: tool_call.id,
-            name: tool_call.name,
-            contentLength: (output || '').length,
-            contentPreview,
-          };
-          logger.info(`[Agent-LLM交互] 创建ToolMessage，将作为LLM的下一次输入: ${JSON.stringify(toolMessageInfo, null, 2)}`);
-          logger.info('[Agent-LLM交互] ========== 工具结果已格式化，等待LLM处理 ==========');
-        }
-
         // Add the corresponding ToolMessage
         messages.push(
           new ToolMessage({

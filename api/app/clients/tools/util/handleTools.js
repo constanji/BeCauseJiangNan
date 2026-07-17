@@ -15,35 +15,14 @@ const {
   Tools,
   Constants,
   Permissions,
-  EToolResources,
   PermissionTypes,
   replaceSpecialVars,
 } = require('@because/data-provider');
 const {
   availableTools,
   manifestToolMap,
-  // Basic Tools
-  GoogleSearchAPI,
-  // Structured Tools
-  DALLE3,
-  FluxAPI,
-  OpenWeather,
-  StructuredSD,
-  StructuredACS,
-  TraversaalSearch,
-  StructuredWolfram,
-  createYouTubeTools,
-  TavilySearchResults,
-  createOpenAIImageTools,
-  Speckit,
-  SocialMedia,
-  BaziAstrology,
-  DatabaseSchema,
   SqlExecutor,
-  BeCause,
-  BeCauseSkills,
   BeCauseSkills2,
-  SemanticModelGenerator,
   GenerateExcel,
   EChartsGeneratorAPP,
 } = require('../');
@@ -182,106 +161,18 @@ const loadTools = async ({
   imageOutputType,
 }) => {
   const toolConstructors = {
-    flux: FluxAPI,
     calculator: Calculator,
-    google: GoogleSearchAPI,
-    open_weather: OpenWeather,
-    wolfram: StructuredWolfram,
-    'stable-diffusion': StructuredSD,
-    'azure-ai-search': StructuredACS,
-    traversaal_search: TraversaalSearch,
-    tavily_search_results_json: TavilySearchResults,
-    speckit: Speckit,
-    because: BeCause,
-    because_skills: BeCauseSkills, // BeCause问数工具 - 统一的智能问数能力集
     because_skills_2: BeCauseSkills2, // BeCause问数工具2.0 - 波动归因增强版
-    database_schema: DatabaseSchema,
-    social: SocialMedia,
-    bazi_astrology: BaziAstrology,
     sql_executor: SqlExecutor,
-    semantic_model_generator: SemanticModelGenerator,
     generate_excel: GenerateExcel,
     echarts_generator_app: EChartsGeneratorAPP,
   };
 
-  const customConstructors = {
-    youtube: async (_toolContextMap) => {
-      const authFields = getAuthFields('youtube');
-      const authValues = await loadAuthValues({ userId: user, authFields });
-      return createYouTubeTools(authValues);
-    },
-    image_gen_oai: async (toolContextMap) => {
-      const authFields = getAuthFields('image_gen_oai');
-      const authValues = await loadAuthValues({ userId: user, authFields });
-      const imageFiles = options.tool_resources?.[EToolResources.image_edit]?.files ?? [];
-      let toolContext = '';
-      for (let i = 0; i < imageFiles.length; i++) {
-        const file = imageFiles[i];
-        if (!file) {
-          continue;
-        }
-        if (i === 0) {
-          toolContext =
-            'Image files provided in this request (their image IDs listed in order of appearance) available for image editing:';
-        }
-        toolContext += `\n\t- ${file.file_id}`;
-        if (i === imageFiles.length - 1) {
-          toolContext += `\n\nInclude any you need in the \`image_ids\` array when calling \`${EToolResources.image_edit}_oai\`. You may also include previously referenced or generated image IDs.`;
-        }
-      }
-      if (toolContext) {
-        toolContextMap.image_edit_oai = toolContext;
-      }
-      return createOpenAIImageTools({
-        ...authValues,
-        isAgent: !!agent,
-        req: options.req,
-        imageOutputType,
-        fileStrategy,
-        imageFiles,
-      });
-    },
-  };
+  const customConstructors = {};
 
   const requestedTools = {};
 
-  if (functions === true) {
-    toolConstructors.dalle = DALLE3;
-  }
-
-  /** @type {ImageGenOptions} */
-  const imageGenOptions = {
-    isAgent: !!agent,
-    req: options.req,
-    fileStrategy,
-    processFileURL: options.processFileURL,
-    returnMetadata: options.returnMetadata,
-    uploadImageBuffer: options.uploadImageBuffer,
-  };
-
   const toolOptions = {
-    flux: imageGenOptions,
-    dalle: imageGenOptions,
-    'stable-diffusion': imageGenOptions,
-    // 为需要访问模板文件的工具传递正确的项目根目录
-    bazi_astrology: {
-      projectRoot: paths.root,
-    },
-    social: {
-      projectRoot: paths.root,
-    },
-    speckit: {
-      projectRoot: paths.root,
-    },
-    because: {
-      projectRoot: paths.root,
-    },
-    because_skills: {
-      userId: user,
-      req: options.req,
-      projectRoot: paths.root,
-      conversation: options.conversation, // 传递conversation信息，用于获取project_id
-    },
     because_skills_2: {
       userId: user,
       req: options.req,
@@ -290,15 +181,8 @@ const loadTools = async ({
       agentId: agent?.id || options.req?.body?.agent_id || options.req?.body?.endpointOption?.agent_id || null,
       dataSourceId: agent?.data_source_id || null,
     },
-    database_schema: {
-      apiUrl: process.env.SQL_API_URL || 'http://33.114.3.59:13002',
-    },
     sql_executor: {
       apiUrl: process.env.SQL_API_URL || 'http://33.114.3.59:13002',
-    },
-    semantic_model_generator: {
-      projectRoot: paths.root,
-      sqlApiUrl: process.env.SQL_API_URL || 'http://33.114.3.59:13002',
     },
     generate_excel: {
       req: options.req,

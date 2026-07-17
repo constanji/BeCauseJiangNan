@@ -378,36 +378,6 @@ async function processRequiredActions(client, requiredActions) {
       };
     };
 
-    // 如果是speckit工具，记录详细的LLM交互信息
-    if (currentAction.tool === 'speckit') {
-      logger.info('[Agent-LLM交互] ========== LLM请求工具调用 ==========');
-      const toolCallInfo = {
-        toolName: currentAction.tool,
-        toolCallId: currentAction.toolCallId,
-        toolInput: currentAction.toolInput,
-        threadId: requiredActions[0]?.thread_id,
-        runId: requiredActions[0]?.run_id,
-        userId: client.req.user.id,
-        timestamp: new Date().toISOString(),
-      };
-      logger.info(`[Agent-LLM交互] LLM决定调用工具: ${JSON.stringify(toolCallInfo, null, 2)}`);
-      
-      const parsedInput = typeof currentAction.toolInput === 'string' 
-        ? (() => {
-            try {
-              return JSON.parse(currentAction.toolInput);
-            } catch {
-              return currentAction.toolInput;
-            }
-          })()
-        : currentAction.toolInput;
-      const inputDetails = {
-        rawInput: currentAction.toolInput,
-        parsedInput,
-      };
-      logger.info(`[Agent-LLM交互] 工具输入参数详情: ${JSON.stringify(inputDetails, null, 2)}`);
-    }
-
     try {
       // 使用 invoke 方法以支持返回 artifact
       const invokeParams = {
@@ -418,43 +388,7 @@ async function processRequiredActions(client, requiredActions) {
       };
       
       const promise = (tool.invoke ? tool.invoke(invokeParams) : tool._call(currentAction.toolInput))
-        .then((output) => {
-          // 如果是speckit工具，记录工具执行结果
-          if (currentAction.tool === 'speckit') {
-            const outputContent = output?.content || output;
-            const outputPreview = typeof outputContent === 'string' 
-              ? (outputContent.length > 500 ? outputContent.substring(0, 500) + '...' : outputContent)
-              : JSON.stringify(outputContent).substring(0, 500);
-            const resultInfo = {
-              toolName: currentAction.tool,
-              toolCallId: currentAction.toolCallId,
-              outputLength: typeof outputContent === 'string' ? outputContent.length : JSON.stringify(outputContent).length,
-              outputPreview,
-              timestamp: new Date().toISOString(),
-            };
-            logger.info(`[Agent-LLM交互] 工具执行完成，准备返回给LLM: ${JSON.stringify(resultInfo, null, 2)}`);
-          }
-          return handleToolOutput(output);
-        })
-        .then((toolOutput) => {
-          // 如果是speckit工具，记录格式化后的工具输出
-          if (currentAction.tool === 'speckit') {
-            const outputPreview = typeof toolOutput.output === 'string'
-              ? (toolOutput.output.length > 500 ? toolOutput.output.substring(0, 500) + '...' : toolOutput.output)
-              : JSON.stringify(toolOutput.output).substring(0, 500);
-            const formattedOutput = {
-              toolCallId: toolOutput.tool_call_id,
-              outputLength: typeof toolOutput.output === 'string' 
-                ? toolOutput.output.length 
-                : JSON.stringify(toolOutput.output).length,
-              outputPreview,
-              timestamp: new Date().toISOString(),
-            };
-            logger.info(`[Agent-LLM交互] 工具输出已格式化，将发送给LLM: ${JSON.stringify(formattedOutput, null, 2)}`);
-            logger.info('[Agent-LLM交互] ========== 工具调用完成，等待LLM响应 ==========');
-          }
-          return toolOutput;
-        })
+        .then((output) => handleToolOutput(output))
         .catch(handleToolError);
       promises.push(promise);
     } catch (error) {

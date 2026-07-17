@@ -160,17 +160,13 @@ export default function AgentsList({ toggleNav }: AgentsListProps) {
         </div>
       </div>
       
-      {/* 数据源选择器 - 直接展示已启用的数据源 */}
+      {/* 数据源选择器 - 有已启用数据源时才展示「业务列表」 */}
+      {enabledDataSources.length > 0 && (
       <div className="mb-4 border-t border-border-light pt-4">
         <div className="mb-2 px-2">
           <h2 className="text-sm font-semibold text-text-primary">业务列表</h2>
         </div>
         <div className="rounded-lg border border-border-light bg-surface-secondary p-2">
-          {enabledDataSources.length === 0 ? (
-            <div className="py-2 text-center text-xs text-text-tertiary">
-              暂无已配置的数据源
-            </div>
-          ) : (
             <div className="space-y-1">
               {enabledDataSources.map((dataSource: DataSource) => {
                 const isSelected = currentDataSourceId === dataSource._id;
@@ -226,9 +222,9 @@ export default function AgentsList({ toggleNav }: AgentsListProps) {
                 );
               })}
             </div>
-          )}
         </div>
       </div>
+      )}
       
       {/* 数据库结构对话框 */}
       <DatabaseSchemaDialog

@@ -317,13 +317,7 @@ export async function createRun({
     };
     agentInputs.push(agentInput);
 
-    const hasSpeckitTool = agent.tools?.some(
-      (tool) =>
-        (typeof tool === 'string' && tool === 'speckit') ||
-        (tool && typeof tool === 'object' && 'name' in tool && tool.name === 'speckit'),
-    );
-
-    if (hasSpeckitTool || agentInputs.length === 1) {
+    if (agentInputs.length === 1) {
       logger.info(`[Agent-Run] Agent Input #${agentInputs.length} agentId=${agent.id}`);
     }
   };

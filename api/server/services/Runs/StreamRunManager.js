@@ -331,25 +331,11 @@ class StreamRunManager {
           
           // Debug: Log streaming tool call arguments accumulation
           if (key === 'arguments' && type === ToolCallTypes.FUNCTION) {
-            // 如果是speckit工具，使用info级别记录详细的arguments累积过程
-            if (data.name === 'speckit') {
-              logger.info(`[Agent-LLM交互] Arguments流式累积过程 (${data.name}): ${JSON.stringify({
-                step: '流式接收中',
-                toolCallId: toolCall.id,
-                toolName: data.name,
-                currentAccumulatedArgs: data[key],
-                currentArgsLength: typeof data[key] === 'string' ? data[key].length : 0,
-                deltaChunk: delta[key],
-                deltaChunkLength: typeof delta[key] === 'string' ? delta[key].length : 0,
-                isComplete: delta[key] === null || delta[key] === undefined,
-              }, null, 2)}`);
-            } else {
-              logger.debug('[StreamRunManager] Accumulating tool call arguments:', {
-                toolName: data.name,
-                currentArgs: data[key],
-                deltaArgs: delta[key],
-              });
-            }
+            logger.debug('[StreamRunManager] Accumulating tool call arguments:', {
+              toolName: data.name,
+              currentArgs: data[key],
+              deltaArgs: delta[key],
+            });
           }
         } else if (delta[key] === null && typeof data[key] === 'string') {
           // Ignore null values when we have accumulated string data
@@ -430,40 +416,14 @@ class StreamRunManager {
     if (toolCall.type === ToolCallTypes.FUNCTION) {
       // Debug: Log FUNCTION type tool call completion
       const functionCall = toolCall[ToolCallTypes.FUNCTION];
-      
-      // 如果是speckit工具，使用info级别记录完整的arguments生成结果
-      if (functionCall?.name === 'speckit') {
-        const parsedArgs = (() => {
-          try {
-            return typeof functionCall?.arguments === 'string' 
-              ? JSON.parse(functionCall.arguments)
-              : functionCall?.arguments;
-          } catch {
-            return functionCall?.arguments;
-          }
-        })();
-        
-        logger.info(`[Agent-LLM交互] Arguments生成完成 (${functionCall?.name}): ${JSON.stringify({
-          step: '流式接收完成',
-          stepId,
-          toolCallId: toolCall.id,
-          toolName: functionCall?.name,
-          finalArguments: functionCall?.arguments,
-          argumentsType: typeof functionCall?.arguments,
-          argumentsLength: typeof functionCall?.arguments === 'string' ? functionCall.arguments.length : 0,
-          parsedArguments: parsedArgs,
-          isComplete: functionCall?.arguments !== '' && functionCall?.arguments !== null && functionCall?.arguments !== undefined,
-        }, null, 2)}`);
-      } else {
-        logger.debug('[StreamRunManager] FUNCTION tool call completed:', {
-          stepId,
-          toolCallId: toolCall.id,
-          toolName: functionCall?.name,
-          arguments: functionCall?.arguments,
-          argumentsType: typeof functionCall?.arguments,
-          argumentsIsEmpty: functionCall?.arguments === '' || functionCall?.arguments === null || functionCall?.arguments === undefined,
-        });
-      }
+      logger.debug('[StreamRunManager] FUNCTION tool call completed:', {
+        stepId,
+        toolCallId: toolCall.id,
+        toolName: functionCall?.name,
+        arguments: functionCall?.arguments,
+        argumentsType: typeof functionCall?.arguments,
+        argumentsIsEmpty: functionCall?.arguments === '' || functionCall?.arguments === null || functionCall?.arguments === undefined,
+      });
       return;
     }
 
