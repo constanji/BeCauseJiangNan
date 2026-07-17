@@ -92,12 +92,10 @@ RUN npm install mongodb --omit=dev
 RUN ln -s /app/node_modules/@because /app/node_modules/@Because || true
 COPY api ./api
 COPY config ./config
-COPY specs ./specs
 COPY --from=data-provider-build /app/packages/data-provider/dist ./packages/data-provider/dist
 COPY --from=data-schemas-build /app/packages/data-schemas/dist ./packages/data-schemas/dist
 COPY --from=api-package-build /app/packages/api/dist ./packages/api/dist
 COPY --from=client-build /app/client/dist ./client/dist
-# 保持 WORKDIR 在 /app，这样 process.cwd() = /app，相对路径 specs/... 会正确解析到 /app/specs/...
 WORKDIR /app
 EXPOSE 3080
 ENV HOST=0.0.0.0

@@ -236,8 +236,6 @@ ENV SHARP_FORCE_GLOBAL_LIBVIPS=
 RUN node -e "try { const path = require.resolve('@xenova/transformers'); console.log('✓ @xenova/transformers found at:', path); require('@xenova/transformers'); console.log('✓ @xenova/transformers loaded successfully'); } catch(e) { console.error('✗ @xenova/transformers error:', e.message, e.stack); process.exit(1); }"
 COPY api ./api
 COPY config ./config
-COPY specs ./specs
-COPY BeCauseSkills ./BeCauseSkills
 COPY Because-2.0 ./Because-2.0
 COPY --from=data-provider-build /app/packages/data-provider/dist ./packages/data-provider/dist
 COPY --from=data-schemas-build /app/packages/data-schemas/dist ./packages/data-schemas/dist
@@ -255,11 +253,8 @@ RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::http
     javac -encoding UTF-8 -cp /app/Because-2.0/drivers/lib/gsjdbc4-1.0.jar \
           /app/Because-2.0/drivers/gaussdb-jdbc/GaussJdbcServer.java && \
     java -version
-# 确保 specs、BeCauseSkills、Because-2.0 目录有正确的权限（可读）
-RUN chmod -R 755 /app/specs && find /app/specs -type f -exec chmod 644 {} \; && \
-    chmod -R 755 /app/BeCauseSkills && find /app/BeCauseSkills -type f -exec chmod 644 {} \; && \
-    chmod -R 755 /app/Because-2.0 && find /app/Because-2.0 -type f -exec chmod 644 {} \;
-# 保持 WORKDIR 在 /app，这样 process.cwd() = /app，相对路径 specs/... 会正确解析到 /app/specs/...
+# 确保 Because-2.0 目录有正确的权限（可读）
+RUN chmod -R 755 /app/Because-2.0 && find /app/Because-2.0 -type f -exec chmod 644 {} \;
 WORKDIR /app
 EXPOSE 3080
 ENV HOST=0.0.0.0
