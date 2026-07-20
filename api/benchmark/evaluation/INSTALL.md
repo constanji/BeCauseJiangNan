@@ -1,6 +1,11 @@
 # 评估脚本依赖安装
 
-## 安装 Python 依赖
+## Docker 镜像（推荐）
+
+生产镜像 `Dockerfile.multi` / `Dockerfile.multi.local` 在构建阶段会自动安装本目录 `requirements.txt`（含 `func-timeout`）。
+重新构建并部署镜像后，无需在容器内再手动 `pip install`。
+
+## 安装 Python 依赖（本地 / 非 Docker）
 
 评估脚本需要以下 Python 包：
 

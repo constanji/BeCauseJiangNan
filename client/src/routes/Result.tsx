@@ -189,22 +189,33 @@ export default function Result() {
                         <div className="rounded-md bg-surface-primary p-3 text-center">
                           <div className="text-xs text-text-secondary">简单</div>
                           <div className="mt-1 text-lg font-semibold text-text-primary">{res.simple.toFixed(2)}%</div>
+                          {res.count_simple > 0 && (
+                            <div className="mt-0.5 text-xs text-text-tertiary">{res.count_simple} 题</div>
+                          )}
                         </div>
                       )}
                       {res.moderate !== undefined && (
                         <div className="rounded-md bg-surface-primary p-3 text-center">
                           <div className="text-xs text-text-secondary">中等</div>
                           <div className="mt-1 text-lg font-semibold text-text-primary">{res.moderate.toFixed(2)}%</div>
+                          {res.count_moderate > 0 && (
+                            <div className="mt-0.5 text-xs text-text-tertiary">{res.count_moderate} 题</div>
+                          )}
                         </div>
                       )}
                       {res.challenging !== undefined && (
                         <div className="rounded-md bg-surface-primary p-3 text-center">
                           <div className="text-xs text-text-secondary">困难</div>
                           <div className="mt-1 text-lg font-semibold text-text-primary">{res.challenging.toFixed(2)}%</div>
+                          {res.count_challenging > 0 && (
+                            <div className="mt-0.5 text-xs text-text-tertiary">{res.count_challenging} 题</div>
+                          )}
                         </div>
                       )}
                     </div>
-                    {res.total !== undefined && <div className="text-xs text-text-secondary text-center">总计: {res.total} 个问题</div>}
+                    {typeof res.total === 'number' && res.total > 0 && (
+                      <div className="text-xs text-text-secondary text-center">总计: {res.total} 个问题</div>
+                    )}
                     <div className="mt-3 border-t border-border-light pt-3">
                       <button
                         type="button"

@@ -107,9 +107,22 @@ class EvaluationService {
       moderate: 0,
       challenging: 0,
       total: 0,
+      count_simple: 0,
+      count_moderate: 0,
+      count_challenging: 0,
     };
   }
 
+  /**
+   * 解析 Python 评估脚本 stdout。典型格式：
+   *                      simple    moderate   challenging   total
+   * count                3         22         7             32
+   * ======================================    EX    =======
+   * EX                   66.67     59.09      42.86         56.25
+   *
+   * - accuracy/simple/moderate/challenging：百分比分数
+   * - total / count_simple / count_moderate / count_challenging：题目数量
+   */
   static parseEvaluationOutput(output, metric) {
     const lines = output.split('\n');
     const result = {
@@ -119,6 +132,9 @@ class EvaluationService {
       moderate: 0,
       challenging: 0,
       total: 0,
+      count_simple: 0,
+      count_moderate: 0,
+      count_challenging: 0,
     };
 
     let headerIndex = -1;
@@ -136,9 +152,30 @@ class EvaluationService {
     }
 
     if (headerIndex >= 0) {
-      for (let i = headerIndex + 2; i < lines.length; i++) {
+      // 紧随表头的 count 行：题目数量（simple / moderate / challenging / total）
+      for (let i = headerIndex + 1; i < Math.min(headerIndex + 4, lines.length); i++) {
+        const line = lines[i].trim();
+        if (!line || line.includes('===')) continue;
+        const parts = line.split(/\s+/).filter((p) => p.length > 0);
+        if (parts[0] === 'count') {
+          const counts = parts
+            .slice(1)
+            .map((p) => parseInt(p, 10))
+            .filter((n) => !Number.isNaN(n));
+          if (counts.length >= 4) {
+            result.count_simple = counts[0];
+            result.count_moderate = counts[1];
+            result.count_challenging = counts[2];
+            result.total = counts[3];
+          }
+          break;
+        }
+      }
+
+      for (let i = headerIndex + 1; i < lines.length; i++) {
         const line = lines[i].trim();
         if (line.includes('===') || line.length === 0) continue;
+        if (/^count\b/i.test(line)) continue;
 
         const metricVariants = [metric === 'Soft F1' ? 'Soft-F1' : metric, metric].filter(Boolean);
         for (const metricName of metricVariants) {
@@ -175,8 +212,11 @@ class EvaluationService {
       }
     }
 
-    const totalMatch = output.match(/total[:\s]+(\d+\.?\d*)/i);
-    if (totalMatch) result.accuracy = parseFloat(totalMatch[1]);
+    // 兜底：仅当未解析到分数时，才从 "total: xx" 取总体准确率（避免误吃 count 行的 total）
+    if (!result.accuracy) {
+      const totalMatch = output.match(/(?:^|\n)\s*(?:EX|Soft-?F1|R-VES)\s+[\d.]+\s+[\d.]+\s+[\d.]+\s+(\d+\.?\d*)/i);
+      if (totalMatch) result.accuracy = parseFloat(totalMatch[1]);
+    }
     return result;
   }
 }

@@ -241,6 +241,11 @@ COPY --from=data-provider-build /app/packages/data-provider/dist ./packages/data
 COPY --from=data-schemas-build /app/packages/data-schemas/dist ./packages/data-schemas/dist
 COPY --from=api-package-build /app/packages/api/dist ./packages/api/dist
 COPY --from=client-build /app/client/dist ./client/dist
+# BIRD 基准评估脚本依赖（EX / Soft F1 / VES）；缺 func-timeout 会导致评估阶段 ModuleNotFoundError
+RUN pip3 install -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com \
+    --break-system-packages \
+    -r /app/api/benchmark/evaluation/requirements.txt && \
+    python3 -c "from func_timeout import func_timeout, FunctionTimedOut; print('✓ benchmark evaluation deps ready')"
 # 安装 OpenJDK（用于 GaussDB JDBC 桥）并编译 Java 查询类
 # JAR 已随 COPY Because-2.0 一起打包进镜像，无需外部挂载
 RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::https::Timeout=120 \
