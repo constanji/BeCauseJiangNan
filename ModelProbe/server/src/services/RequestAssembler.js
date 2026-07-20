@@ -40,7 +40,7 @@ function assembleOpenAIRequest({
   if (addParams && typeof addParams === 'object') {
     for (const [key, value] of Object.entries(addParams)) {
       body[key] = value;
-      assemblyNotes.push(`addParams: set ${key}`);
+      assemblyNotes.push(`已按 addParams 写入字段「${key}」`);
     }
   }
 
@@ -48,7 +48,7 @@ function assembleOpenAIRequest({
     for (const param of dropParams) {
       if (param in body) {
         delete body[param];
-        assemblyNotes.push(`dropParams: removed ${param}`);
+        assemblyNotes.push(`已按 dropParams 删除字段「${param}」`);
       }
     }
   }
@@ -56,11 +56,11 @@ function assembleOpenAIRequest({
   if (endpointType === 'google') {
     body.modelName = body.model;
     delete body.model;
-    assemblyNotes.push('google: model → modelName');
+    assemblyNotes.push('Google：已将 model 改为 modelName');
   }
 
   if (endpointType === 'anthropic') {
-    assemblyNotes.push('anthropic: OpenAI-compat proxy expected; model kept as-is');
+    assemblyNotes.push('Anthropic：按 OpenAI 兼容代理发送，model 保持原样');
   }
 
   if (endpointType === 'azure' || endpointType === 'azureOpenAI') {
@@ -70,20 +70,20 @@ function assembleOpenAIRequest({
       : azure?.azureOpenAIApiDeploymentName || body.model;
 
     if (useModelName) {
-      assemblyNotes.push('azure: AZURE_USE_MODEL_AS_DEPLOYMENT_NAME → deployment from model');
+      assemblyNotes.push('Azure：已用模型名作为 deployment 名称');
     }
 
     if (process.env.AZURE_OPENAI_DEFAULT_MODEL) {
       body.model = process.env.AZURE_OPENAI_DEFAULT_MODEL;
-      assemblyNotes.push(`azure: AZURE_OPENAI_DEFAULT_MODEL=${process.env.AZURE_OPENAI_DEFAULT_MODEL}`);
+      assemblyNotes.push(`Azure：已用默认模型覆盖为 ${process.env.AZURE_OPENAI_DEFAULT_MODEL}`);
     } else {
       body.model = deployment;
-      assemblyNotes.push(`azure: model → deploymentName (${deployment})`);
+      assemblyNotes.push(`Azure：model 已改为部署名「${deployment}」`);
     }
 
     if (useResponsesApi) {
       delete body.model;
-      assemblyNotes.push('azure responses API: removed model from body');
+      assemblyNotes.push('Azure Responses API：已从请求体移除 model');
     }
   }
 

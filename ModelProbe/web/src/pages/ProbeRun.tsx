@@ -1,6 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { api, type Endpoint } from '../api/client';
+import FieldLabel from '../components/FieldLabel';
+import HelpTip from '../components/HelpTip';
+import { statusLabel } from '../lib/labels';
 
 export default function ProbeRun() {
   const [params] = useSearchParams();
@@ -13,7 +16,7 @@ export default function ProbeRun() {
   const [latencySamples, setLatencySamples] = useState(3);
   const [concurrency, setConcurrency] = useState(2);
   const [throughputDurationSec, setThroughputDurationSec] = useState(20);
-  const [probeContext, setProbeContext] = useState(true);
+  const [probeContext, setProbeContext] = useState(false);
   const [taskId, setTaskId] = useState<string | null>(null);
   const [task, setTask] = useState<any>(null);
   const [error, setError] = useState('');
@@ -83,17 +86,23 @@ export default function ProbeRun() {
     }
   };
 
+  const inputCls = 'mt-1 w-full rounded-lg border border-black/15 px-3 py-2';
+
   return (
     <div>
       <h1 className="text-2xl font-semibold text-ink">模型探测</h1>
-      <p className="mt-1 text-sm text-black/60">Direct + Assembled 双层对比 · TTFT / ITL / RPM / TPM / 上下文</p>
+      <p className="mt-1 text-sm text-black/60">
+        对比「直连」与「组装」两层请求，测量首 token 延迟、吞吐与模型身份是否一致
+      </p>
 
       {error && <div className="mt-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-danger">{error}</div>}
 
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
         <div className="space-y-4 rounded-xl border border-black/10 bg-white/80 p-6">
-          <label className="block text-sm">
-            <span className="font-medium">端点</span>
+          <FieldLabel
+            label="端点"
+            tip="已保存的模型服务地址。请先在「端点」页配置 Base URL 与 API Key。"
+          >
             <select
               value={endpointId}
               onChange={(e) => {
@@ -101,55 +110,95 @@ export default function ProbeRun() {
                 const ep = endpoints.find((x) => String(x.id) === e.target.value);
                 if (ep?.default_model) setModel(ep.default_model);
               }}
-              className="mt-1 w-full rounded-lg border border-black/15 px-3 py-2"
+              className={inputCls}
             >
               <option value="">— 选择 —</option>
               {endpoints.map((ep) => (
                 <option key={ep.id} value={ep.id}>{ep.name}</option>
               ))}
             </select>
-          </label>
-          <label className="block text-sm">
-            <span className="font-medium">模型 (L1 UI 选择值)</span>
+          </FieldLabel>
+
+          <FieldLabel
+            label="模型（界面选择值 / L1）"
+            tip="你在界面上选择的模型名。报告会对比：L1 选择值、L2 实际发出去的字段、L3 供应商回包里的模型名。"
+          >
             <input
               value={model}
               onChange={(e) => setModel(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-black/15 px-3 py-2 font-mono text-sm"
-              placeholder="gpt-4o / deployment-name / gemini-2.0-flash"
+              className={`${inputCls} font-mono text-sm`}
+              placeholder="如 gpt-4o、部署名、gemini-2.0-flash"
             />
-          </label>
+          </FieldLabel>
+
           <div className="text-sm">
-            <span className="font-medium">探测层</span>
-            <div className="mt-2 flex gap-4">
+            <span className="mb-2 flex items-center gap-1.5 font-medium text-black/80">
+              探测层
+              <HelpTip text="直连层：模型名原样发给供应商。组装层：按 Because/LibreChat 规则改写请求体（如 Azure 部署名、Google 的 modelName），用于发现链路是否改坏了请求。" />
+            </span>
+            <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:gap-4">
               <label className="flex items-center gap-2">
                 <input type="checkbox" checked={layers.direct} onChange={(e) => setLayers({ ...layers, direct: e.target.checked })} />
-                Direct（原样发送）
+                直连层（原样发送）
               </label>
               <label className="flex items-center gap-2">
                 <input type="checkbox" checked={layers.assembled} onChange={(e) => setLayers({ ...layers, assembled: e.target.checked })} />
-                Assembled（LibreChat 组装）
+                组装层（Because 规则）
               </label>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3 text-sm">
-            <label>Warmup<input type="number" min={0} value={warmup} onChange={(e) => setWarmup(Number(e.target.value))} className="mt-1 w-full rounded border px-2 py-1" /></label>
-            <label>延迟采样<input type="number" min={1} value={latencySamples} onChange={(e) => setLatencySamples(Number(e.target.value))} className="mt-1 w-full rounded border px-2 py-1" /></label>
-            <label>并发<input type="number" min={1} value={concurrency} onChange={(e) => setConcurrency(Number(e.target.value))} className="mt-1 w-full rounded border px-2 py-1" /></label>
-            <label>吞吐时长(s)<input type="number" min={5} value={throughputDurationSec} onChange={(e) => setThroughputDurationSec(Number(e.target.value))} className="mt-1 w-full rounded border px-2 py-1" /></label>
+
+          <div className="grid grid-cols-2 gap-3">
+            <FieldLabel
+              label="预热次数"
+              tip="正式采样前先发几次请求，丢掉冷启动影响。一般 1～2 次即可；0 表示不预热。"
+            >
+              <input type="number" min={0} value={warmup} onChange={(e) => setWarmup(Number(e.target.value))} className={inputCls} />
+            </FieldLabel>
+            <FieldLabel
+              label="延迟采样次数"
+              tip="预热后重复测延迟的次数，用于算中位数/P95。次数越多越稳，但更慢。建议 3～5。"
+            >
+              <input type="number" min={1} value={latencySamples} onChange={(e) => setLatencySamples(Number(e.target.value))} className={inputCls} />
+            </FieldLabel>
+            <FieldLabel
+              label="并发数"
+              tip="吞吐阶段同时打出去的请求数。用来估 RPM/TPM，不是极限压测。网关限流严时可改成 1。"
+            >
+              <input type="number" min={1} value={concurrency} onChange={(e) => setConcurrency(Number(e.target.value))} className={inputCls} />
+            </FieldLabel>
+            <FieldLabel
+              label="吞吐时长（秒）"
+              tip="吞吐压测持续多久。时间越长 RPM/TPM 越接近稳态，但更耗配额。默认 20 秒。"
+            >
+              <input type="number" min={5} value={throughputDurationSec} onChange={(e) => setThroughputDurationSec(Number(e.target.value))} className={inputCls} />
+            </FieldLabel>
           </div>
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={probeContext} onChange={(e) => setProbeContext(e.target.checked)} />
-            探测上下文窗口（可能较慢）
+
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={probeContext}
+              onChange={(e) => setProbeContext(e.target.checked)}
+            />
+            <span className="flex items-center gap-1.5">
+              探测上下文窗口
+              <HelpTip text="会用越来越长的文本试探供应商能接受的上限（阶梯 + 二分）。默认关闭：耗时长、费 token，且结果是近似值，不是精确上下文窗口。" />
+              <span className="text-black/45">（默认关闭）</span>
+            </span>
           </label>
+
           <button
             type="button"
             onClick={start}
-            disabled={!!taskId && task?.status === 'running'}
+            disabled={!!taskId && (task?.status === 'running' || task?.status === 'pending')}
             className="w-full rounded-lg bg-accent py-2.5 text-sm font-medium text-white disabled:opacity-50"
           >
             开始探测
           </button>
           <Link to="/reports" className="block text-center text-sm text-accent hover:underline">查看历史报告</Link>
+          <Link to="/capability" className="block text-center text-sm text-black/55 hover:text-accent hover:underline">规范与工具探测 →</Link>
         </div>
 
         <div className="rounded-xl border border-black/10 bg-ink p-4 text-mist">
@@ -157,7 +206,7 @@ export default function ProbeRun() {
             <span>运行日志</span>
             {task && (
               <span>
-                {task.status} · {task.progress ?? 0}%
+                {statusLabel(task.status)} · {task.progress ?? 0}%
               </span>
             )}
           </div>
@@ -168,9 +217,9 @@ export default function ProbeRun() {
           )}
           <div ref={logRef} className="max-h-96 overflow-y-auto font-mono text-xs leading-relaxed text-white/85">
             {(task?.statusLogs || []).map((line: string, i: number) => (
-              <div key={i}>{line}</div>
+              <div key={i} className="py-0.5">{line}</div>
             ))}
-            {!task?.statusLogs?.length && <div className="text-white/40">等待任务…</div>}
+            {!task?.statusLogs?.length && <div className="text-white/40">等待任务…点击「开始探测」后这里会显示进度</div>}
           </div>
         </div>
       </div>

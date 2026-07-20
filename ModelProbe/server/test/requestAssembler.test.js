@@ -20,7 +20,7 @@ test('google assembly maps model to modelName', () => {
   });
   assert.equal(body.modelName, 'gemini-2.0-flash');
   assert.equal(body.model, undefined);
-  assert.ok(assemblyNotes.some((n) => n.includes('modelName')));
+  assert.ok(assemblyNotes.some((n) => /modelName|Google/.test(n)));
 });
 
 test('azure assembly uses deployment name', () => {
@@ -49,6 +49,12 @@ test('summarize computes median', () => {
   const s = summarize([10, 20, 30]);
   assert.equal(s.median, 20);
   assert.equal(s.count, 3);
+});
+
+test('summarize empty returns null means', () => {
+  const s = summarize([]);
+  assert.equal(s.count, 0);
+  assert.equal(s.mean, null);
 });
 
 test('estimateTokens from char length', () => {

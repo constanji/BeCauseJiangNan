@@ -1,8 +1,13 @@
-const { runDirectProbe, runAssembledProbe, DEFAULT_PROMPT } = require('./StreamingProbe');
+const { runDirectProbe, runAssembledProbe, DEFAULT_PROMPT, LATENCY_PROMPT } = require('./StreamingProbe');
 const { summarize } = require('../lib/stats');
 const { createOpenAIClient } = require('./RequestAssembler');
+const { formatProviderError } = require('../lib/formatProviderError');
 
 const CONTEXT_ERROR_RE = /context|token|length|413|too long|maximum/i;
+
+function layerLabel(layer) {
+  return layer === 'assembled' ? '组装层' : layer === 'direct' ? '直连层' : layer;
+}
 
 function fillerTokens(targetTokens) {
   const unit = 'word ';
@@ -19,24 +24,64 @@ async function collectLatencySamples({ endpoint, model, layers, config, onLog })
     const runs = [];
     const runProbe = layer === 'direct' ? runDirectProbe : runAssembledProbe;
 
+    const name = layerLabel(layer);
     for (let w = 0; w < warmup; w++) {
-      onLog?.(`[latency] ${layer} warmup ${w + 1}/${warmup}`);
-      await runProbe({ endpoint, model, options: { prompt: DEFAULT_PROMPT, max_tokens: 16 } });
+      onLog?.(`[延迟] ${name}：预热 ${w + 1}/${warmup} 开始…`);
+      const wr = await runProbe({
+        endpoint,
+        model,
+        options: {
+          prompt: DEFAULT_PROMPT,
+          max_tokens: 16,
+          timeoutMs: 60000,
+          onHeartbeat: (sec) => onLog?.(`[延迟] ${name}：预热仍在进行（已 ${sec}s）…`),
+        },
+      });
+      onLog?.(`[延迟] ${name}：预热 ${w + 1}/${warmup} 完成（${Math.round((wr.totalMs || 0) / 1000)}s）`);
     }
 
     for (let i = 0; i < samples; i++) {
-      onLog?.(`[latency] ${layer} sample ${i + 1}/${samples}`);
-      const r = await runProbe({ endpoint, model, options: { prompt: DEFAULT_PROMPT, max_tokens: 32 } });
+      onLog?.(`[延迟] ${name}：采样 ${i + 1}/${samples} 开始…`);
+      const r = await runProbe({
+        endpoint,
+        model,
+        options: {
+          prompt: LATENCY_PROMPT,
+          max_tokens: 64,
+          temperature: 0.2,
+          timeoutMs: 90000,
+          onHeartbeat: (sec) =>
+            onLog?.(`[延迟] ${name}：采样 ${i + 1}/${samples} 仍在等待流式输出（已 ${sec}s）…`),
+        },
+      });
       runs.push(r);
+      onLog?.(
+        `[延迟] ${name}：采样 ${i + 1}/${samples} 完成（TTFT ${r.ttftMs ?? '—'}ms，总 ${Math.round((r.totalMs || 0) / 1000)}s）`,
+      );
     }
 
     const ttftList = runs.map((r) => r.ttftMs).filter((v) => v != null);
-    const itlList = runs.flatMap((r) => r.chunkTimes);
+    const chunkItlList = runs.flatMap((r) => r.chunkTimes);
+    // 无多 chunk 时，用有效 ITL 近似，避免报告里全是 0
+    const itlList =
+      chunkItlList.length > 0
+        ? chunkItlList
+        : runs.map((r) => r.effectiveItlMs).filter((v) => v != null);
     const totalList = runs.map((r) => r.totalMs);
+    const itlSource = chunkItlList.length > 0 ? 'stream_chunks' : itlList.length > 0 ? 'estimated' : 'none';
 
     results[layer] = {
       ttftMs: summarize(ttftList),
-      itlMs: summarize(itlList),
+      itlMs: {
+        ...summarize(itlList),
+        source: itlSource,
+        note:
+          itlSource === 'estimated'
+            ? '网关将内容合并为少量流式块，ITL 按「首 token 后耗时/(输出 tokens-1)」估算'
+            : itlSource === 'none'
+              ? '输出过短或整段一次返回，无可用间隔样本'
+              : '来自相邻流式内容块的时间差',
+      },
       totalMs: summarize(totalList),
       outputTokens: summarize(runs.map((r) => r.outputTokens)),
       samples: runs.length,
@@ -46,6 +91,7 @@ async function collectLatencySamples({ endpoint, model, layers, config, onLog })
         l3: runs[runs.length - 1]?.l3,
         match: runs[runs.length - 1]?.match,
         assemblyNotes: runs[runs.length - 1]?.assemblyNotes,
+        contentChunkCount: runs[runs.length - 1]?.contentChunkCount,
       },
     };
   }
@@ -67,7 +113,12 @@ async function singleThroughputRequest({ endpoint, model, layer, useAssembled })
     const tokens = (r.promptTokens || 0) + (r.outputTokens || 0);
     return { ok: true, durationMs: Date.now() - started, tokens, layer };
   } catch (err) {
-    return { ok: false, durationMs: Date.now() - started, error: err.message, layer };
+    return {
+      ok: false,
+      durationMs: Date.now() - started,
+      error: formatProviderError(err, { model, baseURL: endpoint.base_url }),
+      layer,
+    };
   }
 }
 
@@ -82,7 +133,13 @@ async function measureThroughput({ endpoint, model, layer, config, onLog }) {
   let totalTokens = 0;
   const inFlight = new Set();
 
-  onLog?.(`[throughput] ${layer} concurrency=${concurrency} duration=${durationSec}s`);
+  const startedAt = Date.now();
+  let lastProgressLogAt = startedAt;
+  const progressEveryMs = Math.min(5000, Math.max(2000, Math.floor((durationSec * 1000) / 4)));
+
+  onLog?.(
+    `[吞吐] ${layerLabel(layer)}：并发 ${concurrency}，持续 ${durationSec} 秒（约每 ${Math.round(progressEveryMs / 1000)} 秒汇报进度）`,
+  );
 
   while (Date.now() < deadline) {
     while (inFlight.size < concurrency && Date.now() < deadline) {
@@ -100,6 +157,17 @@ async function measureThroughput({ endpoint, model, layer, config, onLog }) {
     }
     if (inFlight.size) {
       await Promise.race(inFlight);
+    }
+
+    const now = Date.now();
+    if (now - lastProgressLogAt >= progressEveryMs) {
+      lastProgressLogAt = now;
+      const elapsedSec = Math.max(0.001, (now - startedAt) / 1000);
+      const remainSec = Math.max(0, Math.ceil((deadline - now) / 1000));
+      const liveRpm = Math.round(success / (elapsedSec / 60));
+      onLog?.(
+        `[吞吐] ${layerLabel(layer)}进度：已跑 ${elapsedSec.toFixed(0)}s / ${durationSec}s，成功 ${success}、失败 ${failed}，当前约 ${liveRpm} 次/分钟，剩余约 ${remainSec}s`,
+      );
     }
   }
 
@@ -159,7 +227,7 @@ async function measureContextWindow({ endpoint, model, layer, config, onLog }) {
   let failReason = null;
 
   for (const target of filtered) {
-    onLog?.(`[context] ${layer} probing ~${target} tokens`);
+    onLog?.(`[上下文] ${layerLabel(layer)}：阶梯探测约 ${target} tokens`);
     const res = await tryContextSize({ endpoint, model, layer, tokenTarget: target, useAssembled });
     if (res.ok) {
       maxAccepted = target;
@@ -174,7 +242,7 @@ async function measureContextWindow({ endpoint, model, layer, config, onLog }) {
     let high = filtered[0];
     while (low <= high) {
       const mid = Math.floor((low + high) / 2);
-      onLog?.(`[context] ${layer} binary search ~${mid} tokens`);
+      onLog?.(`[上下文] ${layerLabel(layer)}：二分探测约 ${mid} tokens`);
       const res = await tryContextSize({ endpoint, model, layer, tokenTarget: mid, useAssembled });
       if (res.ok) {
         maxAccepted = mid;

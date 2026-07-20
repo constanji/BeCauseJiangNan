@@ -1,6 +1,7 @@
 const express = require('express');
 const { getTask, startProbe } = require('../services/ProbeOrchestrator');
 const { getDb } = require('../db/sqlite');
+const { ApiError, badRequest, notFound } = require('../lib/apiErrors');
 
 const router = express.Router();
 
@@ -8,12 +9,12 @@ router.post('/run', (req, res) => {
   const { endpointId, model, config } = req.body || {};
 
   if (!endpointId || !model) {
-    return res.status(400).json({ success: false, error: 'endpointId and model required' });
+    return badRequest(res, ApiError.ENDPOINT_AND_MODEL_REQUIRED);
   }
 
   const endpoint = getDb().prepare('SELECT id FROM endpoints WHERE id = ?').get(endpointId);
   if (!endpoint) {
-    return res.status(404).json({ success: false, error: 'Endpoint not found' });
+    return notFound(res, ApiError.ENDPOINT_NOT_FOUND);
   }
 
   const defaultConfig = {
@@ -22,7 +23,7 @@ router.post('/run', (req, res) => {
     latencySamples: 3,
     concurrency: 2,
     throughputDurationSec: 20,
-    probeContext: true,
+    probeContext: false,
   };
 
   const taskId = startProbe({
@@ -39,7 +40,7 @@ router.get('/task/:taskId', (req, res) => {
   const row = getDb().prepare('SELECT * FROM probe_reports WHERE task_id = ?').get(req.params.taskId);
 
   if (!mem && !row) {
-    return res.status(404).json({ success: false, error: 'Task not found' });
+    return notFound(res, ApiError.TASK_NOT_FOUND);
   }
 
   const statusLogs = mem?.statusLogs || (row?.status_logs_json ? JSON.parse(row.status_logs_json) : []);

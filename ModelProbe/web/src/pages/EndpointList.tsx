@@ -1,18 +1,20 @@
 import React, { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { Plus, Play, Trash2 } from 'lucide-react';
+import { Link, useNavigate } from 'react-router-dom';
+import { Copy, Plus, Play, Trash2 } from 'lucide-react';
 import { api, type Endpoint } from '../api/client';
 
 export default function EndpointList() {
+  const navigate = useNavigate();
   const [items, setItems] = useState<Endpoint[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [copyingId, setCopyingId] = useState<number | null>(null);
 
   const load = () => {
     setLoading(true);
     api
       .listEndpoints()
-      .then((r) => setItems(r.data))
+      .then((r) => setItems(r.data.filter((ep) => ep.name !== '__imported__')))
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
   };
@@ -23,6 +25,19 @@ export default function EndpointList() {
     if (!confirm('确定删除此端点？')) return;
     await api.deleteEndpoint(id);
     load();
+  };
+
+  const copy = async (id: number) => {
+    setError('');
+    setCopyingId(id);
+    try {
+      const r = await api.copyEndpoint(id);
+      navigate(`/endpoints/${r.data.id}/edit`);
+    } catch (e: any) {
+      setError(e.message || '复制失败');
+    } finally {
+      setCopyingId(null);
+    }
   };
 
   return (
@@ -84,6 +99,15 @@ export default function EndpointList() {
                       >
                         <Play className="h-3.5 w-3.5" /> 探测
                       </Link>
+                      <button
+                        type="button"
+                        disabled={copyingId === ep.id}
+                        onClick={() => copy(ep.id)}
+                        className="inline-flex items-center gap-1 rounded-md px-2 py-1 hover:bg-black/5 disabled:opacity-50"
+                      >
+                        <Copy className="h-3.5 w-3.5" />
+                        {copyingId === ep.id ? '复制中…' : '复制'}
+                      </button>
                       <Link to={`/endpoints/${ep.id}/edit`} className="rounded-md px-2 py-1 hover:bg-black/5">
                         编辑
                       </Link>

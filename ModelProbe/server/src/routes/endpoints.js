@@ -1,6 +1,8 @@
 const express = require('express');
 const { getDb, now } = require('../db/sqlite');
 const { encrypt } = require('../lib/crypto');
+const { ApiError, badRequest, notFound } = require('../lib/apiErrors');
+const { formatProviderError } = require('../lib/formatProviderError');
 const { parseEndpointRow } = require('../services/RequestAssembler');
 const { testConnection } = require('../services/MetricsCollector');
 
@@ -35,7 +37,7 @@ router.get('/', (req, res) => {
 
 router.get('/:id', (req, res) => {
   const row = getDb().prepare('SELECT * FROM endpoints WHERE id = ?').get(req.params.id);
-  if (!row) return res.status(404).json({ success: false, error: 'Not found' });
+  if (!row) return notFound(res, ApiError.ENDPOINT_NOT_FOUND);
   res.json({ success: true, data: rowToPublic(row) });
 });
 
@@ -54,7 +56,7 @@ router.post('/', (req, res) => {
   } = req.body || {};
 
   if (!name || !base_url || !api_key) {
-    return res.status(400).json({ success: false, error: 'name, base_url, api_key required' });
+    return badRequest(res, ApiError.ENDPOINT_FIELDS_REQUIRED);
   }
 
   const ts = now();
@@ -86,7 +88,7 @@ router.post('/', (req, res) => {
 
 router.put('/:id', (req, res) => {
   const row = getDb().prepare('SELECT * FROM endpoints WHERE id = ?').get(req.params.id);
-  if (!row) return res.status(404).json({ success: false, error: 'Not found' });
+  if (!row) return notFound(res, ApiError.ENDPOINT_NOT_FOUND);
 
   const b = req.body || {};
   const ts = now();
@@ -122,19 +124,65 @@ router.put('/:id', (req, res) => {
 
 router.delete('/:id', (req, res) => {
   const result = getDb().prepare('DELETE FROM endpoints WHERE id = ?').run(req.params.id);
-  if (!result.changes) return res.status(404).json({ success: false, error: 'Not found' });
+  if (!result.changes) return notFound(res, ApiError.ENDPOINT_NOT_FOUND);
   res.json({ success: true });
+});
+
+router.post('/:id/copy', (req, res) => {
+  const row = getDb().prepare('SELECT * FROM endpoints WHERE id = ?').get(req.params.id);
+  if (!row) return notFound(res, ApiError.ENDPOINT_NOT_FOUND);
+  if (row.name === '__imported__') {
+    return badRequest(res, ApiError.IMPORT_ENDPOINT_FORBIDDEN);
+  }
+
+  const ts = now();
+  const baseName = String(row.name || '端点').replace(/\s*副本(\d+)?$/, '');
+  let newName = `${baseName} 副本`;
+  const exists = getDb().prepare('SELECT id FROM endpoints WHERE name = ?').get(newName);
+  if (exists) {
+    let n = 2;
+    while (getDb().prepare('SELECT id FROM endpoints WHERE name = ?').get(`${baseName} 副本${n}`)) {
+      n += 1;
+    }
+    newName = `${baseName} 副本${n}`;
+  }
+
+  const result = getDb()
+    .prepare(`
+      INSERT INTO endpoints (
+        name, type, base_url, api_key_enc, default_model, claimed_context_tokens,
+        azure_json, drop_params_json, add_params_json, extra_headers_json,
+        last_test_at, last_test_ok, last_test_error, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)
+    `)
+    .run(
+      newName,
+      row.type,
+      row.base_url,
+      row.api_key_enc,
+      row.default_model,
+      row.claimed_context_tokens,
+      row.azure_json,
+      row.drop_params_json,
+      row.add_params_json,
+      row.extra_headers_json,
+      ts,
+      ts,
+    );
+
+  const created = getDb().prepare('SELECT * FROM endpoints WHERE id = ?').get(result.lastInsertRowid);
+  res.status(201).json({ success: true, data: rowToPublic(created) });
 });
 
 router.post('/:id/test', async (req, res) => {
   const row = getDb().prepare('SELECT * FROM endpoints WHERE id = ?').get(req.params.id);
-  if (!row) return res.status(404).json({ success: false, error: 'Not found' });
+  if (!row) return notFound(res, ApiError.ENDPOINT_NOT_FOUND);
 
   const endpoint = parseEndpointRow(row);
   const model = req.body?.model || endpoint.default_model;
 
   if (!model) {
-    return res.status(400).json({ success: false, error: 'model required' });
+    return badRequest(res, ApiError.MODEL_REQUIRED);
   }
 
   try {
@@ -144,10 +192,18 @@ router.post('/:id/test', async (req, res) => {
       .run(now(), req.params.id);
     res.json({ success: true, data: result });
   } catch (err) {
+    const detail = formatProviderError(err, { model, baseURL: endpoint.base_url });
     getDb()
       .prepare('UPDATE endpoints SET last_test_at = ?, last_test_ok = 0, last_test_error = ? WHERE id = ?')
-      .run(now(), err.message, req.params.id);
-    res.status(502).json({ success: false, error: err.message });
+      .run(now(), detail, req.params.id);
+    res.status(502).json({
+      success: false,
+      error: detail,
+      status: err?.status ?? err?.statusCode,
+      providerMessage: err?.error?.message || err?.message,
+      model,
+      baseURL: endpoint.base_url,
+    });
   }
 });
 

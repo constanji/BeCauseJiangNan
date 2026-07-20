@@ -7,7 +7,7 @@ function percentile(sorted, p) {
 function summarize(values) {
   const nums = values.filter((v) => typeof v === 'number' && !Number.isNaN(v));
   if (!nums.length) {
-    return { count: 0, mean: 0, median: 0, p50: 0, p95: 0, min: 0, max: 0 };
+    return { count: 0, mean: null, median: null, p50: null, p95: null, min: null, max: null };
   }
   const sorted = [...nums].sort((a, b) => a - b);
   const sum = sorted.reduce((a, b) => a + b, 0);
