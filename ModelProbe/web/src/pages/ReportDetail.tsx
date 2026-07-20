@@ -135,8 +135,17 @@ export default function ReportDetail() {
   const latA = report?.latency?.assembled;
   const tpD = report?.throughput?.direct;
   const tpA = report?.throughput?.assembled;
+  const genD = report?.generation?.direct;
+  const genA = report?.generation?.assembled;
+  const loD = report?.longOutput?.direct;
+  const loA = report?.longOutput?.assembled;
+  const liD = report?.longInput?.direct;
+  const liA = report?.longInput?.assembled;
   const hasContext =
     report?.context?.direct != null || report?.context?.assembled != null;
+  const hasGeneration = report?.generation != null;
+  const hasLongOutput = report?.longOutput != null;
+  const hasLongInput = report?.longInput != null;
 
   return (
     <div>
@@ -236,8 +245,8 @@ export default function ReportDetail() {
 
           <section className="mt-8">
             <h2 className="mb-1 flex items-center gap-1.5 text-lg font-semibold">
-              吞吐
-              <HelpTip text="在设定并发与时长内测得的样本吞吐，不是极限压测。RPM=每分钟成功请求数，TPM=每分钟处理的 token 数。" />
+              短请求吞吐
+              <HelpTip text="ping + max_tokens=8 的并发压测。看小请求调度能力，不是模型解码速度。RPM=每分钟成功请求；短请求 tok/s=窗口内累计 token÷秒。" />
             </h2>
             <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <MetricCard
@@ -249,11 +258,134 @@ export default function ReportDetail() {
               <MetricCard title="组装 · 每分钟请求数" value={String(tpA?.rpm ?? '—')} />
               <MetricCard
                 title="直连 · 每分钟 Token"
-                tip="TPM：Tokens Per Minute（输入+输出估算）。"
+                tip="TPM：Tokens Per Minute（输入+输出合计）。"
                 value={String(tpD?.tpm ?? '—')}
               />
               <MetricCard title="组装 · 每分钟 Token" value={String(tpA?.tpm ?? '—')} />
+              <MetricCard
+                title="直连 · 短请求每秒输入"
+                tip="短 ping 压测窗口内累计 prompt tokens ÷ 时长。不是大上下文能力。"
+                value={tpD?.inputTps != null ? `${tpD.inputTps}` : '—'}
+                sub="tok/s"
+              />
+              <MetricCard
+                title="组装 · 短请求每秒输入"
+                value={tpA?.inputTps != null ? `${tpA.inputTps}` : '—'}
+                sub="tok/s"
+              />
+              <MetricCard
+                title="直连 · 短请求每秒输出"
+                tip="短 ping 压测窗口内累计 completion tokens ÷ 时长。因每次只回约 1 词，数值会很低，不是解码速度。"
+                value={tpD?.outputTps != null ? `${tpD.outputTps}` : '—'}
+                sub="tok/s"
+              />
+              <MetricCard
+                title="组装 · 短请求每秒输出"
+                value={tpA?.outputTps != null ? `${tpA.outputTps}` : '—'}
+                sub="tok/s"
+              />
             </div>
+          </section>
+
+          <section className="mt-8">
+            <h2 className="mb-1 flex items-center gap-1.5 text-lg font-semibold">
+              生成速度
+              <HelpTip text="单路长输出：decodeTps = completion_tokens / (总耗时 - TTFT)。最接近「模型生成快不快」。" />
+            </h2>
+            {!hasGeneration ? (
+              <p className="mt-4 text-sm text-black/55">本次未测生成速度。</p>
+            ) : (
+              <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                <MetricCard
+                  title="直连 · 解码速度（中位）"
+                  tip="decodeTps，单位 tok/s。"
+                  value={genD?.decodeTps?.p50 != null ? String(genD.decodeTps.p50) : '—'}
+                  sub={
+                    genD
+                      ? `均值 ${genD.decodeTps?.mean ?? '—'} · 输出约 ${genD.outputTokens?.mean ?? '—'} tokens`
+                      : undefined
+                  }
+                />
+                <MetricCard
+                  title="组装 · 解码速度（中位）"
+                  value={genA?.decodeTps?.p50 != null ? String(genA.decodeTps.p50) : '—'}
+                  sub={
+                    genA
+                      ? `均值 ${genA.decodeTps?.mean ?? '—'} · 输出约 ${genA.outputTokens?.mean ?? '—'} tokens`
+                      : undefined
+                  }
+                />
+                <MetricCard
+                  title="直连 · TPOT（均值）"
+                  tip="Time Per Output Token，首 token 之后每个输出 token 的平均耗时。"
+                  value={fmtMs(genD?.tpotMs?.mean)}
+                />
+                <MetricCard title="组装 · TPOT（均值）" value={fmtMs(genA?.tpotMs?.mean)} />
+              </div>
+            )}
+          </section>
+
+          <section className="mt-8">
+            <h2 className="mb-1 flex items-center gap-1.5 text-lg font-semibold">
+              长输出吞吐
+              <HelpTip text="短 prompt + 较大 max_tokens 的并发压测。看多用户同时长生成时的承载，不是单路解码速度。" />
+            </h2>
+            {!hasLongOutput ? (
+              <p className="mt-4 text-sm text-black/55">本次未测长输出吞吐。</p>
+            ) : (
+              <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                <MetricCard
+                  title="直连 · 每分钟请求数"
+                  value={String(loD?.rpm ?? '—')}
+                  sub={loD ? `错误率 ${((loD.errorRate ?? 0) * 100).toFixed(1)}%` : undefined}
+                />
+                <MetricCard title="组装 · 每分钟请求数" value={String(loA?.rpm ?? '—')} />
+                <MetricCard title="直连 · 每分钟 Token" value={String(loD?.tpm ?? '—')} />
+                <MetricCard title="组装 · 每分钟 Token" value={String(loA?.tpm ?? '—')} />
+                <MetricCard
+                  title="直连 · 每秒输出"
+                  tip="并发长生成窗口内累计 completion tokens ÷ 时长。"
+                  value={loD?.outputTps != null ? `${loD.outputTps}` : '—'}
+                  sub="tok/s"
+                />
+                <MetricCard
+                  title="组装 · 每秒输出"
+                  value={loA?.outputTps != null ? `${loA.outputTps}` : '—'}
+                  sub="tok/s"
+                />
+              </div>
+            )}
+          </section>
+
+          <section className="mt-8">
+            <h2 className="mb-1 flex items-center gap-1.5 text-lg font-semibold">
+              长输入吞吐
+              <HelpTip text="大 prompt + 小 max_tokens 的并发压测，贴近问数大上下文。默认关闭，仅勾选后有数据。" />
+            </h2>
+            {!hasLongInput ? (
+              <p className="mt-4 text-sm text-black/55">本次未开启长输入吞吐。</p>
+            ) : (
+              <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                <MetricCard
+                  title="直连 · 每分钟请求数"
+                  value={String(liD?.rpm ?? '—')}
+                  sub={liD ? `错误率 ${((liD.errorRate ?? 0) * 100).toFixed(1)}%` : undefined}
+                />
+                <MetricCard title="组装 · 每分钟请求数" value={String(liA?.rpm ?? '—')} />
+                <MetricCard
+                  title="直连 · 每秒输入"
+                  value={liD?.inputTps != null ? `${liD.inputTps}` : '—'}
+                  sub="tok/s"
+                />
+                <MetricCard
+                  title="组装 · 每秒输入"
+                  value={liA?.inputTps != null ? `${liA.inputTps}` : '—'}
+                  sub="tok/s"
+                />
+                <MetricCard title="直连 · TTFT（中位）" value={fmtMs(liD?.ttftMs?.p50)} />
+                <MetricCard title="组装 · TTFT（中位）" value={fmtMs(liA?.ttftMs?.p50)} />
+              </div>
+            )}
           </section>
 
           <section className="mt-8">

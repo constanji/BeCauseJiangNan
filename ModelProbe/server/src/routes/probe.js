@@ -23,6 +23,14 @@ router.post('/run', (req, res) => {
     latencySamples: 3,
     concurrency: 2,
     throughputDurationSec: 20,
+    probeGeneration: true,
+    decodeMaxTokens: 256,
+    decodeSamples: 2,
+    probeLongOutput: true,
+    longOutputMaxTokens: 256,
+    probeLongInput: false,
+    longInputTokens: 4096,
+    longInputMaxTokens: 32,
     probeContext: false,
   };
 

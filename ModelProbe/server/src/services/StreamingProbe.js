@@ -11,6 +11,9 @@ const DEFAULT_PROMPT = 'Reply with exactly one word: ping';
 /** 延迟采样用：短段落即可；禁止冗长思考，避免思考模型把单次采样拖到 1～2 分钟 */
 const LATENCY_PROMPT =
   'Reply immediately with no chain-of-thought. Write exactly 3 short English sentences about river fog. No bullets.';
+/** 生成速度 / 长输出：要求连续输出以尽量吃满 max_tokens */
+const DECODE_PROMPT =
+  'Reply immediately with no chain-of-thought. Write a long continuous English paragraph about rivers, markets, and fog. Keep writing until you hit the length limit. No bullets, no numbering.';
 
 async function streamCompletion({ client, body, timeoutMs = 90000, onHeartbeat }) {
   const startedAt = Date.now();
@@ -162,6 +165,7 @@ async function runAssembledProbe({ endpoint, model, messages, options = {} }) {
 module.exports = {
   DEFAULT_PROMPT,
   LATENCY_PROMPT,
+  DECODE_PROMPT,
   streamCompletion,
   runDirectProbe,
   runAssembledProbe,

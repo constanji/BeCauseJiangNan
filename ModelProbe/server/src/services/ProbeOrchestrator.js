@@ -6,6 +6,7 @@ const { runDirectProbe, runAssembledProbe } = require('./StreamingProbe');
 const {
   collectLatencySamples,
   measureThroughput,
+  measureGenerationThroughput,
   measureContextWindow,
   buildCompareReport,
 } = require('./MetricsCollector');
@@ -70,6 +71,9 @@ async function runProbeTask(taskId) {
     const { model, config } = task;
     const layers = config.layers || ['direct', 'assembled'];
     const layerText = layers.map(layerName).join('、');
+    const probeGeneration = config.probeGeneration !== false;
+    const probeLongOutput = config.probeLongOutput !== false;
+    const probeLongInput = config.probeLongInput === true;
 
     pushLog(`开始探测：端点「${endpoint.name}」，模型 ${model}，层：${layerText}`);
 
@@ -107,8 +111,8 @@ async function runProbeTask(taskId) {
       );
     }
 
-    task.progress = 25;
-    persistReport(taskId, { progress: 25 });
+    task.progress = 20;
+    persistReport(taskId, { progress: 20 });
 
     pushLog('[延迟] 开始采集首 token 时间（TTFT）与 token 间隔（ITL）…');
     const latency = await collectLatencySamples({
@@ -120,27 +124,98 @@ async function runProbeTask(taskId) {
     });
     pushLog('[延迟] 采集完成');
 
-    task.progress = 50;
-    persistReport(taskId, { progress: 50 });
+    task.progress = 35;
+    persistReport(taskId, { progress: 35 });
 
     const throughput = {};
     for (const layer of layers) {
-      pushLog(`[吞吐] 开始压测${layerName(layer)}…`);
+      pushLog(`[短请求吞吐] 开始压测${layerName(layer)}…`);
       throughput[layer] = await measureThroughput({
         endpoint,
         model,
         layer,
         config,
         onLog: pushLog,
+        mode: 'short',
       });
       const tp = throughput[layer];
       pushLog(
-        `[吞吐] ${layerName(layer)}完成：约 ${tp.rpm} 次/分钟，${tp.tpm} tokens/分钟，错误率 ${(tp.errorRate * 100).toFixed(1)}%`,
+        `[短请求吞吐] ${layerName(layer)}完成：约 ${tp.rpm} 次/分钟，${tp.tpm} tokens/分钟，输入 ${tp.inputTps} tok/s、输出 ${tp.outputTps} tok/s，错误率 ${(tp.errorRate * 100).toFixed(1)}%`,
       );
     }
 
-    task.progress = 75;
-    persistReport(taskId, { progress: 75 });
+    task.progress = 50;
+    persistReport(taskId, { progress: 50 });
+
+    let generation = null;
+    if (probeGeneration) {
+      generation = {};
+      for (const layer of layers) {
+        generation[layer] = await measureGenerationThroughput({
+          endpoint,
+          model,
+          layer,
+          config,
+          onLog: pushLog,
+        });
+        const g = generation[layer];
+        pushLog(
+          `[生成速度] ${layerName(layer)}完成：中位 decodeTps ${g.decodeTps?.p50 ?? '—'} tok/s，TPOT ${g.tpotMs?.mean ?? '—'} ms`,
+        );
+      }
+    } else {
+      pushLog('[生成速度] 已跳过');
+    }
+
+    task.progress = 65;
+    persistReport(taskId, { progress: 65 });
+
+    let longOutput = null;
+    if (probeLongOutput) {
+      longOutput = {};
+      for (const layer of layers) {
+        pushLog(`[长输出吞吐] 开始压测${layerName(layer)}…`);
+        longOutput[layer] = await measureThroughput({
+          endpoint,
+          model,
+          layer,
+          config,
+          onLog: pushLog,
+          mode: 'longOutput',
+        });
+        const tp = longOutput[layer];
+        pushLog(
+          `[长输出吞吐] ${layerName(layer)}完成：约 ${tp.rpm} 次/分钟，输出 ${tp.outputTps} tok/s，错误率 ${(tp.errorRate * 100).toFixed(1)}%`,
+        );
+      }
+    } else {
+      pushLog('[长输出吞吐] 已跳过');
+    }
+
+    task.progress = 80;
+    persistReport(taskId, { progress: 80 });
+
+    let longInput = null;
+    if (probeLongInput) {
+      longInput = {};
+      for (const layer of layers) {
+        pushLog(`[长输入吞吐] 开始压测${layerName(layer)}…`);
+        longInput[layer] = await measureThroughput({
+          endpoint,
+          model,
+          layer,
+          config,
+          onLog: pushLog,
+          mode: 'longInput',
+        });
+        const tp = longInput[layer];
+        pushLog(
+          `[长输入吞吐] ${layerName(layer)}完成：约 ${tp.rpm} 次/分钟，输入 ${tp.inputTps} tok/s，TTFT 中位 ${tp.ttftMs?.p50 ?? '—'} ms，错误率 ${(tp.errorRate * 100).toFixed(1)}%`,
+        );
+      }
+    } else {
+      pushLog('[长输入吞吐] 已跳过（未勾选）');
+    }
 
     const context = {};
     if (config.probeContext === true) {
@@ -169,6 +244,9 @@ async function runProbeTask(taskId) {
       identity,
       latency,
       throughput,
+      generation,
+      longOutput,
+      longInput,
       context,
       compare: buildCompareReport(identity, latency, throughput),
       generatedAt: now(),

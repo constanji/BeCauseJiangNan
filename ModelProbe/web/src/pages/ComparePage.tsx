@@ -46,6 +46,12 @@ function extractMetrics(detail: any) {
   const latA = report.latency?.assembled;
   const tpD = report.throughput?.direct;
   const tpA = report.throughput?.assembled;
+  const genD = report.generation?.direct;
+  const genA = report.generation?.assembled;
+  const loD = report.longOutput?.direct;
+  const loA = report.longOutput?.assembled;
+  const liD = report.longInput?.direct;
+  const liA = report.longInput?.assembled;
   return {
     endpoint: detail?.endpoint?.name || report.endpoint?.name || '—',
     model: detail?.model || report.model || '—',
@@ -61,8 +67,27 @@ function extractMetrics(detail: any) {
     rpmAssembled: num(tpA?.rpm),
     tpmDirect: num(tpD?.tpm),
     tpmAssembled: num(tpA?.tpm),
+    inputTpsDirect: num(tpD?.inputTps),
+    inputTpsAssembled: num(tpA?.inputTps),
+    outputTpsDirect: num(tpD?.outputTps),
+    outputTpsAssembled: num(tpA?.outputTps),
     errDirect: num(tpD?.errorRate),
     errAssembled: num(tpA?.errorRate),
+    decodeDirect: num(genD?.decodeTps?.p50),
+    decodeAssembled: num(genA?.decodeTps?.p50),
+    tpotDirect: num(genD?.tpotMs?.mean),
+    tpotAssembled: num(genA?.tpotMs?.mean),
+    longOutRpmDirect: num(loD?.rpm),
+    longOutRpmAssembled: num(loA?.rpm),
+    longOutTpsDirect: num(loD?.outputTps),
+    longOutTpsAssembled: num(loA?.outputTps),
+    longInRpmDirect: num(liD?.rpm),
+    longInRpmAssembled: num(liA?.rpm),
+    longInTpsDirect: num(liD?.inputTps),
+    longInTpsAssembled: num(liA?.inputTps),
+    longInTtftDirect: num(liD?.ttftMs?.p50),
+    longInTtftAssembled: num(liA?.ttftMs?.p50),
+    hasLongInput: Boolean(report.longInput),
     ctxDirect: num(report.context?.direct?.measuredMaxAccepted),
     ctxAssembled: num(report.context?.assembled?.measuredMaxAccepted),
   };
@@ -180,12 +205,34 @@ export default function ComparePage() {
         ' ms',
       ),
       mk('组装 · token 间隔均值 (ITL)', undefined, a.itlAssembled, b.itlAssembled, 'lower', ' ms'),
-      mk('直连 · 每分钟请求 (RPM)', '越大越好（同并发设定下）', a.rpmDirect, b.rpmDirect, 'higher'),
-      mk('组装 · 每分钟请求 (RPM)', undefined, a.rpmAssembled, b.rpmAssembled, 'higher'),
-      mk('直连 · 每分钟 Token (TPM)', '越大越好', a.tpmDirect, b.tpmDirect, 'higher'),
-      mk('组装 · 每分钟 Token (TPM)', undefined, a.tpmAssembled, b.tpmAssembled, 'higher'),
+      mk('直连 · 短请求 RPM', '越大越好（同并发设定下）', a.rpmDirect, b.rpmDirect, 'higher'),
+      mk('组装 · 短请求 RPM', undefined, a.rpmAssembled, b.rpmAssembled, 'higher'),
+      mk('直连 · 短请求 TPM', '越大越好（输入+输出）', a.tpmDirect, b.tpmDirect, 'higher'),
+      mk('组装 · 短请求 TPM', undefined, a.tpmAssembled, b.tpmAssembled, 'higher'),
+      mk('直连 · 短请求每秒输入', '短 ping 窗口口径，非大上下文', a.inputTpsDirect, b.inputTpsDirect, 'higher'),
+      mk('组装 · 短请求每秒输入', undefined, a.inputTpsAssembled, b.inputTpsAssembled, 'higher'),
+      mk('直连 · 短请求每秒输出', '短 ping 窗口口径，非解码速度', a.outputTpsDirect, b.outputTpsDirect, 'higher'),
+      mk('组装 · 短请求每秒输出', undefined, a.outputTpsAssembled, b.outputTpsAssembled, 'higher'),
+      mk('直连 · 生成 decodeTps', '单路解码速度，越大越好', a.decodeDirect, b.decodeDirect, 'higher'),
+      mk('组装 · 生成 decodeTps', undefined, a.decodeAssembled, b.decodeAssembled, 'higher'),
+      mk('直连 · 生成 TPOT', '越小越快', a.tpotDirect, b.tpotDirect, 'lower', ' ms'),
+      mk('组装 · 生成 TPOT', undefined, a.tpotAssembled, b.tpotAssembled, 'lower', ' ms'),
+      mk('直连 · 长输出 RPM', '并发长生成承载', a.longOutRpmDirect, b.longOutRpmDirect, 'higher'),
+      mk('组装 · 长输出 RPM', undefined, a.longOutRpmAssembled, b.longOutRpmAssembled, 'higher'),
+      mk('直连 · 长输出 tok/s', undefined, a.longOutTpsDirect, b.longOutTpsDirect, 'higher'),
+      mk('组装 · 长输出 tok/s', undefined, a.longOutTpsAssembled, b.longOutTpsAssembled, 'higher'),
+      ...(a.hasLongInput && b.hasLongInput
+        ? [
+            mk('直连 · 长输入 RPM', '大上下文并发', a.longInRpmDirect, b.longInRpmDirect, 'higher'),
+            mk('组装 · 长输入 RPM', undefined, a.longInRpmAssembled, b.longInRpmAssembled, 'higher'),
+            mk('直连 · 长输入 tok/s', undefined, a.longInTpsDirect, b.longInTpsDirect, 'higher'),
+            mk('组装 · 长输入 tok/s', undefined, a.longInTpsAssembled, b.longInTpsAssembled, 'higher'),
+            mk('直连 · 长输入 TTFT', '越小越好', a.longInTtftDirect, b.longInTtftDirect, 'lower', ' ms'),
+            mk('组装 · 长输入 TTFT', undefined, a.longInTtftAssembled, b.longInTtftAssembled, 'lower', ' ms'),
+          ]
+        : []),
       mk(
-        '直连 · 错误率',
+        '直连 · 短请求错误率',
         '越小越好',
         a.errDirect,
         b.errDirect,
@@ -194,7 +241,7 @@ export default function ComparePage() {
         (n) => (n == null ? '—' : `${(n * 100).toFixed(1)}%`),
       ),
       mk(
-        '组装 · 错误率',
+        '组装 · 短请求错误率',
         undefined,
         a.errAssembled,
         b.errAssembled,

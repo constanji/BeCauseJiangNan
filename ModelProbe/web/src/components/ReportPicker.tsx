@@ -6,7 +6,16 @@ export type ReportOption = {
   endpointName?: string;
   model?: string;
   createdAt?: string;
+  imported?: boolean;
 };
+
+function ImportBadge() {
+  return (
+    <span className="ml-1.5 inline-block shrink-0 rounded bg-black/5 px-1.5 py-0.5 text-[10px] font-medium text-black/45">
+      导入
+    </span>
+  );
+}
 
 function shortTime(iso?: string) {
   if (!iso) return '';
@@ -57,7 +66,10 @@ function ReportRow({
         {selected && <Check className="h-4 w-4 text-accent" />}
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block truncate font-mono text-xs text-ink">{r.model || '—'}</span>
+        <span className="flex items-center gap-1">
+          <span className="truncate font-mono text-xs text-ink">{r.model || '—'}</span>
+          {r.imported && <ImportBadge />}
+        </span>
         <span className="mt-0.5 block text-[11px] text-black/45">{shortTime(r.createdAt)}</span>
       </span>
     </button>
@@ -109,8 +121,11 @@ export default function ReportPicker({
         <span className="min-w-0 flex-1">
           {selected ? (
             <>
-              <span className="block truncate font-medium text-ink">
-                {selected.endpointName || '端点'}
+              <span className="flex items-center">
+                <span className="truncate font-medium text-ink">
+                  {selected.endpointName || '端点'}
+                </span>
+                {selected.imported && <ImportBadge />}
               </span>
               <span className="mt-0.5 block truncate font-mono text-xs text-black/55">
                 {selected.model}

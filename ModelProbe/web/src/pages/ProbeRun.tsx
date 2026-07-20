@@ -16,6 +16,14 @@ export default function ProbeRun() {
   const [latencySamples, setLatencySamples] = useState(3);
   const [concurrency, setConcurrency] = useState(2);
   const [throughputDurationSec, setThroughputDurationSec] = useState(20);
+  const [probeGeneration, setProbeGeneration] = useState(true);
+  const [decodeMaxTokens, setDecodeMaxTokens] = useState(256);
+  const [decodeSamples, setDecodeSamples] = useState(2);
+  const [probeLongOutput, setProbeLongOutput] = useState(true);
+  const [longOutputMaxTokens, setLongOutputMaxTokens] = useState(256);
+  const [probeLongInput, setProbeLongInput] = useState(false);
+  const [longInputTokens, setLongInputTokens] = useState(4096);
+  const [longInputMaxTokens, setLongInputMaxTokens] = useState(32);
   const [probeContext, setProbeContext] = useState(false);
   const [taskId, setTaskId] = useState<string | null>(null);
   const [task, setTask] = useState<any>(null);
@@ -76,6 +84,14 @@ export default function ProbeRun() {
           latencySamples,
           concurrency,
           throughputDurationSec,
+          probeGeneration,
+          decodeMaxTokens,
+          decodeSamples,
+          probeLongOutput,
+          longOutputMaxTokens,
+          probeLongInput,
+          longInputTokens,
+          longInputMaxTokens,
           probeContext,
         },
       });
@@ -163,31 +179,98 @@ export default function ProbeRun() {
             </FieldLabel>
             <FieldLabel
               label="并发数"
-              tip="吞吐阶段同时打出去的请求数。用来估 RPM/TPM，不是极限压测。网关限流严时可改成 1。"
+              tip="用于短请求 / 长输出 / 长输入并发段，不是生成速度（生成速度固定单路）。网关限流严时可改成 1。"
             >
               <input type="number" min={1} value={concurrency} onChange={(e) => setConcurrency(Number(e.target.value))} className={inputCls} />
             </FieldLabel>
             <FieldLabel
               label="吞吐时长（秒）"
-              tip="吞吐压测持续多久。时间越长 RPM/TPM 越接近稳态，但更耗配额。默认 20 秒。"
+              tip="短请求 / 长输出 / 长输入并发压测持续多久。时间越长越接近稳态，但更耗配额。默认 20 秒。"
             >
               <input type="number" min={5} value={throughputDurationSec} onChange={(e) => setThroughputDurationSec(Number(e.target.value))} className={inputCls} />
             </FieldLabel>
+            <FieldLabel
+              label="生成采样次数"
+              tip="单路生成速度采样次数。用来算 decodeTps / TPOT 中位数。"
+            >
+              <input type="number" min={1} value={decodeSamples} onChange={(e) => setDecodeSamples(Number(e.target.value))} className={inputCls} />
+            </FieldLabel>
+            <FieldLabel
+              label="生成 max_tokens"
+              tip="生成速度阶段每次最多生成多少 token。默认 256。"
+            >
+              <input type="number" min={32} value={decodeMaxTokens} onChange={(e) => setDecodeMaxTokens(Number(e.target.value))} className={inputCls} />
+            </FieldLabel>
+            <FieldLabel
+              label="长输出 max_tokens"
+              tip="长输出并发吞吐每次请求的生成上限。默认 256；越大越费时费配额。"
+            >
+              <input type="number" min={32} value={longOutputMaxTokens} onChange={(e) => setLongOutputMaxTokens(Number(e.target.value))} className={inputCls} />
+            </FieldLabel>
           </div>
 
-          <label className="flex items-start gap-2 text-sm">
-            <input
-              type="checkbox"
-              className="mt-0.5"
-              checked={probeContext}
-              onChange={(e) => setProbeContext(e.target.checked)}
-            />
-            <span className="flex items-center gap-1.5">
-              探测上下文窗口
-              <HelpTip text="会用越来越长的文本试探供应商能接受的上限（阶梯 + 二分）。默认关闭：耗时长、费 token，且结果是近似值，不是精确上下文窗口。" />
-              <span className="text-black/45">（默认关闭）</span>
-            </span>
-          </label>
+          <div className="space-y-2 text-sm">
+            <label className="flex items-start gap-2">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={probeGeneration}
+                onChange={(e) => setProbeGeneration(e.target.checked)}
+              />
+              <span className="flex items-center gap-1.5">
+                生成速度（单路解码）
+                <HelpTip text="短 prompt + 较大 max_tokens，顺序测 decodeTps。回答「模型生成快不快」。默认开启。" />
+              </span>
+            </label>
+            <label className="flex items-start gap-2">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={probeLongOutput}
+                onChange={(e) => setProbeLongOutput(e.target.checked)}
+              />
+              <span className="flex items-center gap-1.5">
+                长输出并发吞吐
+                <HelpTip text="多路同时长生成，看真实多用户承载。比短 ping 更耗配额。默认开启。" />
+              </span>
+            </label>
+            <label className="flex items-start gap-2">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={probeLongInput}
+                onChange={(e) => setProbeLongInput(e.target.checked)}
+              />
+              <span className="flex items-center gap-1.5">
+                长输入并发吞吐
+                <HelpTip text="大 prompt（贴近问数上下文）下的并发能力。很费 token，可能压到网关。默认关闭。" />
+                <span className="text-black/45">（默认关闭）</span>
+              </span>
+            </label>
+            {probeLongInput && (
+              <div className="grid grid-cols-2 gap-3 pl-6">
+                <FieldLabel label="长输入约 tokens" tip="填充文本目标长度，近似值。">
+                  <input type="number" min={512} value={longInputTokens} onChange={(e) => setLongInputTokens(Number(e.target.value))} className={inputCls} />
+                </FieldLabel>
+                <FieldLabel label="长输入 max_tokens" tip="大输入后只生成少量 token，默认 32。">
+                  <input type="number" min={1} value={longInputMaxTokens} onChange={(e) => setLongInputMaxTokens(Number(e.target.value))} className={inputCls} />
+                </FieldLabel>
+              </div>
+            )}
+            <label className="flex items-start gap-2">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={probeContext}
+                onChange={(e) => setProbeContext(e.target.checked)}
+              />
+              <span className="flex items-center gap-1.5">
+                探测上下文窗口
+                <HelpTip text="会用越来越长的文本试探供应商能接受的上限（阶梯 + 二分）。默认关闭：耗时长、费 token，且结果是近似值，不是精确上下文窗口。" />
+                <span className="text-black/45">（默认关闭）</span>
+              </span>
+            </label>
+          </div>
 
           <button
             type="button"
