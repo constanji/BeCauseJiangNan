@@ -186,6 +186,7 @@ Because-2.0/数据表/机构关系.txt
 # Deployment unnecessary folders
 JiangNan/
 Bc服务器用文件/
+ModelProbe服务器用文件/
 dat/
 
 # Docker / 部署镜像包（勿提交；历史里若已有需另做 filter-repo）
