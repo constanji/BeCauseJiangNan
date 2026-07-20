@@ -1,0 +1,17 @@
+name: modelprobe-server
+
+services:
+  api:
+    container_name: ModelProbe-Server
+    image: ${MODEL_PROBE_IMAGE:-modelprobe:result}
+    restart: always
+    ports:
+      - "${PORT:-4200}:4200"
+    env_file:
+      - .env
+    environment:
+      - HOST=0.0.0.0
+      - PORT=4200
+      - MODEL_PROBE_DATA_DIR=/app/data
+    volumes:
+      - ./data:/app/data
