@@ -189,6 +189,7 @@ Bc服务器用文件/
 ModelProbe服务器用文件/
 Schema服务器用文件/
 TokenProbe服务器用文件/
+TokenProbe服务器用文件.zip
 dat/
 
 # Local TokenProbe runtime artifacts
