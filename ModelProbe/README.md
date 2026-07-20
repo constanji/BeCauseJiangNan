@@ -51,11 +51,17 @@ npm run start
 - **身份**：L1 UI 选择 → L2 出站 body → L3 provider 回包
 - **TTFT / ITL**：流式首 token 与 token 间隔（warmup 后采样）
 - **RPM / TPM**：固定并发与时长压测
-- **上下文**：阶梯 + 二分探测最大可接受 input tokens
+- **上下文**：可选；默认关闭。开启后做阶梯 + 二分近似探测（非精确 token 计数）
+
+## 报告导入 / 导出
+
+- **导出**：报告详情页 →「导出 JSON」，格式为 `{ format: "modelprobe-report", version: 1, report: {...} }`
+- **导入**：报告列表页 →「导入 JSON」，可识别：上述包装格式、纯 report 对象、或详情接口整包
+- 导入后会生成新的 taskId，列表中标记「导入」
 
 ## 联调检查清单
 
 1. 新建端点 → 测连成功
 2. 选择模型 → Direct + Assembled 探测完成
 3. 报告页身份三层对照、延迟/吞吐/上下文卡片可读
-4. 导出 JSON 报告
+4. 导出 JSON，再在另一环境导入验证
