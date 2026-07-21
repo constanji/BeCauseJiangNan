@@ -49,6 +49,16 @@ export default function ChatRoute() {
 
   const isTemporaryChat = conversation && conversation.expiredAt ? true : false;
 
+  /**
+   * useGetModelsQuery 使用 initialData（含 initial: []）。
+   * `!modelsQuery.data?.initial` 在 initial=[] 时恒为 false（[] 为 truthy），
+   * 且 initialData 下 isLoading 恒为 false → /c/new 会 return null 白屏。
+   * 占位期间若仍在拉取则等待；拉取结束（成功替换或失败留下占位）后允许初始化。
+   */
+  const isModelsPlaceholder = Array.isArray(modelsQuery.data?.initial);
+  const waitingForModels =
+    isModelsPlaceholder && (modelsQuery.isFetching || modelsQuery.isLoading);
+
   // 处理404错误：对话不存在时重定向到新对话
   useEffect(() => {
     if (
@@ -79,8 +89,9 @@ export default function ChatRoute() {
    *  Adjusting this may have unintended consequences on the conversation state.
    */
   useEffect(() => {
-    const shouldSetConvo =
-      (startupConfig && !hasSetConversation.current && !modelsQuery.data?.initial) ?? false;
+    const shouldSetConvo = Boolean(
+      startupConfig && !hasSetConversation.current && modelsQuery.data && !waitingForModels,
+    );
     /* Early exit if startupConfig is not loaded and conversation is already set and only initial models have loaded */
     if (!shouldSetConvo) {
       return;
@@ -142,9 +153,18 @@ export default function ChatRoute() {
     endpointsQuery.data,
     modelsQuery.data,
     assistantListMap,
+    waitingForModels,
   ]);
 
-  if (endpointsQuery.isLoading || modelsQuery.isLoading) {
+  const showBootstrapSpinner =
+    endpointsQuery.isLoading ||
+    waitingForModels ||
+    (Boolean(conversationId) &&
+      conversationId !== Constants.SEARCH &&
+      !conversation &&
+      isAuthenticated);
+
+  if (showBootstrapSpinner) {
     return (
       <div className="flex h-screen items-center justify-center" aria-live="polite" role="status">
         <Spinner className="text-text-primary" />
@@ -160,13 +180,16 @@ export default function ChatRoute() {
   if (conversation?.conversationId === Constants.SEARCH) {
     return null;
   }
-  // if conversationId not match
-  if (conversation?.conversationId !== conversationId && !conversation) {
-    return null;
-  }
   // if conversationId is null
   if (!conversationId) {
     return null;
+  }
+  if (!conversation) {
+    return (
+      <div className="flex h-screen items-center justify-center" aria-live="polite" role="status">
+        <Spinner className="text-text-primary" />
+      </div>
+    );
   }
 
   return (

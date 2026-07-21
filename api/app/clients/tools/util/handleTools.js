@@ -23,6 +23,7 @@ const {
   manifestToolMap,
   SqlExecutor,
   BeCauseSkills2,
+  BeCauseSkills3,
   GenerateExcel,
   EChartsGeneratorAPP,
 } = require('../');
@@ -163,6 +164,7 @@ const loadTools = async ({
   const toolConstructors = {
     calculator: Calculator,
     because_skills_2: BeCauseSkills2, // BeCause问数工具2.0 - 波动归因增强版
+    because_skills_3: BeCauseSkills3, // BeCause问数工具3.0 - 瘦身版
     sql_executor: SqlExecutor,
     generate_excel: GenerateExcel,
     echarts_generator_app: EChartsGeneratorAPP,
@@ -174,6 +176,14 @@ const loadTools = async ({
 
   const toolOptions = {
     because_skills_2: {
+      userId: user,
+      req: options.req,
+      projectRoot: paths.root,
+      conversation: options.conversation,
+      agentId: agent?.id || options.req?.body?.agent_id || options.req?.body?.endpointOption?.agent_id || null,
+      dataSourceId: agent?.data_source_id || null,
+    },
+    because_skills_3: {
       userId: user,
       req: options.req,
       projectRoot: paths.root,

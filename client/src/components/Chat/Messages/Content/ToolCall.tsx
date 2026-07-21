@@ -9,7 +9,7 @@ import ToolCallInfo from './ToolCallInfo';
 import ProgressText from './ProgressText';
 import { logger, cn } from '~/utils';
 import { extractChartDataFromToolOutput } from './ChartRenderer';
-import { extractBecauseSkillsCommand, formatToolFailureSummary, isToolOutputError } from '~/utils/toolCallDisplay';
+import { extractBecauseSkillsCommand, formatToolFailureSummary, isBeCauseSkillsToolName, isToolOutputError } from '~/utils/toolCallDisplay';
 
 export default function ToolCall({
   initialProgress = 0.1,
@@ -61,7 +61,7 @@ export default function ToolCall({
   }, [name]);
 
   const displayName = useMemo(() => {
-    if (function_name !== 'because_skills' && function_name !== 'because_skills_2') {
+    if (!isBeCauseSkillsToolName(function_name)) {
       return function_name;
     }
     return extractBecauseSkillsCommand(_args) || function_name;

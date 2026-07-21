@@ -12,6 +12,7 @@ import MarkdownLite from '~/components/Chat/Messages/Content/MarkdownLite';
 import { ChartRenderer, extractChartDataFromToolOutput } from '~/components/Chat/Messages/Content/ChartRenderer';
 import {
   extractBecauseSkillsCommand,
+  isBeCauseSkillsToolName,
   mapStandaloneToolName,
   isToolOutputError,
 } from '~/utils/toolCallDisplay';
@@ -265,7 +266,7 @@ function SidePanelToolCallItem({
     return toolCall.args;
   }, [toolCall.args]);
 
-  const isBeCauseSkills = function_name === 'because_skills' || function_name === 'because_skills_2';
+  const isBeCauseSkills = isBeCauseSkillsToolName(function_name);
 
   // 获取子工具名称（如果是 because_skills / because_skills_2）
   const subToolName = useMemo(() => {

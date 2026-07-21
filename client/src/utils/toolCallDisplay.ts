@@ -13,6 +13,16 @@ const becauseSkillsCommandMap: Record<string, string> = {
   'cell-vectorization': '单元格向量化',
 };
 
+export const BECAUSE_SKILLS_TOOL_NAMES = new Set([
+  'because_skills',
+  'because_skills_2',
+  'because_skills_3',
+]);
+
+export function isBeCauseSkillsToolName(name?: string | null): boolean {
+  return !!name && BECAUSE_SKILLS_TOOL_NAMES.has(name);
+}
+
 export function mapBecauseSkillsCommand(command?: string | null): string | null {
   if (!command || typeof command !== 'string') {
     return null;
