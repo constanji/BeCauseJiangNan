@@ -168,27 +168,20 @@ async function updateInterfaceConfig(req, res) {
       return res.status(500).json({ error: errorMessage });
     }
 
-    // 清除缓存，强制重新加载配置
-    const { getLogStores } = require('~/cache');
-    const { CacheKeys } = require('@because/data-provider');
-    const cache = getLogStores(CacheKeys.CONFIG_STORE);
-    
-    // 清除所有相关缓存
-    await cache.delete(CacheKeys.STARTUP_CONFIG);
-    await cache.delete(CacheKeys.APP_CONFIG);
-    
-    // 也清除 BASE_CONFIG_KEY（如果存在）
-    const BASE_CONFIG_KEY = 'base';
-    await cache.delete(BASE_CONFIG_KEY);
-    
-    // 清除所有角色相关的缓存（如果有）
-    // 注意：这里我们无法知道所有可能的角色，所以只能清除已知的缓存键
-    // 实际的角色缓存会在下次请求时自动刷新
-    
-    logger.info('[updateInterfaceConfig] Cache cleared: STARTUP_CONFIG, APP_CONFIG, BASE_CONFIG_KEY');
-    logger.info('[updateInterfaceConfig] Config saved successfully. Next request will reload from file.');
+    // 统一运行时重载（修正 APP_CONFIG namespace 清理）
+    const { reloadRuntimeConfig } = require('~/server/services/Config');
+    const reloadResult = await reloadRuntimeConfig({ scope: 'interface', req, yamlSaved: true });
 
-    res.json({ success: true, message: 'Interface configuration updated successfully' });
+    logger.info('[updateInterfaceConfig] Config saved; runtime reload result:', reloadResult);
+
+    res.json({
+      success: reloadResult.runtimeReloaded,
+      yamlSaved: reloadResult.yamlSaved,
+      runtimeReloaded: reloadResult.runtimeReloaded,
+      warnings: reloadResult.warnings,
+      needRestart: reloadResult.needRestart,
+      message: 'Interface configuration updated successfully',
+    });
   } catch (error) {
     logger.error('Error updating interface configuration:', error);
     res.status(500).json({ error: error.message || 'Failed to update interface configuration' });

@@ -44,6 +44,29 @@ export class MCPManager extends UserConnectionManager {
     this.appConnections = new ConnectionsRepository(appConfigs);
   }
 
+  /**
+   * Hot-reload MCP registry and app connections after Because.yaml mcpServers change.
+   * Disconnects existing connections, force-reinspects servers, rebuilds appConnections.
+   */
+  public async reinitializeFromConfigs(
+    configs: t.MCPServers,
+  ): Promise<{ warnings: string[] }> {
+    if (this.appConnections) {
+      await Promise.allSettled(this.appConnections.disconnectAll());
+    }
+
+    for (const userId of Array.from(this.userConnections.keys())) {
+      await this.disconnectUserConnections(userId).catch((err) =>
+        logger.error(`[MCP][User: ${userId}] Error disconnecting during reinitialize:`, err),
+      );
+    }
+
+    const { warnings } = await MCPServersInitializer.reinitialize(configs);
+    const appConfigs = await registry.sharedAppServers.getAll();
+    this.appConnections = new ConnectionsRepository(appConfigs);
+    return { warnings };
+  }
+
   /** Retrieves an app-level or user-specific connection based on provided arguments */
   public async getConnection(
     args: {

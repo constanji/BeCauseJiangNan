@@ -19,6 +19,7 @@ import {
   Grid,
 } from 'lucide-react';
 import MCPConfigEditor from './MCPConfigEditor';
+import { formatConfigSaveToast } from './configSaveToast';
 
 interface MCPManagementProps {
   startupConfig?: TStartupConfig;
@@ -185,11 +186,18 @@ export default function MCPManagement({ startupConfig: propStartupConfig }: MCPM
         throw new Error(errorData.error || '保存失败');
       }
 
+      const result = await response.json().catch(() => ({}));
+
       queryClient.invalidateQueries([QueryKeys.startupConfig]);
+      queryClient.invalidateQueries([QueryKeys.mcpTools]);
+      queryClient.invalidateQueries([QueryKeys.tools]);
       await refetch();
       await refreshServers();
       await queryClient.invalidateQueries([QueryKeys.mcpConnectionStatus]);
       await refetchConnectionStatus();
+
+      const toast = formatConfigSaveToast(result, 'MCP服务器配置保存成功');
+      showToast(toast);
       setShowEditor(false);
       setEditingServer(undefined);
     } catch (error) {
@@ -220,8 +228,12 @@ export default function MCPManagement({ startupConfig: propStartupConfig }: MCPM
         throw new Error(errorData.error || '删除失败');
       }
 
-      showToast({ message: 'MCP服务器配置删除成功', status: 'success' });
+      const result = await response.json().catch(() => ({}));
+      const toast = formatConfigSaveToast(result, 'MCP服务器配置删除成功');
+      showToast(toast);
       queryClient.invalidateQueries([QueryKeys.startupConfig]);
+      queryClient.invalidateQueries([QueryKeys.mcpTools]);
+      queryClient.invalidateQueries([QueryKeys.tools]);
       await refetch();
       await refreshServers();
       await queryClient.invalidateQueries([QueryKeys.mcpConnectionStatus]);

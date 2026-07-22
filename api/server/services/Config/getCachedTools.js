@@ -62,23 +62,122 @@ async function setCachedTools(tools, options = {}) {
  * @param {string} [options.userId] - User ID for user-specific MCP tools
  * @param {string} [options.serverName] - MCP server name to invalidate
  * @param {boolean} [options.invalidateGlobal=false] - Whether to invalidate global tools
+ * @param {boolean} [options.invalidateAllMCP=false] - Whether to invalidate all tools:mcp:* entries
+ * @param {string[]} [options.userIds] - Known user IDs for direct MCP cache deletes
+ * @param {string[]} [options.serverNames] - Known server names for direct MCP cache deletes
  * @returns {Promise<void>}
  */
 async function invalidateCachedTools(options = {}) {
   const cache = getLogStores(CacheKeys.CONFIG_STORE);
-  const { userId, serverName, invalidateGlobal = false } = options;
+  const {
+    userId,
+    serverName,
+    invalidateGlobal = false,
+    invalidateAllMCP = false,
+    userIds = [],
+    serverNames = [],
+  } = options;
 
-  const keysToDelete = [];
+  const keysToDelete = new Set();
 
   if (invalidateGlobal) {
-    keysToDelete.push(ToolCacheKeys.GLOBAL);
+    keysToDelete.add(ToolCacheKeys.GLOBAL);
   }
 
   if (serverName && userId) {
-    keysToDelete.push(ToolCacheKeys.MCP_SERVER(userId, serverName));
+    keysToDelete.add(ToolCacheKeys.MCP_SERVER(userId, serverName));
   }
 
-  await Promise.all(keysToDelete.map((key) => cache.delete(key)));
+  if (userIds.length > 0 && serverNames.length > 0) {
+    for (const uid of userIds) {
+      for (const name of serverNames) {
+        if (uid && name) {
+          keysToDelete.add(ToolCacheKeys.MCP_SERVER(uid, name));
+        }
+      }
+    }
+  }
+
+  await Promise.all([...keysToDelete].map((key) => cache.delete(key)));
+
+  if (invalidateAllMCP) {
+    await invalidateAllMCPServerTools();
+  }
+}
+
+/**
+ * Deletes every `tools:mcp:${userId}:${serverName}` entry in CONFIG_STORE.
+ * Covers Keyv iterator, in-memory Map stores, and Redis SCAN when available.
+ * @returns {Promise<number>} Number of keys deleted via scan (known-combo deletes are separate)
+ */
+async function invalidateAllMCPServerTools() {
+  const cache = getLogStores(CacheKeys.CONFIG_STORE);
+  const prefix = 'tools:mcp:';
+  const keysToDelete = new Set();
+
+  // Path 1: Keyv iterator (Redis Keyv / some stores)
+  try {
+    if (typeof cache.iterator === 'function') {
+      for await (const [key] of cache.iterator()) {
+        if (typeof key === 'string' && key.startsWith(prefix)) {
+          keysToDelete.add(key);
+        }
+      }
+    }
+  } catch {
+    // iterator unsupported — fall through
+  }
+
+  // Path 2: In-memory Map store (Keyv default / forced in-memory)
+  try {
+    const store = cache?.opts?.store;
+    if (store?.keys) {
+      const namespace = cache.opts?.namespace || '';
+      for (const fullKey of store.keys()) {
+        const key = String(fullKey);
+        const idx = key.indexOf(prefix);
+        if (idx === -1) {
+          continue;
+        }
+        // Prefer logical key after namespace: (e.g. CONFIG_STORE:tools:mcp:...)
+        if (namespace && key.startsWith(`${namespace}:`)) {
+          keysToDelete.add(key.slice(namespace.length + 1));
+        } else {
+          keysToDelete.add(key.slice(idx));
+        }
+      }
+    }
+  } catch {
+    // store.keys unsupported
+  }
+
+  // Path 3: Redis SCAN — covers keys iterator may miss across Keyv versions
+  try {
+    const { ioredisClient, cacheConfig } = require('@because/api');
+    if (ioredisClient && cacheConfig?.USE_REDIS) {
+      const redisPrefix = cacheConfig.REDIS_KEY_PREFIX || '';
+      const sep = cacheConfig.GLOBAL_PREFIX_SEPARATOR || '::';
+      const namespace = cache.opts?.namespace || CacheKeys.CONFIG_STORE;
+      const pattern = `${redisPrefix}${sep}${namespace}:${prefix}*`;
+      let cursor = '0';
+      do {
+        const [nextCursor, found] = await ioredisClient.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
+        cursor = nextCursor;
+        for (const redisKey of found) {
+          const marker = `${namespace}:`;
+          const markerIdx = redisKey.indexOf(marker);
+          if (markerIdx !== -1) {
+            keysToDelete.add(redisKey.slice(markerIdx + marker.length));
+          }
+        }
+      } while (cursor !== '0');
+    }
+  } catch {
+    // Redis unavailable or not configured
+  }
+
+  await Promise.all([...keysToDelete].map((key) => cache.delete(key)));
+  return keysToDelete.size;
 }
 
 /**
@@ -105,4 +204,5 @@ module.exports = {
   setCachedTools,
   getMCPServerTools,
   invalidateCachedTools,
+  invalidateAllMCPServerTools,
 };

@@ -7,6 +7,7 @@ import { useLocalize, useAuthContext } from '~/hooks';
 import { cn } from '~/utils';
 import { Plus, Settings, ChevronDown, X, Trash2 } from 'lucide-react';
 import EndpointConfigEditor from './EndpointConfigEditor';
+import { formatConfigSaveToast } from './configSaveToast';
 
 interface EndpointConfig {
   name: string;
@@ -192,6 +193,10 @@ export default function EndpointsConfig({ startupConfig: propStartupConfig }: En
         throw new Error(errorData.error || '保存失败');
       }
 
+      const result = await response.json().catch(() => ({}));
+      const toast = formatConfigSaveToast(result, '端点配置保存成功');
+      showToast(toast);
+
       // 清除缓存并刷新配置（含端点与模型列表，避免编辑智能体时选择提供商后不显示可用模型）
       queryClient.invalidateQueries([QueryKeys.startupConfig]);
       queryClient.invalidateQueries([QueryKeys.endpoints]);
@@ -233,10 +238,9 @@ export default function EndpointsConfig({ startupConfig: propStartupConfig }: En
         throw new Error(errorData.error || '删除失败');
       }
 
-      showToast({
-        message: '端点配置删除成功',
-        status: 'success',
-      });
+      const result = await response.json().catch(() => ({}));
+      const toast = formatConfigSaveToast(result, '端点配置删除成功');
+      showToast(toast);
 
       // 清除缓存并刷新配置（含端点与模型列表）
       queryClient.invalidateQueries([QueryKeys.startupConfig]);

@@ -2,8 +2,6 @@ const fs = require('fs').promises;
 const path = require('path');
 const yaml = require('js-yaml');
 const { logger } = require('@because/data-schemas');
-const { CacheKeys } = require('@because/data-provider');
-const { getLogStores } = require('~/cache');
 const getConfigPath = require('~/server/utils/getConfigPath');
 
 // 获取自定义端点配置
@@ -128,16 +126,17 @@ async function saveCustomEndpointsConfig(req, res) {
 
     await fs.writeFile(configPath, updatedYaml, 'utf8');
 
-    // Clear caches so endpoint list and models list refresh
-    const cache = getLogStores(CacheKeys.CONFIG_STORE);
-    await cache.delete(CacheKeys.STARTUP_CONFIG);
-    await cache.delete(CacheKeys.ENDPOINT_CONFIG);
-    await cache.delete(CacheKeys.MODELS_CONFIG);
+    const { reloadRuntimeConfig } = require('~/server/services/Config');
+    const reloadResult = await reloadRuntimeConfig({ scope: 'endpoints', req, yamlSaved: true });
 
     logger.info(`Custom endpoint "${endpoint.name}" ${existingIndex >= 0 ? 'updated' : 'added'} successfully`);
 
     return res.status(200).json({
-      success: true,
+      success: reloadResult.runtimeReloaded,
+      yamlSaved: reloadResult.yamlSaved,
+      runtimeReloaded: reloadResult.runtimeReloaded,
+      warnings: reloadResult.warnings,
+      needRestart: reloadResult.needRestart,
       message: `Custom endpoint "${endpoint.name}" ${existingIndex >= 0 ? 'updated' : 'added'} successfully`,
     });
   } catch (err) {
@@ -206,16 +205,17 @@ async function deleteCustomEndpointsConfig(req, res) {
 
     await fs.writeFile(configPath, updatedYaml, 'utf8');
 
-    // Clear caches so endpoint list and models list refresh
-    const cache = getLogStores(CacheKeys.CONFIG_STORE);
-    await cache.delete(CacheKeys.STARTUP_CONFIG);
-    await cache.delete(CacheKeys.ENDPOINT_CONFIG);
-    await cache.delete(CacheKeys.MODELS_CONFIG);
+    const { reloadRuntimeConfig } = require('~/server/services/Config');
+    const reloadResult = await reloadRuntimeConfig({ scope: 'endpoints', req, yamlSaved: true });
 
     logger.info(`Custom endpoint "${endpointName}" deleted successfully`);
 
     return res.status(200).json({
-      success: true,
+      success: reloadResult.runtimeReloaded,
+      yamlSaved: reloadResult.yamlSaved,
+      runtimeReloaded: reloadResult.runtimeReloaded,
+      warnings: reloadResult.warnings,
+      needRestart: reloadResult.needRestart,
       message: `Custom endpoint "${endpointName}" deleted successfully`,
     });
   } catch (err) {

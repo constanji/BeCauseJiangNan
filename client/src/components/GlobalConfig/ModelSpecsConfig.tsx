@@ -3,11 +3,14 @@ import { Button, useToastContext } from '@because/client';
 import { useForm, useFieldArray, Controller, useWatch } from 'react-hook-form';
 import { useDrag, useDrop } from 'react-dnd';
 import type { TStartupConfig, TModelSpec } from '@because/data-provider';
+import { QueryKeys } from '@because/data-provider';
 import { useGetModelsQuery } from '@because/data-provider/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import { useGetEndpointsQuery } from '~/data-provider';
 import { useLocalize } from '~/hooks';
 import { cn, defaultTextProps } from '~/utils';
 import { Plus, Trash2, GripVertical, Eye, EyeOff } from 'lucide-react';
+import { formatConfigSaveToast } from './configSaveToast';
 
 interface ModelSpecsConfigProps {
   startupConfig?: TStartupConfig;
@@ -22,6 +25,7 @@ const ITEM_TYPE = 'MODEL_SPEC_ITEM';
 export default function ModelSpecsConfig({ startupConfig }: ModelSpecsConfigProps) {
   const localize = useLocalize();
   const { showToast } = useToastContext();
+  const queryClient = useQueryClient();
   const { data: endpointsConfig } = useGetEndpointsQuery();
   const { data: modelsData } = useGetModelsQuery();
 
@@ -124,15 +128,18 @@ export default function ModelSpecsConfig({ startupConfig }: ModelSpecsConfigProp
         body: JSON.stringify({ modelSpecs: modelSpecsToSave }),
       });
 
+      const result = await response.json().catch(() => ({}));
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || '保存失败');
+        throw new Error(result.error || '保存失败');
       }
 
-      showToast({
-        message: '配置保存成功',
-        status: 'success',
-      });
+      queryClient.invalidateQueries([QueryKeys.startupConfig]);
+      queryClient.invalidateQueries([QueryKeys.endpoints]);
+      await queryClient.refetchQueries({ queryKey: [QueryKeys.models] });
+      await queryClient.refetchQueries({ queryKey: [QueryKeys.startupConfig] });
+
+      const toast = formatConfigSaveToast(result, '配置保存成功');
+      showToast(toast);
     } catch (error) {
       showToast({
         message: `保存失败: ${error instanceof Error ? error.message : '未知错误'}`,

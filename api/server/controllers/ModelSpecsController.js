@@ -105,16 +105,18 @@ async function saveModelSpecsConfig(req, res) {
     }
 
     // 清除缓存，强制重新加载配置
-    const { getLogStores } = require('~/cache');
-    const { CacheKeys } = require('@because/data-provider');
-    const cache = getLogStores(CacheKeys.CONFIG_STORE);
-    await cache.delete(CacheKeys.STARTUP_CONFIG);
-    await cache.delete(CacheKeys.APP_CONFIG);
-    await cache.delete(CacheKeys.ENDPOINT_CONFIG);
-    await cache.delete(CacheKeys.MODELS_CONFIG);
+    const { reloadRuntimeConfig } = require('~/server/services/Config');
+    const reloadResult = await reloadRuntimeConfig({ scope: 'models', req, yamlSaved: true });
 
     res.setHeader('Content-Type', 'application/json');
-    res.json({ success: true, message: 'Model specs configuration saved successfully' });
+    res.json({
+      success: reloadResult.runtimeReloaded,
+      yamlSaved: reloadResult.yamlSaved,
+      runtimeReloaded: reloadResult.runtimeReloaded,
+      warnings: reloadResult.warnings,
+      needRestart: reloadResult.needRestart,
+      message: 'Model specs configuration saved successfully',
+    });
   } catch (error) {
     logger.error('Error saving model specs configuration:', error);
     res.status(500).json({ error: error.message || 'Failed to save model specs configuration' });

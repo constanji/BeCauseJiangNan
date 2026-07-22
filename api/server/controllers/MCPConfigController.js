@@ -1,12 +1,8 @@
 const fs = require('fs').promises;
-const path = require('path');
 const yaml = require('js-yaml');
 const { logger } = require('@because/data-schemas');
-const { CacheKeys } = require('@because/data-provider');
-const { getLogStores } = require('~/cache');
 const getConfigPath = require('~/server/utils/getConfigPath');
-const { mcpServersRegistry } = require('@because/api');
-const { clearAppConfigCache } = require('~/server/services/Config/app');
+const { reloadRuntimeConfig } = require('~/server/services/Config');
 
 // 获取自定义 MCP 服务器配置
 async function getCustomMCPServersConfig(req, res) {
@@ -41,16 +37,16 @@ async function getCustomMCPServersConfig(req, res) {
     try {
       config = yaml.load(configContent);
     } catch (error) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: 'Invalid YAML format in config file',
-        details: error.message 
+        details: error.message,
       });
     }
 
     const mcpServers = config.mcpServers || {};
-    const servers = Object.entries(mcpServers).map(([serverName, config]) => ({
+    const servers = Object.entries(mcpServers).map(([serverName, serverCfg]) => ({
       serverName,
-      config,
+      config: serverCfg,
     }));
 
     return res.status(200).json({
@@ -59,7 +55,7 @@ async function getCustomMCPServersConfig(req, res) {
     });
   } catch (err) {
     logger.error('[GET /config/mcp/custom] Unexpected error:', err);
-    return res.status(500).json({ 
+    return res.status(500).json({
       error: err.message || 'Internal server error',
     });
   }
@@ -97,11 +93,13 @@ async function saveCustomMCPServersConfig(req, res) {
     } catch (error) {
       if (error.code === 'ENOENT') {
         // 如果配置文件不存在，创建一个新的空配置
-        logger.info(`[POST /config/mcp/custom] Config file not found at ${configPath}, creating new file`);
+        logger.info(
+          `[POST /config/mcp/custom] Config file not found at ${configPath}, creating new file`,
+        );
         config = { version: '1.2.1', cache: true };
       } else {
-      throw error;
-    }
+        throw error;
+      }
     }
 
     // Ensure mcpServers exists
@@ -122,35 +120,17 @@ async function saveCustomMCPServersConfig(req, res) {
 
     await fs.writeFile(configPath, updatedYaml, 'utf8');
 
-    // Clear the startup config cache
-    const cache = getLogStores(CacheKeys.CONFIG_STORE);
-    await cache.delete(CacheKeys.STARTUP_CONFIG);
-    
-    // Clear the app config cache to ensure getAppConfig() returns fresh config with new server
-    // This is critical for connection status endpoint to include newly added servers
-    try {
-      await clearAppConfigCache();
-      logger.info(`[MCP Config] Cleared app config cache after saving server "${serverName}"`);
-    } catch (error) {
-      logger.warn(`[MCP Config] Failed to clear app config cache: ${error.message}`);
-      // Don't fail the request if cache clear fails, config is saved to file
-    }
+    const reloadResult = await reloadRuntimeConfig({ scope: 'mcp', req, yamlSaved: true });
 
-    // Update mcpServersRegistry rawConfigs so the new server is immediately available
-    // This ensures that reinitialize endpoint can find the server config without requiring a server restart
-    try {
-      mcpServersRegistry.setRawConfigs(config.mcpServers || {});
-      logger.info(`[MCP Config] Updated registry rawConfigs with server "${serverName}"`);
-    } catch (error) {
-      logger.warn(`[MCP Config] Failed to update registry rawConfigs: ${error.message}`);
-      // Don't fail the request if registry update fails, config is saved to file
-    }
-
-    logger.info(`MCP server "${serverName}" ${config.mcpServers[serverName] ? 'updated' : 'added'} successfully`);
+    logger.info(`MCP server "${serverName}" saved; runtime reload:`, reloadResult);
 
     return res.status(200).json({
-      success: true,
-      message: `MCP server "${serverName}" ${config.mcpServers[serverName] ? 'updated' : 'added'} successfully`,
+      success: reloadResult.runtimeReloaded,
+      yamlSaved: reloadResult.yamlSaved,
+      runtimeReloaded: reloadResult.runtimeReloaded,
+      warnings: reloadResult.warnings,
+      needRestart: reloadResult.needRestart,
+      message: `MCP server "${serverName}" saved successfully`,
     });
   } catch (err) {
     logger.error('Error updating MCP server config', err);
@@ -211,34 +191,16 @@ async function deleteCustomMCPServersConfig(req, res) {
 
     await fs.writeFile(configPath, updatedYaml, 'utf8');
 
-    // Clear the startup config cache
-    const cache = getLogStores(CacheKeys.CONFIG_STORE);
-    await cache.delete(CacheKeys.STARTUP_CONFIG);
-    
-    // Clear the app config cache to ensure getAppConfig() returns fresh config without deleted server
-    // This is critical for connection status endpoint to exclude deleted servers
-    try {
-      await clearAppConfigCache();
-      logger.info(`[MCP Config] Cleared app config cache after deleting server "${serverName}"`);
-    } catch (error) {
-      logger.warn(`[MCP Config] Failed to clear app config cache: ${error.message}`);
-      // Don't fail the request if cache clear fails, config is saved to file
-    }
+    const reloadResult = await reloadRuntimeConfig({ scope: 'mcp', req, yamlSaved: true });
 
-    // Update mcpServersRegistry rawConfigs to remove the deleted server
-    // This ensures the server is immediately unavailable without requiring a server restart
-    try {
-      mcpServersRegistry.setRawConfigs(config.mcpServers || {});
-      logger.info(`[MCP Config] Updated registry rawConfigs after deleting server "${serverName}"`);
-    } catch (error) {
-      logger.warn(`[MCP Config] Failed to update registry rawConfigs: ${error.message}`);
-      // Don't fail the request if registry update fails, config is saved to file
-    }
-
-    logger.info(`MCP server "${serverName}" deleted successfully`);
+    logger.info(`MCP server "${serverName}" deleted; runtime reload:`, reloadResult);
 
     return res.status(200).json({
-      success: true,
+      success: reloadResult.runtimeReloaded,
+      yamlSaved: reloadResult.yamlSaved,
+      runtimeReloaded: reloadResult.runtimeReloaded,
+      warnings: reloadResult.warnings,
+      needRestart: reloadResult.needRestart,
       message: `MCP server "${serverName}" deleted successfully`,
     });
   } catch (err) {
@@ -252,4 +214,3 @@ module.exports = {
   saveCustomMCPServersConfig,
   deleteCustomMCPServersConfig,
 };
-

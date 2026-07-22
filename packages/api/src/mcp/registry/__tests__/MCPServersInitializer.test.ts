@@ -289,4 +289,77 @@ describe('MCPServersInitializer', () => {
       expect(await registryStatusCache.isInitialized()).toBe(true);
     });
   });
+
+  describe('reinitialize', () => {
+    beforeEach(async () => {
+      await registryStatusCache.reset();
+      await registry.reset();
+      jest.clearAllMocks();
+
+      mockInspect.mockImplementation(async (serverName: string) => {
+        return {
+          ...testParsedConfigs[serverName],
+          _processedByInspector: true,
+        } as unknown as t.ParsedServerConfig;
+      });
+    });
+
+    it('should force re-inspect even when statusCache is already initialized', async () => {
+      await MCPServersInitializer.initialize(testConfigs);
+      expect(await registryStatusCache.isInitialized()).toBe(true);
+
+      mockInspect.mockClear();
+
+      const updated: t.MCPServers = {
+        only_new_server: {
+          type: 'stdio',
+          command: 'node',
+          args: ['new.js'],
+        },
+      };
+      mockInspect.mockResolvedValue({
+        type: 'stdio',
+        command: 'node',
+        args: ['new.js'],
+        requiresOAuth: false,
+        _processedByInspector: true,
+      } as unknown as t.ParsedServerConfig);
+
+      const { warnings } = await MCPServersInitializer.reinitialize(updated);
+
+      expect(warnings).toEqual([]);
+      expect(mockInspect).toHaveBeenCalledWith('only_new_server', updated.only_new_server);
+      expect(await registry.sharedAppServers.get('only_new_server')).toBeDefined();
+      expect(await registry.sharedAppServers.get('file_tools_server')).toBeUndefined();
+      expect(await registry.sharedUserServers.get('oauth_server')).toBeUndefined();
+      expect(await registryStatusCache.isInitialized()).toBe(true);
+    });
+
+    it('should collect warnings when inspection fails without leaving stale servers', async () => {
+      await MCPServersInitializer.initialize(testConfigs);
+
+      mockInspect.mockImplementation(async (serverName: string) => {
+        if (serverName === 'bad_server') {
+          throw new Error('boom');
+        }
+        return {
+          type: 'stdio',
+          command: 'node',
+          args: ['ok.js'],
+          requiresOAuth: false,
+          _processedByInspector: true,
+        } as unknown as t.ParsedServerConfig;
+      });
+
+      const { warnings } = await MCPServersInitializer.reinitialize({
+        bad_server: { type: 'stdio', command: 'node', args: ['bad.js'] },
+        ok_server: { type: 'stdio', command: 'node', args: ['ok.js'] },
+      });
+
+      expect(warnings.some((w) => w.includes('bad_server'))).toBe(true);
+      expect(await registry.sharedAppServers.get('ok_server')).toBeDefined();
+      expect(await registry.sharedAppServers.get('bad_server')).toBeUndefined();
+      expect(await registry.sharedAppServers.get('file_tools_server')).toBeUndefined();
+    });
+  });
 });

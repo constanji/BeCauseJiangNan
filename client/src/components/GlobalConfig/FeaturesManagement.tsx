@@ -17,6 +17,7 @@ import {
 } from '~/components/Chat/Menus/Endpoints/components';
 import { getSelectedIcon, getDisplayValue } from '~/components/Chat/Menus/Endpoints/utils';
 import { CustomMenu as Menu } from '~/components/Chat/Menus/Endpoints/CustomMenu';
+import { formatConfigSaveToast } from './configSaveToast';
 
 interface FeaturesManagementProps {
   startupConfig?: any;
@@ -229,10 +230,9 @@ export default function FeaturesManagement({ startupConfig: propStartupConfig }:
         throw new Error(errorData.error || '保存失败');
       }
 
-      showToast({
-        message: '功能配置保存成功',
-        status: 'success',
-      });
+      const result = await response.json().catch(() => ({}));
+      const toast = formatConfigSaveToast(result, '功能配置保存成功');
+      showToast(toast);
 
       isDirtyRef.current = false;
 

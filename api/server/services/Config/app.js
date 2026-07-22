@@ -69,16 +69,45 @@ async function getAppConfig(options = {}) {
 }
 
 /**
- * Clear the app configuration cache
+ * Clear the app configuration cache (APP_CONFIG namespace, including _BASE_ and role keys).
  * @returns {Promise<boolean>}
  */
 async function clearAppConfigCache() {
-  const cache = getLogStores(CacheKeys.CONFIG_STORE);
-  const cacheKey = CacheKeys.APP_CONFIG;
-  return await cache.delete(cacheKey);
+  const cache = getLogStores(CacheKeys.APP_CONFIG);
+  await cache.delete(BASE_CONFIG_KEY);
+  if (typeof cache.clear === 'function') {
+    await cache.clear();
+  }
+  return true;
+}
+
+/**
+ * Clear APP_CONFIG cache and immediately rebuild from Because.yaml.
+ * Do not rely on getAppConfig({ refresh: true }) alone — that can still return a stale _BASE_.
+ * @returns {Promise<AppConfig>}
+ */
+async function reloadAppConfig() {
+  await clearAppConfigCache();
+  logger.info('[reloadAppConfig] Reloading AppConfig from Because.yaml...');
+  const baseConfig = await loadBaseConfig();
+  if (!baseConfig) {
+    throw new Error('Failed to reload app configuration through AppService.');
+  }
+
+  if (baseConfig.availableTools) {
+    await setCachedTools(baseConfig.availableTools);
+  }
+
+  const cache = getLogStores(CacheKeys.APP_CONFIG);
+  await cache.set(BASE_CONFIG_KEY, baseConfig);
+  logger.info('[reloadAppConfig] AppConfig reloaded and cached');
+  return baseConfig;
 }
 
 module.exports = {
   getAppConfig,
   clearAppConfigCache,
+  reloadAppConfig,
+  BASE_CONFIG_KEY,
+  loadBaseConfig,
 };

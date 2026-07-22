@@ -76,7 +76,49 @@ export class MCPServersInitializer {
       MCPServersInitializer.logParsedConfig(serverName, config);
     } catch (error) {
       logger.error(`${MCPServersInitializer.prefix(serverName)} Failed to initialize:`, error);
+      throw error;
     }
+  }
+
+  /**
+   * Force full re-inspect of MCP servers after admin config changes.
+   * Resets statusCache so initialize() early-return cannot skip work.
+   * @returns warnings for servers that failed to inspect
+   */
+  public static async reinitialize(rawConfigs: t.MCPServers): Promise<{ warnings: string[] }> {
+    const warnings: string[] = [];
+    registry.setRawConfigs(rawConfigs);
+
+    await statusCache.reset();
+    await statusCache.setInitialized(false);
+    await registry.reset();
+
+    const serverNames = Object.keys(rawConfigs);
+    const results = await Promise.allSettled(
+      serverNames.map((serverName) =>
+        withTimeout(
+          MCPServersInitializer.initializeServer(serverName, rawConfigs[serverName]),
+          MCP_INIT_TIMEOUT_MS,
+          `${MCPServersInitializer.prefix(serverName)} Server initialization timed out`,
+          logger.error,
+        ),
+      ),
+    );
+
+    results.forEach((result, index) => {
+      if (result.status === 'rejected') {
+        const name = serverNames[index];
+        const reason =
+          result.reason instanceof Error ? result.reason.message : String(result.reason);
+        warnings.push(`MCP server "${name}" failed to reinitialize: ${reason}`);
+      }
+    });
+
+    await statusCache.setInitialized(true);
+    logger.info(
+      `[MCP] reinitialize complete: ${serverNames.length} server(s), ${warnings.length} warning(s)`,
+    );
+    return { warnings };
   }
 
   // Logs server configuration summary after initialization

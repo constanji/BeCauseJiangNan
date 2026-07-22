@@ -7,6 +7,7 @@ const loadConfigModels = require('./loadConfigModels');
 const loadDefaultModels = require('./loadDefaultModels');
 const getEndpointsConfig = require('./getEndpointsConfig');
 const loadAsyncEndpoints = require('./loadAsyncEndpoints');
+const reloadRuntimeConfig = require('./reloadRuntimeConfig');
 
 module.exports = {
   config,
@@ -18,4 +19,5 @@ module.exports = {
   ...getCachedTools,
   ...mcpToolsCache,
   ...getEndpointsConfig,
+  ...reloadRuntimeConfig,
 };
