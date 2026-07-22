@@ -20,7 +20,6 @@
 - **`because_skills_3.arguments` 必须是 JSON 字符串**；子命令仅含 light-schema / knowledge-discovery / rag-retrieval / database-schema / sql-executor / fluctuation-attribution / result-analysis
 - **禁止**调用 `echarts_generator_app`；**禁止**写 `@ec@` 图表占位标记
 - 归因工具必传 `base_data`/`current_data` 行数组 + `metric_fields`；**两组须按同一 `org_code`/`brchna` 对齐，行数一致**；默认 **`compact:true`**；**归因 Step1 本级后必须走路径甲（有下属→模式2）或路径乙（无下属→拆计算口径）**；仅路径甲/乙均不可行时才读预计算列结束（分支 C）
-- 输出简洁，**禁止 emoji**；**禁止写分析结论以外的思考过程**；格式见 **§9**（>3 行用表格，列名中文）
 
 ### 1.1 金额单位
 
@@ -243,7 +242,7 @@ ELSE（leaf_child_codes 为空 = 叶子网点/无下属）
 - 有 `leaf_child_codes` → **禁止**跳过模式2；**禁止**用路径乙代替机构下钻（除非用户明确要求按指标构成）
 - 无下属且有可解析计算口径 → **禁止**跳过路径乙直接分支 C 或空话建议
 
-### 7.2 fluctuation-attribution 三分支（3.0 瘦身输出）
+### 7.2 fluctuation-attribution 三分支
 
 **公共**：须 `sql-executor` 结果整理后传入；**默认** `analysis_type:"comprehensive"` + **`compact:true`**。  
 **不要**默认传 `include_metric_attribution`；仅当需要回归类子指标分析时才 `analysis_type:"metric"` 或 `include_metric_attribution:true`。
@@ -265,7 +264,7 @@ ELSE（leaf_child_codes 为空 = 叶子网点/无下属）
 
 **基期列映射**：环比 `m_begin_value` | 同比 `ly_value` | 上季 `q_begin_value` | 上年末 `y_begin_value` | 上日 `yd_value` → 现期均 `index_value`
 
-**读返回值（3.0 默认瘦身字段，勿再找 2.0 全量键）**：
+**读返回值**：
 
 | 字段 | 含义 |
 |------|------|
