@@ -182,6 +182,7 @@ hive-mind-prompt-*.txt
 
 # 原始数据表，不入库
 Because-2.0/数据表/机构关系.txt
+数据表/
 
 # Deployment unnecessary folders
 JiangNan/
