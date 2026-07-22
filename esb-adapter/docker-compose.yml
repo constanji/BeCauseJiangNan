@@ -1,0 +1,19 @@
+# 服务器生产：同目录放置 build-amd64.sh 生成的 esb-adapter.tar，deploy.sh 会 docker load
+# 本机开发：无 tar 时 deploy.sh 回退为 docker compose up --build
+
+services:
+  esb-adapter:
+    build: .
+    image: esb-adapter:${TAG:-latest}
+    container_name: esb-adapter
+    restart: unless-stopped
+    ports:
+      - "${PORT:-13001}:13001"
+    env_file:
+      - .env
+    environment:
+      - PORT=13001
+      - ESB_RUNTIME_CONFIG_PATH=/app/data/runtime-config.json
+    volumes:
+      # 热更新配置持久化（改配置不重启容器，重启后仍保留覆盖项）
+      - ./data:/app/data

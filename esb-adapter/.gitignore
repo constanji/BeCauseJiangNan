@@ -1,0 +1,7 @@
+node_modules/
+.env
+*.log
+response.txt
+esb-adapter.tar
+data/
+runtime-config.json
