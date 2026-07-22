@@ -174,16 +174,91 @@ router.post('/:id/copy', (req, res) => {
   res.status(201).json({ success: true, data: rowToPublic(created) });
 });
 
+router.post('/test', async (req, res) => {
+  const b = req.body || {};
+  const model = b.model || b.default_model;
+  if (!model) {
+    return badRequest(res, ApiError.MODEL_REQUIRED);
+  }
+  if (!b.base_url) {
+    return badRequest(res, '请填写服务地址 (Base URL)');
+  }
+
+  let apiKeyEnc = null;
+  if (b.api_key) {
+    apiKeyEnc = encrypt(b.api_key);
+  } else if (b.endpointId != null) {
+    const row = getDb().prepare('SELECT * FROM endpoints WHERE id = ?').get(b.endpointId);
+    if (!row) return notFound(res, ApiError.ENDPOINT_NOT_FOUND);
+    apiKeyEnc = row.api_key_enc;
+  }
+  if (!apiKeyEnc) {
+    return badRequest(res, '测连需要 API Key（新建请填写；编辑可留空沿用已保存密钥）');
+  }
+
+  const endpoint = {
+    id: b.endpointId ?? null,
+    name: b.name || 'draft',
+    type: b.type || 'openai',
+    base_url: b.base_url,
+    api_key_enc: apiKeyEnc,
+    default_model: model,
+    azure: b.azure || null,
+    dropParams: Array.isArray(b.dropParams) ? b.dropParams : [],
+    addParams: b.addParams && typeof b.addParams === 'object' ? b.addParams : {},
+    extra_headers: b.extra_headers && typeof b.extra_headers === 'object' ? b.extra_headers : {},
+  };
+
+  try {
+    const result = await testConnection({ endpoint, model });
+    if (b.endpointId != null) {
+      getDb()
+        .prepare('UPDATE endpoints SET last_test_at = ?, last_test_ok = 1, last_test_error = NULL WHERE id = ?')
+        .run(now(), b.endpointId);
+    }
+    res.json({ success: true, data: result });
+  } catch (err) {
+    const detail = formatProviderError(err, { model, baseURL: endpoint.base_url });
+    if (b.endpointId != null) {
+      getDb()
+        .prepare('UPDATE endpoints SET last_test_at = ?, last_test_ok = 0, last_test_error = ? WHERE id = ?')
+        .run(now(), detail, b.endpointId);
+    }
+    res.status(502).json({
+      success: false,
+      error: detail,
+      status: err?.status ?? err?.statusCode,
+      providerMessage: err?.error?.message || err?.message,
+      model,
+      baseURL: endpoint.base_url,
+    });
+  }
+});
+
 router.post('/:id/test', async (req, res) => {
   const row = getDb().prepare('SELECT * FROM endpoints WHERE id = ?').get(req.params.id);
   if (!row) return notFound(res, ApiError.ENDPOINT_NOT_FOUND);
 
-  const endpoint = parseEndpointRow(row);
-  const model = req.body?.model || endpoint.default_model;
+  const b = req.body || {};
+  const saved = parseEndpointRow(row);
+  const model = b.model || b.default_model || saved.default_model;
 
   if (!model) {
     return badRequest(res, ApiError.MODEL_REQUIRED);
   }
+
+  // 表单未保存改动优先：用 body 覆盖 DB，api_key 留空则沿用已保存密钥
+  const endpoint = {
+    ...saved,
+    type: b.type ?? saved.type,
+    base_url: b.base_url ?? saved.base_url,
+    default_model: model,
+    azure: b.azure !== undefined ? b.azure : saved.azure,
+    dropParams: b.dropParams !== undefined ? b.dropParams : saved.dropParams,
+    addParams: b.addParams !== undefined ? b.addParams : saved.addParams,
+    extra_headers: b.extra_headers !== undefined ? b.extra_headers : saved.extra_headers,
+    api_key_enc: b.api_key ? encrypt(b.api_key) : saved.api_key_enc,
+  };
 
   try {
     const result = await testConnection({ endpoint, model });

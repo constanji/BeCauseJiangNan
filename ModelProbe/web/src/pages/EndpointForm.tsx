@@ -84,16 +84,47 @@ export default function EndpointForm({ mode }: Props) {
     }
   };
 
+  const buildTestBody = () => {
+    // 空字段也显式下发，避免编辑态省略 key 后服务端回退到 DB 旧值
+    const body: Record<string, unknown> = {
+      model: form.default_model,
+      name: form.name,
+      type: form.type,
+      base_url: form.base_url,
+      default_model: form.default_model,
+      azure: form.azure_json.trim() ? parseJson(form.azure_json) : null,
+      dropParams: form.drop_params
+        ? form.drop_params.split(',').map((s) => s.trim()).filter(Boolean)
+        : [],
+      addParams: form.add_params.trim() ? parseJson(form.add_params) : {},
+    };
+    if (form.api_key) body.api_key = form.api_key;
+    if (mode === 'edit' && id) body.endpointId = Number(id);
+    return body;
+  };
+
   const test = async () => {
-    if (!id || !form.default_model) {
-      setError('请先保存并填写默认模型');
+    if (!form.default_model) {
+      setError('请填写默认模型后再测连');
+      return;
+    }
+    if (!form.base_url) {
+      setError('请填写服务地址后再测连');
+      return;
+    }
+    if (mode === 'create' && !form.api_key) {
+      setError('新建端点测连必须填写 API Key');
       return;
     }
     setTesting(true);
     setError('');
     try {
-      const r = await api.testEndpoint(Number(id), form.default_model);
-      alert(`测连成功 ${r.data.latencyMs}ms · 回包模型: ${r.data.model || '—'}`);
+      const body = buildTestBody();
+      const r =
+        mode === 'edit' && id
+          ? await api.testEndpoint(Number(id), body)
+          : await api.testEndpointDraft(body);
+      alert(`测连成功 ${r.data.latencyMs}ms · 回包模型: ${r.data.model || '—'}（已用当前表单配置）`);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -229,12 +260,11 @@ export default function EndpointForm({ mode }: Props) {
           <button type="submit" className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white">
             保存
           </button>
-          {mode === 'edit' && (
-            <button type="button" onClick={test} disabled={testing} className="rounded-lg border border-black/15 px-4 py-2 text-sm">
-              {testing ? '测连中…' : '测连'}
-            </button>
-          )}
+          <button type="button" onClick={test} disabled={testing} className="rounded-lg border border-black/15 px-4 py-2 text-sm">
+            {testing ? '测连中…' : '测连'}
+          </button>
         </div>
+        <p className="text-xs text-black/45">测连使用当前表单内容（无需先保存）。编辑时 API Key 留空则沿用已保存密钥。</p>
       </form>
     </div>
   );

@@ -54,10 +54,15 @@ export const api = {
     request<{ success: boolean }>(`/api/endpoints/${id}`, { method: 'DELETE' }),
   copyEndpoint: (id: number) =>
     request<{ success: boolean; data: Endpoint }>(`/api/endpoints/${id}/copy`, { method: 'POST' }),
-  testEndpoint: (id: number, model: string) =>
+  testEndpoint: (id: number, body: Record<string, unknown>) =>
     request<{ success: boolean; data: { ok: boolean; latencyMs: number; model?: string } }>(
       `/api/endpoints/${id}/test`,
-      { method: 'POST', body: JSON.stringify({ model }) },
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  testEndpointDraft: (body: Record<string, unknown>) =>
+    request<{ success: boolean; data: { ok: boolean; latencyMs: number; model?: string } }>(
+      '/api/endpoints/test',
+      { method: 'POST', body: JSON.stringify(body) },
     ),
   runProbe: (body: unknown) =>
     request<{ success: boolean; taskId: string }>('/api/probe/run', {
