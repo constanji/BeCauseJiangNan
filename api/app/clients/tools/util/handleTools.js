@@ -24,6 +24,7 @@ const {
   SqlExecutor,
   BeCauseSkills2,
   BeCauseSkills3,
+  BeCauseSkillsJN,
   GenerateExcel,
   EChartsGeneratorAPP,
 } = require('../');
@@ -165,6 +166,7 @@ const loadTools = async ({
     calculator: Calculator,
     because_skills_2: BeCauseSkills2, // BeCause问数工具2.0 - 波动归因增强版
     because_skills_3: BeCauseSkills3, // BeCause问数工具3.0 - 瘦身版
+    because_jn: BeCauseSkillsJN, // BeCause江南 - 指标理解/机构背景专用
     sql_executor: SqlExecutor,
     generate_excel: GenerateExcel,
     echarts_generator_app: EChartsGeneratorAPP,
@@ -184,6 +186,14 @@ const loadTools = async ({
       dataSourceId: agent?.data_source_id || null,
     },
     because_skills_3: {
+      userId: user,
+      req: options.req,
+      projectRoot: paths.root,
+      conversation: options.conversation,
+      agentId: agent?.id || options.req?.body?.agent_id || options.req?.body?.endpointOption?.agent_id || null,
+      dataSourceId: agent?.data_source_id || null,
+    },
+    because_jn: {
       userId: user,
       req: options.req,
       projectRoot: paths.root,

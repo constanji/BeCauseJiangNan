@@ -21,6 +21,13 @@
     "authConfig": []
   },
   {
+    "name": "BeCause江南",
+    "pluginKey": "because_jn",
+    "description": "BeCause江南问数工具。优先 indicator-understanding（指标定义信息）、org-context（机构信息）；术语/规则用 rag-retrieval 兜底。另含 light-schema、database-schema、sql-executor、result-analysis、fluctuation-attribution。无 knowledge-discovery。图表请用独立 echarts_generator_app。",
+    "icon": "🏯",
+    "authConfig": []
+  },
+  {
     "name": "SQL Executor",
     "pluginKey": "sql_executor",
     "description": "执行只读的 SQL SELECT 查询并返回结果和归因分析。调用内部 hsp-sql-api 服务的 /sql_query 接口执行查询，返回数据行、行数统计以及结构化的归因说明，帮助智能体在回答时清晰说明结论来自哪张表、哪些字段、哪些过滤条件。",

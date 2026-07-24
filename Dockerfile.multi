@@ -238,6 +238,7 @@ COPY api ./api
 COPY config ./config
 COPY Because-2.0 ./Because-2.0
 COPY Because-3.0 ./Because-3.0
+COPY Because-jn ./Because-jn
 COPY --from=data-provider-build /app/packages/data-provider/dist ./packages/data-provider/dist
 COPY --from=data-schemas-build /app/packages/data-schemas/dist ./packages/data-schemas/dist
 COPY --from=api-package-build /app/packages/api/dist ./packages/api/dist
@@ -248,7 +249,7 @@ RUN pip3 install -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirro
     -r /app/api/benchmark/evaluation/requirements.txt && \
     python3 -c "from func_timeout import func_timeout, FunctionTimedOut; print('✓ benchmark evaluation deps ready')"
 # 安装 OpenJDK（用于 GaussDB JDBC 桥）并编译 Java 查询类
-# JAR 已随 COPY Because-2.0 / Because-3.0 一起打包进镜像，无需外部挂载
+# JAR 已随 COPY Because-2.0 / Because-3.0 / Because-jn 一起打包进镜像，无需外部挂载
 # 必须在镜像内用当前 JDK（通常 17）重编 .class，避免本机 JDK 21 的 class 进镜像后运行时报 UnsupportedClassVersionError
 RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::https::Timeout=120 \
       update && \
@@ -263,10 +264,15 @@ RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::http
           /app/Because-3.0/drivers/gaussdb-jdbc/GaussJdbcQuery.java && \
     javac -encoding UTF-8 -cp /app/Because-3.0/drivers/lib/gsjdbc4-1.0.jar \
           /app/Because-3.0/drivers/gaussdb-jdbc/GaussJdbcServer.java && \
+    javac -encoding UTF-8 -cp /app/Because-jn/drivers/lib/gsjdbc4-1.0.jar \
+          /app/Because-jn/drivers/gaussdb-jdbc/GaussJdbcQuery.java && \
+    javac -encoding UTF-8 -cp /app/Because-jn/drivers/lib/gsjdbc4-1.0.jar \
+          /app/Because-jn/drivers/gaussdb-jdbc/GaussJdbcServer.java && \
     java -version
-# 确保 Because-2.0 / Because-3.0 目录有正确的权限（可读）
+# 确保 Because-2.0 / Because-3.0 / Because-jn 目录有正确的权限（可读）
 RUN chmod -R 755 /app/Because-2.0 && find /app/Because-2.0 -type f -exec chmod 644 {} \; && \
-    chmod -R 755 /app/Because-3.0 && find /app/Because-3.0 -type f -exec chmod 644 {} \;
+    chmod -R 755 /app/Because-3.0 && find /app/Because-3.0 -type f -exec chmod 644 {} \; && \
+    chmod -R 755 /app/Because-jn && find /app/Because-jn -type f -exec chmod 644 {} \;
 WORKDIR /app
 EXPOSE 3080
 ENV HOST=0.0.0.0

@@ -10,6 +10,8 @@ const becauseSkillsCommandMap: Record<string, string> = {
   'fluctuation-attribution': '整理数据归因',
   'light-schema': '获取数据表结构',
   'knowledge-discovery': '业务理解',
+  'indicator-understanding': '指标理解',
+  'org-context': '机构背景',
   'cell-vectorization': '单元格向量化',
 };
 
@@ -17,6 +19,7 @@ export const BECAUSE_SKILLS_TOOL_NAMES = new Set([
   'because_skills',
   'because_skills_2',
   'because_skills_3',
+  'because_jn',
 ]);
 
 export function isBeCauseSkillsToolName(name?: string | null): boolean {

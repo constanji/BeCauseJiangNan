@@ -1,27 +1,27 @@
 /**
- * BeCauseSkills 3.0 - 智能问数工具集合（瘦身版）
+ * BeCauseSkills 江南（Because-jn）— 以 Because-3.0 为蓝本的专用 fork
  *
- * 相比 2.0：
- * - 移除 intent-classification / sql-validation / chart-generation / excel-lookup
- * - fluctuation-attribution 默认返回 LLM 消费版摘要（compact 模式）
+ * 相对 3.0 的特有能力：
+ * - indicator-understanding：固定检索「指标定义信息」
+ * - org-context：固定检索「机构信息」
+ * - 不导出 / 不挂载 knowledge-discovery（查指标/机构请用上述专用工具）
  *
  * 子工具：
- * 1. knowledge-discovery-tool: 结构化知识行检索
- * 2. light-schema-tool: 预生成表结构缓存检索
- * 3. rag-retrieval-tool: RAG 知识检索（内置重排序）
- * 4. database-schema-tool: 数据库 Schema 实时获取
- * 5. sql-executor-tool: SQL 执行
- * 6. result-analysis-tool: 结果分析
- * 7. fluctuation-attribution-tool: 波动归因（默认瘦身输出）
+ * 1. indicator-understanding-tool: 指标理解
+ * 2. org-context-tool: 机构背景
+ * 3. light-schema-tool: 预生成表结构缓存检索
+ * 4. rag-retrieval-tool: RAG 知识检索（内置重排序）
+ * 5. database-schema-tool: 数据库 Schema 实时获取
+ * 6. sql-executor-tool: SQL 执行
+ * 7. result-analysis-tool: 结果分析
+ * 8. fluctuation-attribution-tool: 波动归因（默认瘦身输出）
  *
- * 核心算法模块：
+ * 核心算法模块：与 Because-3.0 对齐
  * - utils/statisticsEngine / timeComparison / dimensionDrillDown / metricAttribution
  * - utils/methodologyWarnings / metricStructureClassifier
  * - utils/additiveAttribution / multiplicativeAttribution / divisiveAttribution
  * - utils/drillDownHints
  * - utils/excelCellDiscovery
- *
- * 江南专用能力见独立包 Because-jn（because_jn）。
  */
 
 const RAGRetrievalTool = require('./rag-retrieval-tool/scripts/RAGRetrievalTool');
@@ -29,7 +29,8 @@ const DatabaseSchemaTool = require('./database-schema-tool/scripts/DatabaseSchem
 const ResultAnalysisTool = require('./result-analysis-tool/scripts/ResultAnalysisTool');
 const SqlExecutorTool = require('./sql-executor-tool/scripts/SqlExecutorTool');
 const FluctuationAttributionTool = require('./fluctuation-attribution-tool/scripts/FluctuationAttributionTool');
-const KnowledgeDiscoveryTool = require('./knowledge-discovery-tool/scripts/KnowledgeDiscoveryTool');
+const IndicatorUnderstandingTool = require('./indicator-understanding-tool/scripts/IndicatorUnderstandingTool');
+const OrgContextTool = require('./org-context-tool/scripts/OrgContextTool');
 const LightSchemaTool = require('./light-schema-tool/scripts/LightSchemaTool');
 
 const StatisticsEngine = require('./utils/statisticsEngine');
@@ -50,7 +51,8 @@ module.exports = {
   ResultAnalysisTool,
   SqlExecutorTool,
   FluctuationAttributionTool,
-  KnowledgeDiscoveryTool,
+  IndicatorUnderstandingTool,
+  OrgContextTool,
   LightSchemaTool,
 
   StatisticsEngine,
