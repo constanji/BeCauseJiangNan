@@ -56,7 +56,17 @@ class ExcelCellVectorizationService {
   /**
    * 写入文件级列配置（不参与检索）
    */
-  async saveFileConfig({ fileId, entityId, userId, filename, primaryColumns, excludedColumns, headers, sheetNames }) {
+  async saveFileConfig({
+    fileId,
+    entityId,
+    userId,
+    filename,
+    primaryColumns,
+    excludedColumns,
+    headers,
+    sheetNames,
+    dataDt = null,
+  }) {
     await this.initialize();
     const metadata = {
       source: 'excel_file_config',
@@ -66,6 +76,7 @@ class ExcelCellVectorizationService {
       excluded_columns: excludedColumns || [],
       headers: headers || [],
       sheet_names: sheetNames || [],
+      data_dt: dataDt || null,
     };
 
     await this.pool.query(
@@ -74,6 +85,190 @@ class ExcelCellVectorizationService {
        VALUES ($1, $2, $3, $4, $5, NULL, $6::jsonb)`,
       [fileId, userId || null, entityId || null, -1, '__file_config__', JSON.stringify(metadata)],
     );
+  }
+
+  /**
+   * 将表头+行数据向量化写入 file_vectors（Excel 上传与表抽取共用）
+   * @param {object} opts
+   * @param {string} opts.entityId
+   * @param {string} [opts.userId]
+   * @param {string} [opts.fileId] 稳定 fileId；同类型覆盖时传入并设 replaceExisting
+   * @param {string} opts.filename
+   * @param {string[]} opts.headers
+   * @param {Array<Record<string, any>|any[]>} opts.rows
+   * @param {string[]} [opts.primaryColumns]
+   * @param {string[]} [opts.excludedColumns]
+   * @param {string} [opts.sheetName]
+   * @param {boolean} [opts.replaceExisting] 写入前按 fileId+entityId 删除旧数据
+   */
+  async vectorizeFromRows({
+    entityId,
+    userId,
+    fileId: providedFileId,
+    filename,
+    headers,
+    rows = [],
+    primaryColumns = [],
+    excludedColumns = [],
+    sheetName = 'Sheet1',
+    replaceExisting = false,
+    dataDt = null,
+  }) {
+    await this.initialize();
+
+    const cleanHeaders = (headers || []).map((h) => String(h).trim()).filter(Boolean);
+    if (!cleanHeaders.length) {
+      throw Object.assign(new Error('headers 不能为空'), { statusCode: 400 });
+    }
+
+    const fileId = providedFileId || uuidv4();
+    if (replaceExisting && providedFileId) {
+      await this.deleteByFileId(fileId, entityId);
+    }
+
+    const arrayRows = (rows || []).map((row) => {
+      if (Array.isArray(row)) return row;
+      return cleanHeaders.map((h) => (row && row[h] != null ? row[h] : ''));
+    });
+
+    const cellCount = await this._writeCellBatches({
+      fileId,
+      entityId,
+      userId,
+      filename,
+      headers: cleanHeaders,
+      dataRows: arrayRows,
+      sheetName,
+      primaryColumns,
+      excludedColumns,
+      chunkIndexOffset: 0,
+    });
+
+    await this.saveFileConfig({
+      fileId,
+      entityId,
+      userId,
+      filename,
+      primaryColumns,
+      excludedColumns,
+      headers: cleanHeaders,
+      sheetNames: [sheetName],
+      dataDt,
+    });
+
+    logger.info(
+      `[ExcelCellVectorizationService] vectorizeFromRows 完成：fileId=${fileId}, rows=${arrayRows.length}, cells=${cellCount}`,
+    );
+
+    return {
+      fileId,
+      rowCount: arrayRows.length,
+      cellCount,
+      sheetNames: [sheetName],
+      primaryColumns,
+      excludedColumns,
+      headers: cleanHeaders,
+      filename,
+      dataDt: dataDt || null,
+    };
+  }
+
+  /**
+   * 内部：按单元格批次 embed 并 INSERT
+   */
+  async _writeCellBatches({
+    fileId,
+    entityId,
+    userId,
+    filename,
+    headers,
+    dataRows,
+    sheetName,
+    primaryColumns,
+    excludedColumns,
+    chunkIndexOffset = 0,
+  }) {
+    const primarySet = buildColumnSet(primaryColumns);
+    const excludedSet = buildColumnSet(excludedColumns);
+
+    logger.info(
+      `[ExcelCellVectorizationService] Sheet "${sheetName}": ${dataRows.length} 行, ${headers.length} 列, 主列=[${primaryColumns.join(', ')}], 排除列=[${excludedColumns.join(', ')}]`,
+    );
+
+    const cells = [];
+    for (let rowIdx = 0; rowIdx < dataRows.length; rowIdx++) {
+      const row = dataRows[rowIdx];
+      const fullRow = buildFullRow(headers, row);
+
+      for (let colIdx = 0; colIdx < headers.length; colIdx++) {
+        const colName = headers[colIdx];
+        const colKey = colName.trim().toLowerCase();
+        if (excludedSet.has(colKey)) continue;
+
+        const cellValue = String(row[colIdx] ?? '').trim();
+        if (!cellValue) continue;
+
+        const isPrimary = primarySet.size > 0 && primarySet.has(colKey);
+        cells.push({
+          content: cellValue,
+          colName,
+          rowIdx,
+          fullRow,
+          sheetName,
+          isPrimary,
+        });
+      }
+    }
+
+    for (let batchStart = 0; batchStart < cells.length; batchStart += BATCH_SIZE) {
+      const batch = cells.slice(batchStart, batchStart + BATCH_SIZE);
+
+      await Promise.all(
+        batch.map(async (cell, batchOffset) => {
+          let embedding = null;
+          try {
+            embedding = await this.embeddingService.embedText(cell.content);
+          } catch (e) {
+            logger.warn(`[ExcelCellVectorizationService] embed 失败，跳过单元格: ${e.message}`);
+          }
+
+          const embeddingStr = embedding ? `[${embedding.join(',')}]` : null;
+          const metadata = {
+            entity_id: entityId,
+            filename,
+            sheet_name: cell.sheetName,
+            column_name: cell.colName,
+            row_index: cell.rowIdx,
+            full_row: cell.fullRow,
+            source: 'excel_cell',
+            is_primary_column: cell.isPrimary || false,
+            primary_columns: primaryColumns,
+            excluded_columns: excludedColumns,
+          };
+
+          await this.pool.query(
+            `INSERT INTO file_vectors
+               (file_id, user_id, entity_id, chunk_index, content, embedding, metadata)
+             VALUES ($1, $2, $3, $4, $5, $6::vector, $7::jsonb)`,
+            [
+              fileId,
+              userId || null,
+              entityId || null,
+              chunkIndexOffset + batchStart + batchOffset,
+              cell.content,
+              embeddingStr,
+              JSON.stringify(metadata),
+            ],
+          );
+        }),
+      );
+
+      logger.info(
+        `[ExcelCellVectorizationService] 已处理 ${Math.min(batchStart + BATCH_SIZE, cells.length)}/${cells.length} 个单元格`,
+      );
+    }
+
+    return cells.length;
   }
 
   /**
@@ -100,12 +295,10 @@ class ExcelCellVectorizationService {
     }
 
     const sheetsToProcess = sheetName ? [sheetName] : workbook.SheetNames;
-    const primarySet = buildColumnSet(primaryColumns);
-    const excludedSet = buildColumnSet(excludedColumns);
-
     let totalRowCount = 0;
     let totalCellCount = 0;
     const allHeaders = [];
+    let chunkOffset = 0;
 
     for (const sName of sheetsToProcess) {
       const sheet = workbook.Sheets[sName];
@@ -119,88 +312,20 @@ class ExcelCellVectorizationService {
       const dataRows = rows.slice(1);
       totalRowCount += dataRows.length;
 
-      logger.info(
-        `[ExcelCellVectorizationService] Sheet "${sName}": ${dataRows.length} 行, ${headers.length} 列, 主列=[${primaryColumns.join(', ')}], 排除列=[${excludedColumns.join(', ')}]`,
-      );
-
-      const cells = [];
-      for (let rowIdx = 0; rowIdx < dataRows.length; rowIdx++) {
-        const row = dataRows[rowIdx];
-
-        // fullRow 始终包含整行所有列（含排除列），排除只影响下方是否参与检索/向量化
-        const fullRow = buildFullRow(headers, row);
-
-        for (let colIdx = 0; colIdx < headers.length; colIdx++) {
-          const colName = headers[colIdx];
-          const colKey = colName.trim().toLowerCase();
-
-          if (excludedSet.has(colKey)) continue;
-
-          const cellValue = String(row[colIdx] ?? '').trim();
-          if (!cellValue) continue;
-
-          const isPrimary = primarySet.size > 0 && primarySet.has(colKey);
-
-          cells.push({
-            content: cellValue,
-            colName,
-            rowIdx,
-            fullRow,
-            sheetName: sName,
-            isPrimary,
-          });
-        }
-      }
-
-      for (let batchStart = 0; batchStart < cells.length; batchStart += BATCH_SIZE) {
-        const batch = cells.slice(batchStart, batchStart + BATCH_SIZE);
-
-        await Promise.all(
-          batch.map(async (cell, batchOffset) => {
-            let embedding = null;
-            try {
-              embedding = await this.embeddingService.embedText(cell.content);
-            } catch (e) {
-              logger.warn(`[ExcelCellVectorizationService] embed 失败，跳过单元格: ${e.message}`);
-            }
-
-            const embeddingStr = embedding ? `[${embedding.join(',')}]` : null;
-            const metadata = {
-              entity_id: entityId,
-              filename,
-              sheet_name: cell.sheetName,
-              column_name: cell.colName,
-              row_index: cell.rowIdx,
-              full_row: cell.fullRow,
-              source: 'excel_cell',
-              is_primary_column: cell.isPrimary || false,
-              primary_columns: primaryColumns,
-              excluded_columns: excludedColumns,
-            };
-
-            await this.pool.query(
-              `INSERT INTO file_vectors
-                 (file_id, user_id, entity_id, chunk_index, content, embedding, metadata)
-               VALUES ($1, $2, $3, $4, $5, $6::vector, $7::jsonb)`,
-              [
-                fileId,
-                userId || null,
-                entityId || null,
-                batchStart + batchOffset,
-                cell.content,
-                embeddingStr,
-                JSON.stringify(metadata),
-              ],
-            );
-          }),
-        );
-
-        logger.info(
-          `[ExcelCellVectorizationService] 已处理 ${Math.min(batchStart + BATCH_SIZE, cells.length)}/${cells.length} 个单元格`,
-        );
-      }
-
-      totalCellCount += cells.length;
+      const cellCount = await this._writeCellBatches({
+        fileId,
+        entityId,
+        userId,
+        filename,
+        headers,
+        dataRows,
+        sheetName: sName,
+        primaryColumns,
+        excludedColumns,
+        chunkIndexOffset: chunkOffset,
+      });
+      totalCellCount += cellCount;
+      chunkOffset += cellCount;
     }
 
     const uniqueHeaders = [...new Set(allHeaders.filter(Boolean))];
@@ -293,6 +418,7 @@ class ExcelCellVectorizationService {
           primaryColumns: cfg.primary_columns || [],
           excludedColumns: cfg.excluded_columns || [],
           headers: cfg.headers || [],
+          dataDt: cfg.data_dt || null,
         };
       }
       fileMap[row.file_id].cellCount += parseInt(row.cell_count, 10);

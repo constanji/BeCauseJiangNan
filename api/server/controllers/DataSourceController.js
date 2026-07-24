@@ -17,8 +17,9 @@ const {
 } = require('~/server/utils/formatConnectionTestError');
 
 // GaussDB Java JDBC 桥（企业定制安全协议，无法用标准 pg 包连接）
+// 必须相对项目根 /app/Because-2.0，勿用 __dirname 相对路径（Knowledge 等更深目录会落到 /app/api/Because-2.0）
 const { gaussdbJdbcQuery, gaussdbTestConnection } = require(
-  path.join(__dirname, '../../../Because-2.0/utils/gaussdbJdbcBridge'),
+  path.join(require('~/config/paths').root, 'Because-2.0/utils/gaussdbJdbcBridge'),
 );
 
 // 使用项目统一的加密/解密函数（基于 CREDS_KEY 环境变量）
@@ -85,6 +86,14 @@ async function testDatabaseConnection(config) {
   const { type, host, port, database, username, password, ssl } = config;
 
   try {
+    const TableExtractService = require('~/server/services/Knowledge/TableExtractService');
+    if (TableExtractService.isKnowledgeExtractMockDataSource({ host, database })) {
+      return {
+        success: true,
+        message: 'Mock 数据源：无需真实数据库连接',
+      };
+    }
+
     if (type === 'mysql') {
       // 动态加载 mysql2
       let mysql;
@@ -1397,7 +1406,16 @@ async function getDataSourceSchemaHandler(req, res) {
 async function listDataSourceSchemasHandler(req, res) {
   const { id } = req.params;
   try {
-    const { dataSource, password } = await resolveDataSourceWithPassword(req, id, 'listDataSourceSchemasHandler');
+    const dataSource = await getDataSourceById(id);
+    if (!dataSource) {
+      return res.status(404).json({ success: false, error: '数据源不存在' });
+    }
+    const TableExtractService = require('~/server/services/Knowledge/TableExtractService');
+    if (TableExtractService.isKnowledgeExtractMockDataSource(dataSource)) {
+      return res.json({ success: true, data: TableExtractService.getMockSchemaCatalog() });
+    }
+
+    const { password } = await resolveDataSourceWithPassword(req, id, 'listDataSourceSchemasHandler');
     const result = await listDatabaseSchemas({
       type: dataSource.type,
       host: dataSource.host,
@@ -1428,7 +1446,23 @@ async function listDataSourceSchemasHandler(req, res) {
 async function listDataSourceSchemaTablesHandler(req, res) {
   const { id, schemaName } = req.params;
   try {
-    const { dataSource, password } = await resolveDataSourceWithPassword(req, id, 'listDataSourceSchemaTablesHandler');
+    const dataSource = await getDataSourceById(id);
+    if (!dataSource) {
+      return res.status(404).json({ success: false, error: '数据源不存在' });
+    }
+    const TableExtractService = require('~/server/services/Knowledge/TableExtractService');
+    if (TableExtractService.isKnowledgeExtractMockDataSource(dataSource)) {
+      return res.json({
+        success: true,
+        data: TableExtractService.getMockTablesForSchema(schemaName),
+      });
+    }
+
+    const { password } = await resolveDataSourceWithPassword(
+      req,
+      id,
+      'listDataSourceSchemaTablesHandler',
+    );
     const result = await listDatabaseTables({
       type: dataSource.type,
       host: dataSource.host,
@@ -2024,11 +2058,14 @@ async function deleteExcelFileHandler(req, res) {
 
 /**
  * GET /data-sources/:id/excel-files/:fileId/rows
- * 返回指定 Excel 文件的原始行数据（用于预览）
+ * 返回指定 Excel 文件的原始行数据（用于预览）；支持 q / aliasFilter，并附带 aliases
+ * 筛选在服务端完成，避免「先 LIMIT 500 再本地过滤」漏行
  */
 async function getExcelFileRowsHandler(req, res) {
   const { id, fileId } = req.params;
-  const limit = Math.min(Number(req.query.limit) || 200, 500);
+  const limit = Math.min(Number(req.query.limit) || 500, 5000);
+  const q = typeof req.query.q === 'string' ? req.query.q : '';
+  const aliasFilter = typeof req.query.aliasFilter === 'string' ? req.query.aliasFilter : 'all';
   try {
     const dataSource = await getDataSourceById(id);
     if (!dataSource) {
@@ -2036,16 +2073,41 @@ async function getExcelFileRowsHandler(req, res) {
     }
 
     const ExcelCellVectorizationService = require('~/server/services/Files/ExcelCellVectorizationService');
+    const ExcelCellAliasService = require('~/server/services/Files/ExcelCellAliasService');
     const svc = new ExcelCellVectorizationService();
+    const aliasSvc = new ExcelCellAliasService(svc);
     const entityId = String(dataSource._id);
-    const rows = await svc.getFileRows(fileId, entityId, limit);
-    if (rows.length === 0) {
-      const exists = await svc.fileExistsInEntity(fileId, entityId);
-      if (!exists) {
-        return res.status(404).json({ success: false, error: '文件不存在或不属于该数据源' });
-      }
+
+    await svc.initialize();
+    const exists = await svc.fileExistsInEntity(fileId, entityId);
+    if (!exists) {
+      return res.status(404).json({ success: false, error: '文件不存在或不属于该数据源' });
     }
-    return res.json({ success: true, data: rows });
+
+    const fnRes = await svc.pool.query(
+      `SELECT metadata->>'filename' AS filename
+       FROM file_vectors
+       WHERE file_id = $1 AND entity_id = $2 AND metadata->>'source' = 'excel_cell'
+       LIMIT 1`,
+      [fileId, entityId],
+    );
+    const filename = fnRes.rows[0]?.filename || '';
+
+    const preview = await aliasSvc.queryPreviewRows({
+      entityId,
+      fileId,
+      filename,
+      q,
+      aliasFilter,
+      limit,
+    });
+    return res.json({
+      success: true,
+      data: preview.rows,
+      filename,
+      totalMatched: preview.totalMatched,
+      truncated: preview.truncated,
+    });
   } catch (error) {
     logger.error('[getExcelFileRowsHandler] Error:', error.message);
     return res.status(500).json({ success: false, error: error.message || '获取 Excel 预览失败' });
@@ -2071,6 +2133,7 @@ async function searchExcelCellsHandler(req, res) {
     }
 
     const ExcelCellVectorizationService = require('~/server/services/Files/ExcelCellVectorizationService');
+    const ExcelCellAliasService = require('~/server/services/Files/ExcelCellAliasService');
     const svc = new ExcelCellVectorizationService();
     const results = await svc.search({
       entityId: String(dataSource._id),
@@ -2080,10 +2143,421 @@ async function searchExcelCellsHandler(req, res) {
       filename: typeof filename === 'string' && filename.trim() ? filename.trim() : null,
     });
 
-    return res.json({ success: true, data: results });
+    const aliasSvc = new ExcelCellAliasService(svc);
+    const enriched = await aliasSvc.attachAliasesToSearchResults({
+      entityId: String(dataSource._id),
+      filename: typeof filename === 'string' && filename.trim() ? filename.trim() : null,
+      results,
+    });
+
+    return res.json({ success: true, data: enriched });
   } catch (error) {
     logger.error('[searchExcelCellsHandler] Error:', error.message);
     return res.status(500).json({ success: false, error: error.message || 'Excel 检索失败' });
+  }
+}
+
+/**
+ * 抽取/向量化前解析数据源；Mock 数据源或显式 mock 跳过密码解密
+ */
+async function resolveDataSourceForKnowledgeExtract(req, id, logPrefix, options = {}) {
+  const TableExtractService = require('~/server/services/Knowledge/TableExtractService');
+  const { id: userId } = req.user;
+  const isAdmin = req.user?.role === SystemRoles.ADMIN;
+
+  const dataSource = await getDataSourceById(id);
+  if (!dataSource) {
+    const err = new Error('数据源不存在');
+    err.statusCode = 404;
+    throw err;
+  }
+
+  const isPublic = dataSource.isPublic !== undefined ? Boolean(dataSource.isPublic) : false;
+  const isOwner = dataSource.createdBy.toString() === userId;
+  if (!isAdmin && !isOwner && !isPublic) {
+    logger.warn(`[${logPrefix}] 无权访问此数据源`, {
+      id,
+      userId,
+      createdBy: dataSource.createdBy,
+      isPublic,
+    });
+    const err = new Error('无权访问此数据源');
+    err.statusCode = 403;
+    throw err;
+  }
+
+  if (TableExtractService.shouldUseMock(options, dataSource)) {
+    return { dataSource, password: '' };
+  }
+
+  try {
+    const password = await decryptPassword(dataSource.password);
+    return { dataSource, password };
+  } catch (decryptError) {
+    if (decryptError.code === 'LEGACY_ENCRYPTION_FORMAT') {
+      decryptError.statusCode = 400;
+    }
+    throw decryptError;
+  }
+}
+
+/**
+ * POST /data-sources/:id/knowledge-extract/kpi
+ * 从库表抽取指标定义（最新 data_dt + index_number 去重）
+ */
+async function extractKpiDefinitionHandler(req, res) {
+  const { id } = req.params;
+  const { schema, table, source } = req.body || {};
+  try {
+    const { dataSource, password } = await resolveDataSourceForKnowledgeExtract(
+      req,
+      id,
+      'extractKpiDefinition',
+      { source },
+    );
+    const TableExtractService = require('~/server/services/Knowledge/TableExtractService');
+    const result = await TableExtractService.extractKpiDefinition({
+      dataSource,
+      password,
+      schema,
+      table,
+      entityId: String(dataSource._id),
+      options: { source },
+    });
+    return res.json({
+      success: true,
+      ...TableExtractService.toPreviewPayload(result),
+    });
+  } catch (error) {
+    const status = error.statusCode || 500;
+    const message = error?.message || String(error) || '指标抽取失败';
+    logger.error(`[extractKpiDefinitionHandler] Error: ${message}`, error?.stack || error);
+    return res.status(status).json({ success: false, error: message });
+  }
+}
+
+/**
+ * POST /data-sources/:id/knowledge-extract/org
+ * 从库表抽取机构信息并派生 org_master 列
+ */
+async function extractOrgInfoHandler(req, res) {
+  const { id } = req.params;
+  const { schema, table, source } = req.body || {};
+  try {
+    const { dataSource, password } = await resolveDataSourceForKnowledgeExtract(
+      req,
+      id,
+      'extractOrgInfo',
+      { source },
+    );
+    const TableExtractService = require('~/server/services/Knowledge/TableExtractService');
+    const result = await TableExtractService.extractOrgInfo({
+      dataSource,
+      password,
+      schema,
+      table,
+      entityId: String(dataSource._id),
+      options: { source },
+    });
+    return res.json({
+      success: true,
+      ...TableExtractService.toPreviewPayload(result),
+    });
+  } catch (error) {
+    const status = error.statusCode || 500;
+    const message = error?.message || String(error) || '机构抽取失败';
+    logger.error(`[extractOrgInfoHandler] Error: ${message}`, error?.stack || error);
+    return res.status(status).json({ success: false, error: message });
+  }
+}
+
+/**
+ * POST /data-sources/:id/knowledge-extract/kpi/vectorize
+ * 将上次抽取的指标定义写入 file_vectors
+ */
+async function vectorizeKpiDefinitionHandler(req, res) {
+  const { id } = req.params;
+  try {
+    const dataSource = await getDataSourceById(id);
+    if (!dataSource) {
+      return res.status(404).json({ success: false, error: '数据源不存在' });
+    }
+    const entityId = String(dataSource._id);
+    const TableExtractService = require('~/server/services/Knowledge/TableExtractService');
+    const cached = TableExtractService.getExtractCache(entityId, 'kpi');
+    if (!cached || !cached.rows?.length) {
+      return res.status(400).json({
+        success: false,
+        error: '请先从库抽取指标定义（当前无可用快照）',
+      });
+    }
+    const { primaryColumns, excludedColumns } = parseExcelColumnConfig(req.body);
+    const ExcelCellVectorizationService = require('~/server/services/Files/ExcelCellVectorizationService');
+    const svc = new ExcelCellVectorizationService();
+    const fileId = TableExtractService.stableFileId('kpi', entityId);
+    const result = await svc.vectorizeFromRows({
+      entityId,
+      userId: req.user?.id || null,
+      fileId,
+      filename: cached.filename || TableExtractService.KPI_FILENAME,
+      headers: cached.headers,
+      rows: cached.rows,
+      primaryColumns,
+      excludedColumns,
+      sheetName: '指标定义',
+      replaceExisting: true,
+      dataDt: cached.dataDt || null,
+    });
+    const ExcelCellAliasService = require('~/server/services/Files/ExcelCellAliasService');
+    const aliasSvc = new ExcelCellAliasService(svc);
+    await aliasSvc.reapplyAliasesForFile({
+      entityId,
+      fileId: result.fileId,
+      filename: result.filename || cached.filename || TableExtractService.KPI_FILENAME,
+      userId: req.user?.id || null,
+    });
+    logger.info(
+      `[vectorizeKpiDefinitionHandler] 完成 fileId=${result.fileId} cells=${result.cellCount}`,
+    );
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    const status = error.statusCode || 500;
+    logger.error('[vectorizeKpiDefinitionHandler] Error:', error.message, error.stack);
+    return res.status(status).json({ success: false, error: error.message || '指标向量化失败' });
+  }
+}
+
+/**
+ * POST /data-sources/:id/knowledge-extract/org/vectorize
+ */
+async function vectorizeOrgInfoHandler(req, res) {
+  const { id } = req.params;
+  try {
+    const dataSource = await getDataSourceById(id);
+    if (!dataSource) {
+      return res.status(404).json({ success: false, error: '数据源不存在' });
+    }
+    const entityId = String(dataSource._id);
+    const TableExtractService = require('~/server/services/Knowledge/TableExtractService');
+    const cached = TableExtractService.getExtractCache(entityId, 'org');
+    if (!cached || !cached.rows?.length) {
+      return res.status(400).json({
+        success: false,
+        error: '请先从库抽取机构信息（当前无可用快照）',
+      });
+    }
+    const { primaryColumns, excludedColumns } = parseExcelColumnConfig(req.body);
+    const ExcelCellVectorizationService = require('~/server/services/Files/ExcelCellVectorizationService');
+    const svc = new ExcelCellVectorizationService();
+    const fileId = TableExtractService.stableFileId('org', entityId);
+    const result = await svc.vectorizeFromRows({
+      entityId,
+      userId: req.user?.id || null,
+      fileId,
+      filename: cached.filename || TableExtractService.ORG_FILENAME,
+      headers: cached.headers,
+      rows: cached.rows,
+      primaryColumns,
+      excludedColumns,
+      sheetName: '机构信息',
+      replaceExisting: true,
+      dataDt: cached.dataDt || null,
+    });
+    const ExcelCellAliasService = require('~/server/services/Files/ExcelCellAliasService');
+    const aliasSvc = new ExcelCellAliasService(svc);
+    await aliasSvc.reapplyAliasesForFile({
+      entityId,
+      fileId: result.fileId,
+      filename: result.filename || cached.filename || TableExtractService.ORG_FILENAME,
+      userId: req.user?.id || null,
+    });
+    logger.info(
+      `[vectorizeOrgInfoHandler] 完成 fileId=${result.fileId} cells=${result.cellCount}`,
+    );
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    const status = error.statusCode || 500;
+    logger.error('[vectorizeOrgInfoHandler] Error:', error.message, error.stack);
+    return res.status(status).json({ success: false, error: error.message || '机构向量化失败' });
+  }
+}
+
+/**
+ * GET /data-sources/:id/excel-files/:fileId/aliases
+ */
+async function listExcelFileAliasesHandler(req, res) {
+  const { id, fileId } = req.params;
+  try {
+    const dataSource = await getDataSourceById(id);
+    if (!dataSource) {
+      return res.status(404).json({ success: false, error: '数据源不存在' });
+    }
+    const entityId = String(dataSource._id);
+    const ExcelCellVectorizationService = require('~/server/services/Files/ExcelCellVectorizationService');
+    const ExcelCellAliasService = require('~/server/services/Files/ExcelCellAliasService');
+    const svc = new ExcelCellVectorizationService();
+    await svc.initialize();
+    const exists = await svc.fileExistsInEntity(fileId, entityId);
+    if (!exists) {
+      return res.status(404).json({ success: false, error: '文件不存在或不属于该数据源' });
+    }
+    const fnRes = await svc.pool.query(
+      `SELECT metadata->>'filename' AS filename
+       FROM file_vectors
+       WHERE file_id = $1 AND entity_id = $2 AND metadata->>'source' = 'excel_cell'
+       LIMIT 1`,
+      [fileId, entityId],
+    );
+    const filename = fnRes.rows[0]?.filename || '';
+    const aliasSvc = new ExcelCellAliasService(svc);
+    const map = await aliasSvc.listAliases({ entityId, filename });
+    return res.json({ success: true, filename, data: map });
+  } catch (error) {
+    logger.error('[listExcelFileAliasesHandler] Error:', error.message);
+    return res.status(500).json({ success: false, error: error.message || '获取别名失败' });
+  }
+}
+
+/**
+ * PUT /data-sources/:id/excel-files/:fileId/aliases
+ * body: { rowKey, rowIndex?, aliases: string[], fullRow?, sheetName? }
+ */
+async function setExcelFileAliasesHandler(req, res) {
+  const { id, fileId } = req.params;
+  const { rowKey, rowIndex, aliases, fullRow, sheetName } = req.body || {};
+  try {
+    const dataSource = await getDataSourceById(id);
+    if (!dataSource) {
+      return res.status(404).json({ success: false, error: '数据源不存在' });
+    }
+    const entityId = String(dataSource._id);
+    const ExcelCellVectorizationService = require('~/server/services/Files/ExcelCellVectorizationService');
+    const ExcelCellAliasService = require('~/server/services/Files/ExcelCellAliasService');
+    const {
+      parseRowKey,
+      isAliasCapableFilename,
+    } = require('~/server/services/Files/ExcelCellAliasService');
+    const svc = new ExcelCellVectorizationService();
+    await svc.initialize();
+    const exists = await svc.fileExistsInEntity(fileId, entityId);
+    if (!exists) {
+      return res.status(404).json({ success: false, error: '文件不存在或不属于该数据源' });
+    }
+
+    const fnRes = await svc.pool.query(
+      `SELECT metadata->>'filename' AS filename
+       FROM file_vectors
+       WHERE file_id = $1 AND entity_id = $2 AND metadata->>'source' = 'excel_cell'
+       LIMIT 1`,
+      [fileId, entityId],
+    );
+    const filename = fnRes.rows[0]?.filename || '';
+    if (!isAliasCapableFilename(filename)) {
+      return res.status(400).json({
+        success: false,
+        error: '仅「指标定义信息」或「机构信息」支持别名',
+      });
+    }
+
+    let resolvedRowIndex = rowIndex != null ? Number(rowIndex) : null;
+    let resolvedFullRow = typeof fullRow === 'string' ? fullRow : '';
+    let resolvedSheetName = typeof sheetName === 'string' && sheetName.trim() ? sheetName.trim() : '';
+    const key = String(rowKey || '').trim() || parseRowKey(resolvedFullRow);
+
+    // 始终用库内真实 sheet_name / full_row 校正；若前端传了 sheetName 则优先精确匹配
+    if (resolvedRowIndex != null && !Number.isNaN(resolvedRowIndex)) {
+      const params = [fileId, entityId, resolvedRowIndex];
+      let sheetClause = '';
+      if (resolvedSheetName) {
+        params.push(resolvedSheetName);
+        sheetClause = ` AND COALESCE(metadata->>'sheet_name', 'Sheet1') = $${params.length}`;
+      }
+      let rowRes = await svc.pool.query(
+        `SELECT metadata->>'full_row' AS full_row,
+                COALESCE(metadata->>'sheet_name', 'Sheet1') AS sheet_name
+         FROM file_vectors
+         WHERE file_id = $1 AND entity_id = $2 AND metadata->>'source' = 'excel_cell'
+           AND (metadata->>'row_index')::int = $3
+           AND metadata->>'column_name' IS DISTINCT FROM '别名'
+           ${sheetClause}
+         ORDER BY chunk_index
+         LIMIT 1`,
+        params,
+      );
+      // 指定 sheet 未命中时回退到同 rowIndex 任意 sheet（兼容旧前端未传 sheet）
+      if (!rowRes.rows[0] && resolvedSheetName) {
+        rowRes = await svc.pool.query(
+          `SELECT metadata->>'full_row' AS full_row,
+                  COALESCE(metadata->>'sheet_name', 'Sheet1') AS sheet_name
+           FROM file_vectors
+           WHERE file_id = $1 AND entity_id = $2 AND metadata->>'source' = 'excel_cell'
+             AND (metadata->>'row_index')::int = $3
+             AND metadata->>'column_name' IS DISTINCT FROM '别名'
+           ORDER BY chunk_index
+           LIMIT 1`,
+          [fileId, entityId, resolvedRowIndex],
+        );
+      }
+      if (rowRes.rows[0]) {
+        if (!resolvedFullRow) resolvedFullRow = rowRes.rows[0].full_row || '';
+        resolvedSheetName = rowRes.rows[0].sheet_name || resolvedSheetName || 'Sheet1';
+      }
+    }
+
+    if ((resolvedRowIndex == null || Number.isNaN(resolvedRowIndex)) && key) {
+      const rowRes = await svc.pool.query(
+        `SELECT (metadata->>'row_index')::int AS row_index,
+                metadata->>'full_row' AS full_row,
+                COALESCE(metadata->>'sheet_name', 'Sheet1') AS sheet_name
+         FROM file_vectors
+         WHERE file_id = $1 AND entity_id = $2 AND metadata->>'source' = 'excel_cell'
+           AND metadata->>'full_row' ILIKE $3
+           AND metadata->>'column_name' IS DISTINCT FROM '别名'
+         ORDER BY chunk_index
+         LIMIT 1`,
+        [fileId, entityId, `%${key}%`],
+      );
+      if (rowRes.rows[0]) {
+        resolvedRowIndex = rowRes.rows[0].row_index;
+        if (!resolvedFullRow) resolvedFullRow = rowRes.rows[0].full_row || '';
+        resolvedSheetName = rowRes.rows[0].sheet_name || resolvedSheetName || 'Sheet1';
+      }
+    }
+
+    if (!resolvedSheetName) resolvedSheetName = 'Sheet1';
+
+    const finalKey = key || parseRowKey(resolvedFullRow);
+    if (!finalKey) {
+      return res.status(400).json({ success: false, error: '无法解析 rowKey（指标编号/org_code）' });
+    }
+    if (resolvedRowIndex == null || Number.isNaN(resolvedRowIndex)) {
+      return res.status(400).json({ success: false, error: '无法定位行 rowIndex' });
+    }
+
+    const aliasSvc = new ExcelCellAliasService(svc);
+    const result = await aliasSvc.setAliases({
+      entityId,
+      filename,
+      fileId,
+      rowKey: finalKey,
+      rowIndex: resolvedRowIndex,
+      aliases: Array.isArray(aliases) ? aliases : [],
+      fullRow: resolvedFullRow,
+      userId: req.user?.id || null,
+      sheetName: resolvedSheetName,
+    });
+
+    return res.json({
+      success: true,
+      ...result,
+      rowIndex: resolvedRowIndex,
+      sheetName: resolvedSheetName,
+      filename,
+    });
+  } catch (error) {
+    const status = error.statusCode || 500;
+    logger.error('[setExcelFileAliasesHandler] Error:', error.message);
+    return res.status(status).json({ success: false, error: error.message || '保存别名失败' });
   }
 }
 
@@ -2159,6 +2633,12 @@ module.exports = {
   deleteExcelFileHandler,
   getExcelFileRowsHandler,
   searchExcelCellsHandler,
+  listExcelFileAliasesHandler,
+  setExcelFileAliasesHandler,
+  extractKpiDefinitionHandler,
+  extractOrgInfoHandler,
+  vectorizeKpiDefinitionHandler,
+  vectorizeOrgInfoHandler,
   bindDataSourceAgentsHandler,
   getDatabaseSchema,
   decryptPassword,

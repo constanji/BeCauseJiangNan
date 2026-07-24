@@ -59,6 +59,12 @@ const {
   deleteExcelFileHandler,
   getExcelFileRowsHandler,
   searchExcelCellsHandler,
+  listExcelFileAliasesHandler,
+  setExcelFileAliasesHandler,
+  extractKpiDefinitionHandler,
+  extractOrgInfoHandler,
+  vectorizeKpiDefinitionHandler,
+  vectorizeOrgInfoHandler,
   bindDataSourceAgentsHandler,
 } = require('~/server/controllers/DataSourceController');
 const {
@@ -333,7 +339,15 @@ router.post('/data-sources/:id/excel-files', requireJwtAuth, checkAdmin, uploadE
 router.get('/data-sources/:id/excel-files', requireJwtAuth, listExcelFilesHandler);
 router.delete('/data-sources/:id/excel-files/:fileId', requireJwtAuth, checkAdmin, deleteExcelFileHandler);
 router.get('/data-sources/:id/excel-files/:fileId/rows', requireJwtAuth, getExcelFileRowsHandler);
+router.get('/data-sources/:id/excel-files/:fileId/aliases', requireJwtAuth, listExcelFileAliasesHandler);
+router.put('/data-sources/:id/excel-files/:fileId/aliases', requireJwtAuth, checkAdmin, setExcelFileAliasesHandler);
 router.post('/data-sources/:id/excel-files/search', requireJwtAuth, searchExcelCellsHandler);
+
+// 知识库：指标定义 / 机构信息表抽取与向量化
+router.post('/data-sources/:id/knowledge-extract/kpi', requireJwtAuth, checkAdmin, extractKpiDefinitionHandler);
+router.post('/data-sources/:id/knowledge-extract/org', requireJwtAuth, checkAdmin, extractOrgInfoHandler);
+router.post('/data-sources/:id/knowledge-extract/kpi/vectorize', requireJwtAuth, checkAdmin, vectorizeKpiDefinitionHandler);
+router.post('/data-sources/:id/knowledge-extract/org/vectorize', requireJwtAuth, checkAdmin, vectorizeOrgInfoHandler);
 
 // 项目查询路由（需要认证，但不需要管理员权限）
 router.get('/projects', requireJwtAuth, listProjectsHandler);

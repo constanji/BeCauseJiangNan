@@ -257,8 +257,21 @@ export const dataSources = {
   previewExcelHeaders: (id: string) => `${BASE_URL}/api/config/data-sources/${id}/excel-files/preview-headers`,
   listExcelFiles: (id: string) => `${BASE_URL}/api/config/data-sources/${id}/excel-files`,
   deleteExcelFile: (id: string, fileId: string) => `${BASE_URL}/api/config/data-sources/${id}/excel-files/${fileId}`,
-  getExcelFileRows: (id: string, fileId: string) => `${BASE_URL}/api/config/data-sources/${id}/excel-files/${fileId}/rows`,
+  getExcelFileRows: (id: string, fileId: string) =>
+    `${BASE_URL}/api/config/data-sources/${id}/excel-files/${fileId}/rows`,
+  listExcelFileAliases: (id: string, fileId: string) =>
+    `${BASE_URL}/api/config/data-sources/${id}/excel-files/${fileId}/aliases`,
+  setExcelFileAliases: (id: string, fileId: string) =>
+    `${BASE_URL}/api/config/data-sources/${id}/excel-files/${fileId}/aliases`,
   searchExcelCells: (id: string) => `${BASE_URL}/api/config/data-sources/${id}/excel-files/search`,
+  extractKpiDefinition: (id: string) =>
+    `${BASE_URL}/api/config/data-sources/${id}/knowledge-extract/kpi`,
+  extractOrgInfo: (id: string) =>
+    `${BASE_URL}/api/config/data-sources/${id}/knowledge-extract/org`,
+  vectorizeKpiDefinition: (id: string) =>
+    `${BASE_URL}/api/config/data-sources/${id}/knowledge-extract/kpi/vectorize`,
+  vectorizeOrgInfo: (id: string) =>
+    `${BASE_URL}/api/config/data-sources/${id}/knowledge-extract/org/vectorize`,
 };
 
 export const rag = {

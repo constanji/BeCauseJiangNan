@@ -11,8 +11,9 @@
 const path = require('path');
 const { logger } = require('@because/data-schemas');
 
+// 相对项目根 /app/Because-2.0（勿用 __dirname 相对上溯，深度不同会拼错）
 const { gaussdbJdbcQuery } = require(
-  path.join(__dirname, '../../../Because-2.0/utils/gaussdbJdbcBridge'),
+  path.join(require('~/config/paths').root, 'Because-2.0/utils/gaussdbJdbcBridge'),
 );
 
 // 仅对这些类型的列做枚举值向量化

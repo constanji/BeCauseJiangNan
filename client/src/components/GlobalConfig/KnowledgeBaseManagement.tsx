@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { Database, MessageSquare, BookOpen, FileText, Plus, Trash2, Eye, Upload, X, ChevronRight, ChevronDown, Folder, FolderOpen, Server, Pencil, Sparkles, Bot, FileUp, TestTube, FileSpreadsheet, RefreshCw, Search, Loader2 } from 'lucide-react';
+import { Database, MessageSquare, BookOpen, FileText, Plus, Trash2, Eye, Upload, X, ChevronRight, ChevronDown, Folder, FolderOpen, Server, Pencil, Sparkles, Bot, FileUp, TestTube, FileSpreadsheet, RefreshCw, Search, Loader2, BarChart3, Building2 } from 'lucide-react';
 import * as yaml from 'js-yaml';
 import { Button, useToastContext, Spinner, Dropdown } from '@because/client';
 import {
@@ -15,6 +15,7 @@ import { EToolResources, EModelEndpoint } from '@because/data-provider';
 import type { DataSource } from '@because/data-provider';
 import { dataService, request, apiBaseUrl } from '@because/data-provider';
 import { cn } from '~/utils';
+import OrgHierarchyPreview from './OrgHierarchyPreview';
 
 // 类型定义
 type KnowledgeEntry = {
@@ -36,7 +37,14 @@ type AddKnowledgeRequest = {
   data: Record<string, any>;
 };
 
-type KnowledgeType = 'semantic_model' | 'qa_pair' | 'synonym' | 'business_knowledge' | 'excel_file';
+type KnowledgeType =
+  | 'semantic_model'
+  | 'qa_pair'
+  | 'synonym'
+  | 'business_knowledge'
+  | 'excel_file'
+  | 'kpi_definition'
+  | 'org_info';
 
 interface TabConfig {
   id: KnowledgeType;
@@ -44,13 +52,141 @@ interface TabConfig {
   icon: React.ReactNode;
 }
 
+const KPI_KB_FILENAME = '指标定义信息';
+const ORG_KB_FILENAME = '机构信息';
+
 const tabs: TabConfig[] = [
   { id: 'semantic_model', label: '语义模型', icon: <Database className="h-4 w-4" /> },
   { id: 'qa_pair', label: 'QA对', icon: <MessageSquare className="h-4 w-4" /> },
   { id: 'synonym', label: '同义词', icon: <BookOpen className="h-4 w-4" /> },
   { id: 'business_knowledge', label: '业务知识', icon: <FileText className="h-4 w-4" /> },
   { id: 'excel_file', label: 'Excel 文件', icon: <FileSpreadsheet className="h-4 w-4" /> },
+  { id: 'kpi_definition', label: '指标定义', icon: <BarChart3 className="h-4 w-4" /> },
+  { id: 'org_info', label: '机构信息', icon: <Building2 className="h-4 w-4" /> },
 ];
+
+const isVectorTab = (tab: KnowledgeType) =>
+  tab === 'excel_file' || tab === 'kpi_definition' || tab === 'org_info';
+const isTableExtractTab = (tab: KnowledgeType) =>
+  tab === 'kpi_definition' || tab === 'org_info';
+
+function preferSortNames(names: string[], preferred: string[]) {
+  return [...names].sort((a, b) => {
+    const ai = preferred.findIndex((p) => a.toLowerCase() === p.toLowerCase());
+    const bi = preferred.findIndex((p) => b.toLowerCase() === p.toLowerCase());
+    if (ai === -1 && bi === -1) return a.localeCompare(b);
+    if (ai === -1) return 1;
+    if (bi === -1) return -1;
+    return ai - bi;
+  });
+}
+
+function formatRequestError(err: any, fallback: string) {
+  return (
+    err?.response?.data?.error ||
+    err?.response?.data?.message ||
+    err?.message ||
+    (typeof err === 'string' ? err : '') ||
+    fallback
+  );
+}
+
+/** Schema / 表：可搜索下拉（支持大量表名过滤） */
+function SearchableSelect({
+  value,
+  onChange,
+  options,
+  placeholder = '请选择',
+  disabled = false,
+  loading = false,
+  emptyText = '无匹配项',
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  options: string[];
+  placeholder?: string;
+  disabled?: boolean;
+  loading?: boolean;
+  emptyText?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return options;
+    return options.filter((o) => o.toLowerCase().includes(q));
+  }, [options, query]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) setQuery('');
+  }, [open]);
+
+  return (
+    <div ref={rootRef} className="relative w-full">
+      <button
+        type="button"
+        disabled={disabled || loading}
+        onClick={() => setOpen((v) => !v)}
+        className={cn(
+          'flex w-full items-center justify-between rounded-lg border border-border-light bg-surface-secondary px-3 py-2 text-left text-sm text-text-primary transition-colors',
+          'hover:border-green-500/40 disabled:cursor-not-allowed disabled:opacity-50',
+        )}
+      >
+        <span className={cn('truncate', !value && 'text-text-secondary')}>
+          {loading ? '加载中…' : value || placeholder}
+        </span>
+        <ChevronDown className="ml-2 h-4 w-4 shrink-0 text-text-secondary" />
+      </button>
+      {open && !disabled && !loading && (
+        <div className="absolute z-40 mt-1 w-full overflow-hidden rounded-lg border border-border-light bg-surface-primary shadow-xl">
+          <div className="border-b border-border-light p-2">
+            <input
+              autoFocus
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="搜索…"
+              className="w-full rounded-md border border-border-light bg-surface-secondary px-2 py-1.5 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-1 focus:ring-green-500"
+            />
+          </div>
+          <ul className="max-h-56 overflow-auto py-1">
+            {filtered.length === 0 ? (
+              <li className="px-3 py-2 text-xs text-text-tertiary">{emptyText}</li>
+            ) : (
+              filtered.map((opt) => (
+                <li key={opt}>
+                  <button
+                    type="button"
+                    className={cn(
+                      'w-full truncate px-3 py-1.5 text-left text-sm hover:bg-surface-secondary',
+                      opt === value ? 'bg-green-500/10 text-green-400' : 'text-text-primary',
+                    )}
+                    onClick={() => {
+                      onChange(opt);
+                      setOpen(false);
+                    }}
+                  >
+                    {opt}
+                  </button>
+                </li>
+              ))
+            )}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function KnowledgeBaseManagement() {
   const { showToast } = useToastContext();
@@ -71,25 +207,32 @@ export default function KnowledgeBaseManagement() {
   const dataSourceOptions = useMemo(
     () => [
       { value: '', label: '请选择数据源' },
-      ...dataSources.map((ds: DataSource) => ({
-        value: ds._id,
-        label: `${ds.name} · ${ds.type} · ${ds.database}`,
-      })),
+      ...dataSources.map((ds: DataSource) => {
+        const isMock =
+          String(ds.host || '').toLowerCase() === 'knowledge-extract.mock' ||
+          String(ds.database || '').toLowerCase() === 'knowledge_extract_mock';
+        return {
+          value: ds._id,
+          label: isMock
+            ? `${ds.name} · Mock 验收`
+            : `${ds.name} · ${ds.type} · ${ds.database}`,
+        };
+      }),
     ],
     [dataSources],
   );
 
   // 语义模型需要包含子项以支持层级展示，但默认只显示父级
   // 根据选中的数据源过滤知识库（使用 entityId）
-  // Excel 文件 Tab 不走知识库查询，直接用独立接口
+  // Excel / 指标 / 机构 Tab 不走知识库查询
   const { data: knowledgeData, refetch } = useListKnowledgeQuery(
     {
-      type: activeTab as Exclude<KnowledgeType, 'excel_file'>,
+      type: activeTab as Exclude<KnowledgeType, 'excel_file' | 'kpi_definition' | 'org_info'>,
       entityId: selectedDataSourceId || undefined,
       includeChildren: activeTab === 'semantic_model',
       limit: 100,
     },
-    { enabled: activeTab !== 'excel_file' },
+    { enabled: !isVectorTab(activeTab) },
   );
 
   // ── Excel 文件向量化 state ──────────────────────────────────────────────────
@@ -103,6 +246,7 @@ export default function KnowledgeBaseManagement() {
     primaryColumns?: string[];
     excludedColumns?: string[];
     headers?: string[];
+    dataDt?: string | null;
   }
   interface ExcelSearchResult {
     score: number;
@@ -114,8 +258,17 @@ export default function KnowledgeBaseManagement() {
     sheetName: string;
     isPrimaryColumn?: boolean;
     isExactMatch?: boolean;
+    rowKey?: string;
+    aliases?: string[];
+    matchedViaAlias?: boolean;
   }
-  interface ExcelFileRow { rowIndex: number; fullRow: string; sheetName: string; }
+  interface ExcelFileRow {
+    rowIndex: number;
+    fullRow: string;
+    sheetName: string;
+    rowKey?: string;
+    aliases?: string[];
+  }
   const excelInputRef = useRef<HTMLInputElement>(null);
   const [excelFiles, setExcelFiles] = useState<ExcelFile[]>([]);
   const [loadingExcelFiles, setLoadingExcelFiles] = useState(false);
@@ -125,6 +278,21 @@ export default function KnowledgeBaseManagement() {
   const [excelSearchResults, setExcelSearchResults] = useState<ExcelSearchResult[]>([]);
   const [previewFile, setPreviewFile] = useState<{ file: ExcelFile; rows: ExcelFileRow[] } | null>(null);
   const [loadingPreview, setLoadingPreview] = useState(false);
+  const [previewSearchQuery, setPreviewSearchQuery] = useState('');
+  const [previewAliasFilter, setPreviewAliasFilter] = useState<'all' | 'has' | 'none'>('all');
+  /** 机构信息默认树状；列表模式仍走服务端筛选 */
+  const [previewViewMode, setPreviewViewMode] = useState<'tree' | 'list'>('list');
+  const [aliasEditor, setAliasEditor] = useState<{
+    fileId: string;
+    filename: string;
+    rowKey: string;
+    rowIndex: number;
+    fullRow: string;
+    sheetName?: string;
+    aliases: string[];
+  } | null>(null);
+  const [aliasDraft, setAliasDraft] = useState('');
+  const [aliasSaving, setAliasSaving] = useState(false);
   // 上传列配置弹窗
   const [pendingUploadFile, setPendingUploadFile] = useState<File | null>(null);
   const [showUploadConfigModal, setShowUploadConfigModal] = useState(false);
@@ -132,6 +300,69 @@ export default function KnowledgeBaseManagement() {
   const [excelHeaders, setExcelHeaders] = useState<string[]>([]);
   const [excelSheetNames, setExcelSheetNames] = useState<string[]>([]);
   const [columnRoles, setColumnRoles] = useState<Record<string, ExcelColumnRole>>({});
+
+  // ── 指标定义 / 机构信息抽取 state ──────────────────────────────────────────
+  const [extractSchemas, setExtractSchemas] = useState<string[]>([]);
+  const [extractTables, setExtractTables] = useState<string[]>([]);
+  const [extractSchema, setExtractSchema] = useState('');
+  const [extractTable, setExtractTable] = useState('');
+  const [loadingExtractSchemas, setLoadingExtractSchemas] = useState(false);
+  const [loadingExtractTables, setLoadingExtractTables] = useState(false);
+  const [extracting, setExtracting] = useState(false);
+  const [vectorizingExtract, setVectorizingExtract] = useState(false);
+  const [extractResult, setExtractResult] = useState<{
+    kind: 'kpi' | 'org';
+    filename: string;
+    schema?: string;
+    table?: string;
+    dataDt?: string | null;
+    headers: string[];
+    rows: Record<string, string>[];
+    rowCount: number;
+    previewTruncated?: boolean;
+    mock?: boolean;
+  } | null>(null);
+  const [showExtractConfigModal, setShowExtractConfigModal] = useState(false);
+  const [extractPreviewExpanded, setExtractPreviewExpanded] = useState(false);
+  const EXTRACT_PREVIEW_LIMIT = 5;
+  const extractLoadGenRef = useRef(0);
+
+  /** 机构预览列优先展示检索关键字段（对齐 org_master，避免误以为只有源表四列） */
+  const ORG_PREVIEW_HEADER_PRIORITY = [
+    'org_code',
+    'org_name',
+    'org_level',
+    'org_level_name',
+    'parent_org_code',
+    'parent_org_name',
+    'leaf_child_codes',
+    'leaf_child_orgs',
+    'same_level_codes',
+    'same_level_orgs',
+    'region_org_code',
+    'scope_note',
+    'kpi_query_self',
+    'kpi_query_drilldown',
+    'notes',
+  ];
+
+  const extractPreviewHeaders = useMemo(() => {
+    if (!extractResult?.headers?.length) return [];
+    if (extractResult.kind !== 'org') return extractResult.headers;
+    const set = new Set(extractResult.headers);
+    const ordered = ORG_PREVIEW_HEADER_PRIORITY.filter((h) => set.has(h));
+    for (const h of extractResult.headers) {
+      if (!ordered.includes(h)) ordered.push(h);
+    }
+    return ordered;
+  }, [extractResult]);
+
+  const isMockKnowledgeDataSource = useMemo(() => {
+    if (!selectedDataSource) return false;
+    const host = String(selectedDataSource.host || '').toLowerCase();
+    const database = String(selectedDataSource.database || '').toLowerCase();
+    return host === 'knowledge-extract.mock' || database === 'knowledge_extract_mock';
+  }, [selectedDataSource]);
 
   const previewExcelHeaders = async (dataSourceId: string, formData: FormData) => {
     if (typeof dataService.previewExcelHeaders === 'function') {
@@ -154,22 +385,145 @@ export default function KnowledgeBaseManagement() {
   };
 
   useEffect(() => {
-    if (activeTab === 'excel_file' && selectedDataSourceId) fetchExcelFiles();
+    if (isVectorTab(activeTab) && selectedDataSourceId) fetchExcelFiles();
   }, [activeTab, selectedDataSourceId]);
 
-  const guessDefaultColumnRoles = (headers: string[]): Record<string, ExcelColumnRole> => {
+  const loadExtractSchemas = async (dsId: string, prefer: 'kpi' | 'org', gen: number) => {
+    setLoadingExtractSchemas(true);
+    try {
+      const res = await dataService.listDataSourceSchemas(dsId);
+      if (gen !== extractLoadGenRef.current) return '';
+      if (!res?.success) {
+        throw new Error((res as any)?.error || '获取 schema 列表失败');
+      }
+      const raw =
+        res?.data?.schemas?.map((s) => s.schemaName).filter(Boolean) ||
+        (res as any)?.schemas?.map((s: any) => s.schemaName || s).filter(Boolean) ||
+        [];
+      const preferred = prefer === 'kpi' ? ['kpi'] : ['cmdata'];
+      const sorted = preferSortNames(raw, preferred);
+      setExtractSchemas(sorted);
+      const defaultSchema =
+        sorted.find((s) => preferred.includes(s.toLowerCase())) || sorted[0] || '';
+      setExtractSchema(defaultSchema);
+      return defaultSchema;
+    } catch (err: any) {
+      if (gen !== extractLoadGenRef.current) return '';
+      showToast({ message: `加载 schema 失败: ${formatRequestError(err, '未知错误')}`, status: 'error' });
+      setExtractSchemas([]);
+      setExtractSchema('');
+      setExtractTables([]);
+      setExtractTable('');
+      return '';
+    } finally {
+      if (gen === extractLoadGenRef.current) setLoadingExtractSchemas(false);
+    }
+  };
+
+  const loadExtractTables = async (dsId: string, schema: string, prefer: 'kpi' | 'org', gen?: number) => {
+    if (!schema) {
+      setExtractTables([]);
+      setExtractTable('');
+      return;
+    }
+    setLoadingExtractTables(true);
+    try {
+      const res = await dataService.listDataSourceSchemaTables(dsId, schema);
+      if (gen != null && gen !== extractLoadGenRef.current) return;
+      if (!res?.success) {
+        throw new Error((res as any)?.error || '获取表列表失败');
+      }
+      const raw =
+        res?.data?.tables ||
+        (res as any)?.tables ||
+        [];
+      const preferred = prefer === 'kpi' ? ['kpi_result_ctcx'] : ['c_par_brch_level'];
+      const sorted = preferSortNames(raw, preferred);
+      setExtractTables(sorted);
+      const defaultTable =
+        sorted.find((t) => preferred.includes(t.toLowerCase())) || sorted[0] || '';
+      setExtractTable(defaultTable);
+    } catch (err: any) {
+      if (gen != null && gen !== extractLoadGenRef.current) return;
+      showToast({ message: `加载表列表失败: ${formatRequestError(err, '未知错误')}`, status: 'error' });
+      setExtractTables([]);
+      setExtractTable('');
+    } finally {
+      if (gen == null || gen === extractLoadGenRef.current) setLoadingExtractTables(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!isTableExtractTab(activeTab) || !selectedDataSourceId) {
+      setExtractSchemas([]);
+      setExtractTables([]);
+      setExtractSchema('');
+      setExtractTable('');
+      setExtractResult(null);
+      return;
+    }
+    const prefer = activeTab === 'kpi_definition' ? 'kpi' : 'org';
+    const gen = ++extractLoadGenRef.current;
+    // 切换数据源时立刻清空，避免残留上一数据源的 schema/表
+    setExtractSchemas([]);
+    setExtractTables([]);
+    setExtractSchema('');
+    setExtractTable('');
+    setExtractResult(null);
+    setExtractPreviewExpanded(false);
+    (async () => {
+      const schema = await loadExtractSchemas(selectedDataSourceId, prefer, gen);
+      if (gen !== extractLoadGenRef.current) return;
+      if (schema) await loadExtractTables(selectedDataSourceId, schema, prefer, gen);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, selectedDataSourceId]);
+
+  const handleExtractSchemaChange = async (schema: string) => {
+    setExtractSchema(schema);
+    setExtractTable('');
+    setExtractTables([]);
+    if (!selectedDataSourceId || !isTableExtractTab(activeTab)) return;
+    const prefer = activeTab === 'kpi_definition' ? 'kpi' : 'org';
+    await loadExtractTables(selectedDataSourceId, schema, prefer);
+  };
+
+  const guessDefaultColumnRoles = (headers: string[], kind?: 'kpi' | 'org'): Record<string, ExcelColumnRole> => {
     const roles: Record<string, ExcelColumnRole> = {};
-    const primaryPatterns = [
-      /^org_code$/i,
-      /^name$/i,
-      /^org_name$/i,
-      /^standard_name$/i,
-      /^index_number$/i,
-      /机构名称$/,
-      /指标名称$/,
-      /指标编号$/,
-    ];
-    const excludePatterns = [/region_org_code/i, /parent_/i, /_path$/i, /_ids$/i, /权限/, /备注/, /sql/i, /filter/i];
+    const primaryPatterns =
+      kind === 'org'
+        ? [/^org_code$/i, /^org_name$/i, /^leaf_child_codes$/i, /^leaf_child_orgs$/i]
+        : kind === 'kpi'
+          ? [/指标编号$/, /^标准名称$/, /^index_number$/i, /^standard_name$/i]
+          : [
+              /^org_code$/i,
+              /^name$/i,
+              /^org_name$/i,
+              /^standard_name$/i,
+              /^index_number$/i,
+              /机构名称$/,
+              /指标名称$/,
+              /指标编号$/,
+              /^标准名称$/,
+              /^leaf_child_codes$/i,
+              /^leaf_child_orgs$/i,
+            ];
+    const excludePatterns =
+      kind === 'org'
+        ? [/^kpi_query_self$/i, /^kpi_query_drilldown$/i, /^notes$/i, /^scope_note$/i]
+        : [
+            /region_org_code/i,
+            /parent_/i,
+            /_path$/i,
+            /_ids$/i,
+            /权限/,
+            /备注/,
+            /sql/i,
+            /filter/i,
+            /kpi_query_/i,
+            /scope_note/i,
+            /^notes$/i,
+          ];
 
     for (const header of headers) {
       if (excludePatterns.some((p) => p.test(header))) {
@@ -181,6 +535,120 @@ export default function KnowledgeBaseManagement() {
       }
     }
     return roles;
+  };
+
+  const handleExtractFromTable = async () => {
+    if (!selectedDataSourceId || !isTableExtractTab(activeTab)) return;
+    if (!extractSchema || !extractTable) {
+      showToast({ message: '请选择 schema 与表', status: 'warning' });
+      return;
+    }
+    setExtracting(true);
+    try {
+      const body = {
+        schema: extractSchema || undefined,
+        table: extractTable || undefined,
+      };
+      const res =
+        activeTab === 'kpi_definition'
+          ? await dataService.extractKpiDefinition(selectedDataSourceId, body)
+          : await dataService.extractOrgInfo(selectedDataSourceId, body);
+      if (!res?.success) {
+        showToast({ message: res?.error || '抽取失败', status: 'error' });
+        return;
+      }
+      setExtractResult({
+        kind: (res.kind as 'kpi' | 'org') || (activeTab === 'kpi_definition' ? 'kpi' : 'org'),
+        filename: res.filename || (activeTab === 'kpi_definition' ? KPI_KB_FILENAME : ORG_KB_FILENAME),
+        schema: res.schema,
+        table: res.table,
+        dataDt: res.dataDt,
+        headers: res.headers || [],
+        rows: res.rows || [],
+        rowCount: res.totalRowCount ?? res.rowCount ?? (res.rows || []).length,
+        previewTruncated: res.previewTruncated,
+        mock: res.mock,
+      });
+      setExtractPreviewExpanded(false);
+      showToast({
+        message: `抽取成功：${res.totalRowCount ?? res.rowCount ?? 0} 行${res.dataDt ? `（data_dt=${res.dataDt}）` : ''}${res.mock ? ' [Mock 数据源]' : ''}`,
+        status: 'success',
+      });
+    } catch (err: any) {
+      showToast({ message: `抽取失败: ${formatRequestError(err, '未知错误')}`, status: 'error' });
+    } finally {
+      setExtracting(false);
+    }
+  };
+
+  const openExtractVectorizeConfig = () => {
+    if (!extractResult?.headers?.length) {
+      showToast({ message: '请先抽取数据', status: 'warning' });
+      return;
+    }
+    setExcelHeaders(extractResult.headers);
+    setColumnRoles(guessDefaultColumnRoles(extractResult.headers, extractResult.kind));
+    setShowExtractConfigModal(true);
+  };
+
+  const handleExtractVectorize = async () => {
+    if (!selectedDataSourceId || !extractResult) return;
+    setShowExtractConfigModal(false);
+    setVectorizingExtract(true);
+    try {
+      const body = {
+        primary_columns: selectedPrimaryColumns.join(','),
+        excluded_columns: selectedExcludedColumns.join(','),
+      };
+      const res =
+        extractResult.kind === 'kpi'
+          ? await dataService.vectorizeKpiDefinition(selectedDataSourceId, body)
+          : await dataService.vectorizeOrgInfo(selectedDataSourceId, body);
+      if (res?.success) {
+        showToast({
+          message: `向量化成功：${res.rowCount} 行，${res.cellCount} 个单元格（${res.filename || extractResult.filename}）`,
+          status: 'success',
+        });
+        await fetchExcelFiles();
+      } else {
+        showToast({ message: res?.error || '向量化失败', status: 'error' });
+      }
+    } catch (err: any) {
+      showToast({ message: `向量化失败: ${err?.message || err}`, status: 'error' });
+    } finally {
+      setVectorizingExtract(false);
+      setShowExtractConfigModal(false);
+    }
+  };
+
+  const extractKbFilename =
+    activeTab === 'kpi_definition' ? KPI_KB_FILENAME : activeTab === 'org_info' ? ORG_KB_FILENAME : '';
+  const extractVectorFiles = useMemo(() => {
+    if (!extractKbFilename) return [];
+    return excelFiles.filter((f) => f.filename === extractKbFilename);
+  }, [excelFiles, extractKbFilename]);
+
+  const handleExtractSearch = async () => {
+    if (!excelSearchQuery.trim() || !selectedDataSourceId || !extractKbFilename) return;
+    setExcelSearching(true);
+    setExcelSearchResults([]);
+    try {
+      const res = await dataService.searchExcelCells(selectedDataSourceId, {
+        query: excelSearchQuery.trim(),
+        top_k: 10,
+        filename: extractKbFilename,
+      });
+      if (res?.success) {
+        setExcelSearchResults(res.data || []);
+        if ((res.data || []).length === 0) showToast({ message: '未找到匹配结果', status: 'warning' });
+      } else {
+        showToast({ message: `检索失败: ${res?.error}`, status: 'error' });
+      }
+    } catch (err: any) {
+      showToast({ message: `检索失败: ${err?.message || err}`, status: 'error' });
+    } finally {
+      setExcelSearching(false);
+    }
   };
 
   const resetUploadConfigModal = () => {
@@ -326,21 +794,204 @@ export default function KnowledgeBaseManagement() {
     } finally { setExcelSearching(false); }
   };
 
-  const handlePreviewExcelFile = async (file: ExcelFile) => {
+  const isAliasCapableFile = (filename?: string) =>
+    filename === KPI_KB_FILENAME || filename === ORG_KB_FILENAME;
+
+  const resolveExcelFileId = (filename: string) =>
+    excelFiles.find((f) => f.filename === filename)?.fileId || null;
+
+  const openAliasEditor = (opts: {
+    fileId?: string | null;
+    filename: string;
+    rowKey?: string;
+    rowIndex: number;
+    fullRow: string;
+    sheetName?: string;
+    aliases?: string[];
+  }) => {
+    if (!isAliasCapableFile(opts.filename)) {
+      showToast({ message: '仅指标定义信息 / 机构信息支持别名', status: 'warning' });
+      return;
+    }
+    const fileId = opts.fileId || resolveExcelFileId(opts.filename);
+    if (!fileId) {
+      showToast({ message: '未找到对应向量文件，请先完成向量化', status: 'warning' });
+      return;
+    }
+    const rowKey =
+      opts.rowKey ||
+      (() => {
+        const m =
+          opts.fullRow.match(/(?:^|\|\s*)指标编号:\s*([^\s|]+)/) ||
+          opts.fullRow.match(/(?:^|\|\s*)org_code:\s*([^\s|]+)/i);
+        return m?.[1]?.trim() || '';
+      })();
+    if (!rowKey) {
+      showToast({ message: '无法解析业务主键（指标编号/org_code）', status: 'warning' });
+      return;
+    }
+    setAliasEditor({
+      fileId,
+      filename: opts.filename,
+      rowKey,
+      rowIndex: opts.rowIndex,
+      fullRow: opts.fullRow,
+      sheetName: opts.sheetName,
+      aliases: [...(opts.aliases || [])],
+    });
+    setAliasDraft('');
+  };
+
+  const saveAliasEditor = async () => {
+    if (!selectedDataSourceId || !aliasEditor) return;
+
+    // 保存前把输入框草稿并入列表（避免只输入未点「添加」就点保存）
+    let aliasesToSave = [...aliasEditor.aliases];
+    const draft = aliasDraft.trim();
+    if (draft) {
+      if (!aliasesToSave.some((x) => x.toLowerCase() === draft.toLowerCase())) {
+        aliasesToSave = [...aliasesToSave, draft];
+      }
+      setAliasDraft('');
+    }
+    aliasesToSave = aliasesToSave.map((a) => a.trim()).filter(Boolean);
+
+    setAliasSaving(true);
+    try {
+      const res = await dataService.setExcelFileAliases(selectedDataSourceId, aliasEditor.fileId, {
+        rowKey: aliasEditor.rowKey,
+        rowIndex: aliasEditor.rowIndex,
+        aliases: aliasesToSave,
+        fullRow: aliasEditor.fullRow,
+        sheetName: aliasEditor.sheetName,
+      });
+      if (!res?.success) {
+        showToast({ message: res?.error || '保存别名失败', status: 'error' });
+        return;
+      }
+      const nextAliases = res.aliases ?? aliasesToSave;
+      const nextFullRow = upsertAliasInFullRowClient(aliasEditor.fullRow, nextAliases);
+      showToast({
+        message: nextAliases.length ? `别名已保存（${nextAliases.length} 个）` : '已清空别名',
+        status: 'success',
+      });
+
+      // 乐观更新检索结果
+      setExcelSearchResults((prev) =>
+        prev.map((r) =>
+          r.rowIndex === aliasEditor.rowIndex &&
+          (r.filename === aliasEditor.filename || !r.filename)
+            ? { ...r, aliases: nextAliases, fullRow: nextFullRow, rowKey: aliasEditor.rowKey }
+            : r,
+        ),
+      );
+      // 乐观更新预览行
+      if (previewFile?.file.fileId === aliasEditor.fileId) {
+        setPreviewFile((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            rows: prev.rows.map((row) =>
+              row.rowIndex === aliasEditor.rowIndex &&
+              (!aliasEditor.sheetName || row.sheetName === aliasEditor.sheetName)
+                ? {
+                    ...row,
+                    aliases: nextAliases,
+                    fullRow: nextFullRow,
+                    rowKey: aliasEditor.rowKey,
+                  }
+                : row,
+            ),
+          };
+        });
+      }
+
+      setAliasEditor(null);
+      // 再拉一次服务端；树状机构预览拉全量以便前端筛选保树
+      if (previewFile?.file.fileId === aliasEditor.fileId) {
+        const treeMode =
+          previewViewMode === 'tree' && previewFile.file.filename === ORG_KB_FILENAME;
+        await refreshPreviewRows(previewFile.file, { clientFilter: treeMode });
+      }
+    } catch (err: any) {
+      showToast({ message: `保存别名失败: ${err?.message || err}`, status: 'error' });
+    } finally {
+      setAliasSaving(false);
+    }
+  };
+
+  const upsertAliasInFullRowClient = (fullRow: string, aliases: string[]) => {
+    const base = String(fullRow || '')
+      .replace(/\s*\|\s*别名:\s*[^|]*/g, '')
+      .trim()
+      .replace(/\s*\|\s*$/, '')
+      .trim();
+    if (!aliases.length) return base;
+    return `${base} | 别名: ${aliases.join('；')}`;
+  };
+
+  const refreshPreviewRows = async (
+    file: ExcelFile,
+    opts?: { q?: string; aliasFilter?: 'all' | 'has' | 'none'; clientFilter?: boolean },
+  ) => {
     if (!selectedDataSourceId) return;
     setLoadingPreview(true);
-    setPreviewFile(null);
     try {
-      const res = await (dataService as any).getExcelFileRows(selectedDataSourceId, file.fileId, 200);
+      // 树状：拉全量，筛选在前端做，避免父链被服务端滤断
+      const clientFilter = opts?.clientFilter ?? false;
+      const res = await dataService.getExcelFileRows(selectedDataSourceId, file.fileId, {
+        limit: 2000,
+        q: clientFilter ? undefined : (opts?.q ?? (previewSearchQuery.trim() || undefined)),
+        aliasFilter: clientFilter ? 'all' : (opts?.aliasFilter ?? previewAliasFilter),
+      });
+      if (res?.success) {
+        setPreviewFile({ file, rows: res.data || [] });
+      }
+    } finally {
+      setLoadingPreview(false);
+    }
+  };
+
+  const handlePreviewExcelFile = async (file: ExcelFile) => {
+    if (!selectedDataSourceId) return;
+    const isOrg = file.filename === ORG_KB_FILENAME;
+    setLoadingPreview(true);
+    setPreviewFile({ file, rows: [] });
+    setPreviewSearchQuery('');
+    setPreviewAliasFilter('all');
+    setPreviewViewMode(isOrg ? 'tree' : 'list');
+    try {
+      const res = await dataService.getExcelFileRows(selectedDataSourceId, file.fileId, {
+        limit: 2000,
+        aliasFilter: 'all',
+      });
       if (res?.success) {
         setPreviewFile({ file, rows: res.data || [] });
       } else {
         showToast({ message: `预览失败: ${res?.error}`, status: 'error' });
+        setPreviewFile(null);
       }
     } catch (err: any) {
       showToast({ message: `预览失败: ${err?.message || err}`, status: 'error' });
-    } finally { setLoadingPreview(false); }
+      setPreviewFile(null);
+    } finally {
+      setLoadingPreview(false);
+    }
   };
+
+  // 列表模式：搜索 / 别名筛选走服务端（防抖）。树状模式前端筛选，不触发。
+  useEffect(() => {
+    if (!previewFile?.file || !selectedDataSourceId) return;
+    if (!isAliasCapableFile(previewFile.file.filename)) return;
+    if (previewViewMode === 'tree' && previewFile.file.filename === ORG_KB_FILENAME) return;
+    const file = previewFile.file;
+    const t = setTimeout(() => {
+      refreshPreviewRows(file).catch(() => undefined);
+    }, 300);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewSearchQuery, previewAliasFilter, previewViewMode]);
+
   // ────────────────────────────────────────────────────────────────────────────
 
   const knowledgeEntries = knowledgeData?.data || [];
@@ -436,6 +1087,11 @@ export default function KnowledgeBaseManagement() {
               <span className="rounded-md border border-green-500/20 bg-green-500/10 px-2 py-0.5 text-xs font-medium uppercase text-green-400">
                 {selectedDataSource.type}
               </span>
+              {isMockKnowledgeDataSource && (
+                <span className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-300">
+                  Mock 验收
+                </span>
+              )}
               <span className="rounded-md bg-surface-secondary px-2 py-0.5 font-mono text-xs text-text-secondary">
                 {selectedDataSource.host}:{selectedDataSource.port}
               </span>
@@ -475,7 +1131,7 @@ export default function KnowledgeBaseManagement() {
             <TestTube className="h-4 w-4" />
             RAG测试
           </Button>
-          {activeTab !== 'excel_file' && (
+          {activeTab !== 'excel_file' && !isTableExtractTab(activeTab) && (
             <Button
               type="button"
               onClick={() => setShowAddModal(true)}
@@ -509,6 +1165,18 @@ export default function KnowledgeBaseManagement() {
                 onChange={handleFileSelected}
               />
             </>
+          )}
+          {isTableExtractTab(activeTab) && (
+            <Button
+              type="button"
+              onClick={handleExtractFromTable}
+              disabled={!selectedDataSourceId || extracting || !extractSchema || !extractTable}
+              className="btn btn-primary relative flex items-center gap-2 rounded-lg px-3 py-2"
+              title={!selectedDataSourceId ? '请先选择数据源' : ''}
+            >
+              {extracting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Database className="h-4 w-4" />}
+              {extracting ? '抽取中…' : '从库抽取'}
+            </Button>
           )}
         </div>
       </div>
@@ -629,6 +1297,9 @@ export default function KnowledgeBaseManagement() {
                           {r.isPrimaryColumn && (
                             <span className="rounded border border-green-500/30 bg-green-500/10 px-1 py-0.5 text-[10px] font-semibold text-green-400">主列</span>
                           )}
+                          {r.matchedViaAlias && (
+                            <span className="rounded border border-sky-500/30 bg-sky-500/10 px-1 py-0.5 text-[10px] font-semibold text-sky-400">别名命中</span>
+                          )}
                           <span className="text-xs text-text-secondary">=</span>
                           <span className="rounded bg-green-900/30 px-1.5 py-0.5 text-xs font-semibold text-green-300">{r.cellValue}</span>
                         </div>
@@ -642,6 +1313,35 @@ export default function KnowledgeBaseManagement() {
                       <p className="text-xs text-text-secondary leading-relaxed line-clamp-3" title={r.fullRow}>
                         {r.fullRow}
                       </p>
+                      {isAliasCapableFile(r.filename) && (
+                        <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                          {(r.aliases || []).length > 0 ? (
+                            (r.aliases || []).map((a) => (
+                              <span key={a} className="rounded border border-border-medium bg-surface-primary px-1.5 py-0.5 text-[10px] text-text-secondary">
+                                别名: {a}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="text-[10px] text-text-tertiary">暂无别名</span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              openAliasEditor({
+                                filename: r.filename,
+                                rowKey: r.rowKey,
+                                rowIndex: r.rowIndex,
+                                fullRow: r.fullRow,
+                                sheetName: r.sheetName,
+                                aliases: r.aliases,
+                              })
+                            }
+                            className="ml-auto text-[11px] text-sky-400 hover:text-sky-300 transition-colors"
+                          >
+                            管理别名
+                          </button>
+                        </div>
+                      )}
                     </li>
                   ))}
                 </ul>
@@ -650,6 +1350,273 @@ export default function KnowledgeBaseManagement() {
               <p className="text-xs text-text-secondary">
                 检索优先命中「主列」；「排除列」不参与检索。编码类查询（如 A0000）建议 org_code、name 设为主列，region_org_code 等关联字段设为排除列。右上角「RAG测试」会综合检索全部知识库。
               </p>
+            </div>
+          </div>
+        ) : isTableExtractTab(activeTab) ? (
+          <div className="flex flex-col gap-4">
+            <div className="rounded-xl border border-border-light bg-surface-primary p-4 flex flex-col gap-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm font-medium text-text-primary">
+                  {activeTab === 'kpi_definition' ? '从数据表抽取指标定义' : '从数据表抽取机构信息'}
+                </p>
+              </div>
+              {isMockKnowledgeDataSource && (
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                  当前为 <span className="font-medium">Mock 数据源</span>
+                  （host=<code className="font-mono">knowledge-extract.mock</code>
+                  ）。选表与抽取走内置样例，不连真实 GaussDB；向量化与测试检索仍写入本数据源的 file_vectors。
+                </div>
+              )}
+              <div className="flex flex-wrap items-end gap-3">
+                <div className="min-w-[160px] flex-1">
+                  <label className="mb-1 block text-xs text-text-secondary">Schema</label>
+                  <SearchableSelect
+                    value={extractSchema}
+                    onChange={(v) => handleExtractSchemaChange(v || '')}
+                    options={extractSchemas}
+                    placeholder={loadingExtractSchemas ? '加载中…' : '选择 / 搜索 schema'}
+                    disabled={loadingExtractSchemas}
+                    loading={loadingExtractSchemas}
+                    emptyText="无匹配 schema"
+                  />
+                </div>
+                <div className="min-w-[200px] flex-1">
+                  <label className="mb-1 block text-xs text-text-secondary">表</label>
+                  <SearchableSelect
+                    value={extractTable}
+                    onChange={(v) => setExtractTable(v || '')}
+                    options={extractTables}
+                    placeholder={
+                      loadingExtractTables
+                        ? '加载中…'
+                        : !extractSchema
+                          ? '请先选 schema'
+                          : '选择 / 搜索表'
+                    }
+                    disabled={loadingExtractTables || !extractSchema}
+                    loading={loadingExtractTables}
+                    emptyText="无匹配表"
+                  />
+                </div>
+                <Button
+                  type="button"
+                  onClick={handleExtractFromTable}
+                  disabled={extracting || !extractSchema || !extractTable}
+                  className="btn btn-secondary flex items-center gap-2 rounded-lg px-3 py-2"
+                >
+                  {extracting ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                  {extracting ? '抽取中…' : '从库抽取'}
+                </Button>
+              </div>
+              <p className="text-xs text-text-tertiary">
+                {activeTab === 'kpi_definition'
+                  ? '指标：从 kpi.kpi_result_ctcx 按 index_number 各自取最新 data_dt 去重，映射为「指标定义信息」（旧日期独有指标也会抽到）。'
+                  : '机构：从 cmdata.c_par_brch_level 按 brchno 各自取最新 data_dt 去重后派生完整 org_master（含 leaf_child_codes / 下级机构列表等；旧日期独有机构也会抽到）。'}
+              </p>
+            </div>
+
+            {extractResult && (
+              <div className="rounded-xl border border-border-light bg-surface-primary p-4 flex flex-col gap-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2 text-sm">
+                    <span className="font-medium text-text-primary">{extractResult.filename}</span>
+                    <span className="text-xs text-text-secondary">
+                      {extractResult.kind === 'org' ? `${extractPreviewHeaders.length} 列 org_master · ` : ''}
+                      共 {extractResult.rowCount} 行
+                      {extractResult.dataDt ? ` · data_dt=${extractResult.dataDt}` : ''}
+                      {extractResult.schema && extractResult.table
+                        ? ` · ${extractResult.schema}.${extractResult.table}`
+                        : ''}
+                      {extractResult.mock ? ' · mock' : ''}
+                      {extractResult.previewTruncated ? ' · 服务端预览已截断' : ''}
+                    </span>
+                  </div>
+                  <Button
+                    type="button"
+                    onClick={openExtractVectorizeConfig}
+                    disabled={vectorizingExtract || !extractResult.rows.length}
+                    className="btn btn-primary flex items-center gap-2 rounded-lg px-3 py-2"
+                  >
+                    {vectorizingExtract ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                    {vectorizingExtract ? '向量化中…' : '配置列并向量化'}
+                  </Button>
+                </div>
+                <div className="max-h-80 overflow-auto rounded-lg border border-border-light">
+                  <table className="w-full text-xs">
+                    <thead className="sticky top-0 bg-surface-secondary text-left text-text-secondary">
+                      <tr>
+                        {extractPreviewHeaders.map((h) => (
+                          <th key={h} className="whitespace-nowrap px-2 py-1.5 font-medium">
+                            {h}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(extractPreviewExpanded
+                        ? extractResult.rows
+                        : extractResult.rows.slice(0, EXTRACT_PREVIEW_LIMIT)
+                      ).map((row, idx) => (
+                        <tr key={idx} className="border-t border-border-light/60 hover:bg-surface-secondary/40">
+                          {extractPreviewHeaders.map((h) => (
+                            <td key={h} className="max-w-[280px] truncate px-2 py-1 text-text-primary" title={row[h] || ''}>
+                              {row[h] || ''}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {extractResult.rows.length > EXTRACT_PREVIEW_LIMIT && (
+                  <div className="flex items-center justify-between text-xs text-text-secondary">
+                    <span>
+                      {extractPreviewExpanded
+                        ? `已展开全部 ${extractResult.rows.length} 行预览`
+                        : `默认展示前 ${EXTRACT_PREVIEW_LIMIT} 行（共 ${extractResult.rowCount} 行）`}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setExtractPreviewExpanded((v) => !v)}
+                      className="text-green-400 hover:text-green-300 transition-colors"
+                    >
+                      {extractPreviewExpanded ? '收起' : '展开查看全部'}
+                    </button>
+                  </div>
+                )}
+                {extractResult.rows.length <= EXTRACT_PREVIEW_LIMIT && extractResult.rows.length > 0 && (
+                  <p className="text-xs text-text-tertiary">
+                    共 {extractResult.rowCount} 行（全部已展示）
+                  </p>
+                )}
+              </div>
+            )}
+
+            <div className="rounded-xl border border-border-light bg-surface-primary p-4">
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <span className="text-sm font-medium text-text-primary">
+                  {extractVectorFiles[0]
+                    ? `已向量化：${extractVectorFiles[0].filename} · 共 ${extractVectorFiles[0].rowCount} 行${
+                        extractVectorFiles[0].dataDt ||
+                        (extractResult?.filename === extractVectorFiles[0].filename && extractResult.dataDt)
+                          ? ` · data_dt=${extractVectorFiles[0].dataDt || extractResult?.dataDt}`
+                          : ''
+                      } · 配置日期 ${new Date(extractVectorFiles[0].createdAt).toLocaleDateString()}`
+                    : `已向量化：${extractKbFilename}（尚未写入）`}
+                </span>
+                <button
+                  onClick={() => fetchExcelFiles()}
+                  disabled={loadingExcelFiles}
+                  className="flex shrink-0 items-center gap-1 text-xs text-text-secondary hover:text-green-400 disabled:opacity-50 transition-colors"
+                >
+                  <RefreshCw className={`h-3 w-3 ${loadingExcelFiles ? 'animate-spin' : ''}`} />
+                  刷新
+                </button>
+              </div>
+              {extractVectorFiles.map((f) => (
+                <div key={f.fileId} className="mb-2 flex items-center justify-between rounded-lg border border-border-light bg-surface-secondary px-3 py-2">
+                  <span className="text-xs text-text-secondary">
+                    {f.primaryColumns?.length ? `主列: ${f.primaryColumns.join(', ')}` : '未配置主列'}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => handlePreviewExcelFile(f)}
+                      title="预览"
+                      className="rounded p-1 text-text-secondary hover:text-blue-400"
+                    >
+                      <Eye className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      onClick={() => handleDeleteExcelFile(f.fileId, f.filename)}
+                      title="删除"
+                      className="rounded p-1 text-text-secondary hover:text-red-400"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="rounded-xl border border-border-light bg-surface-primary p-4 flex flex-col gap-3">
+              <p className="text-sm font-medium text-text-primary">测试检索</p>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={excelSearchQuery}
+                  onChange={(e) => setExcelSearchQuery(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleExtractSearch()}
+                  placeholder={
+                    activeTab === 'kpi_definition'
+                      ? '如：各项存款余额'
+                      : '如：武进支行 / A0001'
+                  }
+                  className="flex-1 rounded-md border border-border-light bg-surface-secondary px-3 py-1.5 text-sm text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:ring-1 focus:ring-green-500"
+                />
+                <button
+                  onClick={handleExtractSearch}
+                  disabled={excelSearching || !excelSearchQuery.trim() || extractVectorFiles.length === 0}
+                  className="flex items-center gap-1.5 rounded-md bg-green-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-green-500 disabled:opacity-50 transition-colors"
+                >
+                  {excelSearching ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}
+                  检索
+                </button>
+              </div>
+              {excelSearchResults.length > 0 && (
+                <ul className="flex flex-col gap-2">
+                  {excelSearchResults.map((r, i) => (
+                    <li key={i} className="rounded-lg border border-border-light bg-surface-secondary p-3 flex flex-col gap-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="text-xs font-medium text-green-400">{r.columnName}</span>
+                          {r.isPrimaryColumn && (
+                            <span className="rounded border border-green-500/30 bg-green-500/10 px-1 py-0.5 text-[10px] font-semibold text-green-400">主列</span>
+                          )}
+                          {r.matchedViaAlias && (
+                            <span className="rounded border border-sky-500/30 bg-sky-500/10 px-1 py-0.5 text-[10px] font-semibold text-sky-400">别名命中</span>
+                          )}
+                          <span className="text-xs text-text-secondary">=</span>
+                          <span className="rounded bg-green-900/30 px-1.5 py-0.5 text-xs font-semibold text-green-300">{r.cellValue}</span>
+                        </div>
+                        <span className="rounded bg-green-700/30 px-1.5 py-0.5 text-xs text-green-400">
+                          {(r.score * 100).toFixed(r.score >= 0.995 ? 0 : 1)}%
+                        </span>
+                      </div>
+                      <p className="text-xs text-text-secondary leading-relaxed line-clamp-3" title={r.fullRow}>
+                        {r.fullRow}
+                      </p>
+                      <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                        {(r.aliases || []).length > 0 ? (
+                          (r.aliases || []).map((a) => (
+                            <span key={a} className="rounded border border-border-medium bg-surface-primary px-1.5 py-0.5 text-[10px] text-text-secondary">
+                              别名: {a}
+                            </span>
+                          ))
+                        ) : (
+                          <span className="text-[10px] text-text-tertiary">暂无别名</span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() =>
+                            openAliasEditor({
+                              fileId: extractVectorFiles[0]?.fileId,
+                              filename: r.filename || extractKbFilename,
+                              rowKey: r.rowKey,
+                              rowIndex: r.rowIndex,
+                              fullRow: r.fullRow,
+                              sheetName: r.sheetName,
+                              aliases: r.aliases,
+                            })
+                          }
+                          className="ml-auto text-[11px] text-sky-400 hover:text-sky-300 transition-colors"
+                        >
+                          管理别名
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
           </div>
         ) : knowledgeEntries.length === 0 ? (
@@ -839,33 +1806,256 @@ export default function KnowledgeBaseManagement() {
         </div>
       )}
 
+      {/* 指标/机构抽取列配置弹窗 */}
+      {showExtractConfigModal && extractResult && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="w-full max-w-2xl max-h-[85vh] rounded-xl border border-border-light bg-surface-primary p-6 shadow-xl flex flex-col gap-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-semibold text-text-primary">
+                配置检索列 · {extractResult.filename}
+              </h3>
+              <button
+                onClick={() => setShowExtractConfigModal(false)}
+                title="取消"
+                aria-label="取消"
+                className="rounded p-1 text-text-secondary hover:text-text-primary hover:bg-surface-secondary transition-colors"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-sm text-text-secondary">
+                共 {extractResult.headers.length} 列 · {extractResult.rowCount} 行。
+                {extractResult.kind === 'org'
+                  ? ' 机构默认主列含 org_code / org_name / leaf_child_*，检索机构号可命中子机构列表；排除列不参与检索。'
+                  : ' 主列优先返回；排除列不参与检索。'}
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={excludeAllExceptPrimary}
+                  disabled={selectedPrimaryColumns.length === 0}
+                  title={selectedPrimaryColumns.length === 0 ? '请先选择至少一列作为主列' : undefined}
+                  className="rounded-md border border-border-light bg-surface-secondary px-3 py-1.5 text-xs text-text-secondary transition-colors hover:border-green-500/40 hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  除主列外都设为排除
+                </button>
+                <div className="flex gap-1.5 text-[10px] whitespace-nowrap">
+                  <span className="rounded border border-green-500/30 bg-green-500/10 px-1.5 py-0.5 text-green-400">
+                    主列 {selectedPrimaryColumns.length}
+                  </span>
+                  <span className="rounded border border-border-light bg-surface-secondary px-1.5 py-0.5 text-text-secondary">
+                    可检索 {excelHeaders.length - selectedPrimaryColumns.length - selectedExcludedColumns.length}
+                  </span>
+                  <span className="rounded border border-border-light bg-surface-secondary px-1.5 py-0.5 text-text-tertiary">
+                    排除 {selectedExcludedColumns.length}
+                  </span>
+                </div>
+              </div>
+            </div>
+            <div className="flex-1 overflow-auto rounded-lg border border-border-light bg-surface-secondary/30">
+              <table className="w-full text-sm">
+                <thead className="sticky top-0 z-10 bg-surface-secondary text-left text-xs text-text-secondary">
+                  <tr>
+                    <th className="px-3 py-2.5 font-medium">列名</th>
+                    <th className="px-3 py-2 font-medium w-28 text-center text-green-400/90">主列</th>
+                    <th className="px-3 py-2 font-medium w-28 text-center">可检索</th>
+                    <th className="px-3 py-2 font-medium w-28 text-center text-text-tertiary">排除</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {excelHeaders.map((header) => {
+                    const role = columnRoles[header] || 'searchable';
+                    return (
+                      <tr key={header} className="border-t border-border-light/60 hover:bg-surface-secondary/60">
+                        <td className="px-3 py-2 font-mono text-xs text-text-primary">{header}</td>
+                        {(['primary', 'searchable', 'excluded'] as ExcelColumnRole[]).map((option) => (
+                          <td key={option} className="px-3 py-2 text-center">
+                            <button
+                              type="button"
+                              onClick={() => setColumnRole(header, option)}
+                              className={getColumnRoleButtonClass(option, role === option)}
+                            >
+                              {option === 'primary' ? '主列' : option === 'excluded' ? '排除' : '检索'}
+                            </button>
+                          </td>
+                        ))}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setShowExtractConfigModal(false)}
+                className="rounded-md border border-border-light px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary hover:bg-surface-secondary transition-colors"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleExtractVectorize}
+                disabled={vectorizingExtract || excelHeaders.length === 0}
+                className="rounded-md bg-green-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-green-500 disabled:opacity-50 transition-colors"
+              >
+                {vectorizingExtract ? '向量化中…' : '开始向量化'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Excel 文件预览模态框 */}
       {previewFile && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="flex max-h-[80vh] w-full max-w-3xl flex-col rounded-xl border border-border-light bg-surface-primary shadow-2xl">
+          <div
+            className={cn(
+              'flex max-h-[80vh] w-full flex-col rounded-xl border border-border-light bg-surface-primary shadow-2xl',
+              previewFile.file.filename === ORG_KB_FILENAME ? 'max-w-4xl' : 'max-w-3xl',
+            )}
+          >
             <div className="flex items-center justify-between border-b border-border-light px-5 py-4">
               <div className="flex items-center gap-2 min-w-0">
                 <FileSpreadsheet className="h-5 w-5 text-green-400 shrink-0" />
                 <h3 className="text-base font-semibold text-text-primary truncate">{previewFile.file.filename}</h3>
                 <span className="text-xs text-text-secondary whitespace-nowrap">
                   {previewFile.rows.length} 行
+                  {previewSearchQuery || previewAliasFilter !== 'all' ? '（已筛选）' : ''}
                 </span>
               </div>
               <button onClick={() => setPreviewFile(null)} title="关闭预览" aria-label="关闭预览" className="rounded p-1 text-text-secondary hover:text-text-primary transition-colors">
                 <X className="h-4 w-4" />
               </button>
             </div>
+            {isAliasCapableFile(previewFile.file.filename) && (
+              <div className="flex flex-wrap items-center gap-2 border-b border-border-light px-5 py-3">
+                <input
+                  type="text"
+                  value={previewSearchQuery}
+                  onChange={(e) => setPreviewSearchQuery(e.target.value)}
+                  placeholder="搜索编号 / 名称 / 别名…"
+                  className="min-w-[180px] flex-1 rounded-md border border-border-light bg-surface-secondary px-3 py-1.5 text-sm text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:ring-1 focus:ring-green-500"
+                />
+                <div className="flex items-center gap-1 rounded-md border border-border-light bg-surface-secondary p-0.5 text-xs">
+                  {(
+                    [
+                      { id: 'all', label: '全部' },
+                      { id: 'has', label: '有别名' },
+                      { id: 'none', label: '无别名' },
+                    ] as const
+                  ).map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => setPreviewAliasFilter(opt.id)}
+                      className={cn(
+                        'rounded px-2 py-1 transition-colors',
+                        previewAliasFilter === opt.id
+                          ? 'bg-surface-primary text-text-primary'
+                          : 'text-text-secondary hover:text-text-primary',
+                      )}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+                {previewFile.file.filename === ORG_KB_FILENAME && (
+                  <div className="flex items-center gap-1 rounded-md border border-border-light bg-surface-secondary p-0.5 text-xs">
+                    {(
+                      [
+                        { id: 'tree' as const, label: '树状' },
+                        { id: 'list' as const, label: '列表' },
+                      ]
+                    ).map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => {
+                          const next = opt.id;
+                          setPreviewViewMode(next);
+                          if (next === 'tree' && previewFile?.file) {
+                            refreshPreviewRows(previewFile.file, { clientFilter: true }).catch(
+                              () => undefined,
+                            );
+                          }
+                        }}
+                        className={cn(
+                          'rounded px-2 py-1 transition-colors',
+                          previewViewMode === opt.id
+                            ? 'bg-surface-primary text-text-primary'
+                            : 'text-text-secondary hover:text-text-primary',
+                        )}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             <div className="flex-1 overflow-auto p-4">
-              {previewFile.rows.length === 0 ? (
+              {loadingPreview ? (
+                <p className="text-sm text-text-secondary">加载中…</p>
+              ) : previewFile.rows.length === 0 ? (
                 <p className="text-sm text-text-secondary">暂无数据</p>
+              ) : previewViewMode === 'tree' &&
+                previewFile.file.filename === ORG_KB_FILENAME ? (
+                <OrgHierarchyPreview
+                  rows={previewFile.rows}
+                  searchQuery={previewSearchQuery}
+                  aliasFilter={previewAliasFilter}
+                  onManageAlias={(row) =>
+                    openAliasEditor({
+                      fileId: previewFile.file.fileId,
+                      filename: previewFile.file.filename,
+                      rowKey: row.rowKey,
+                      rowIndex: row.rowIndex,
+                      fullRow: row.fullRow,
+                      sheetName: row.sheetName,
+                      aliases: row.aliases,
+                    })
+                  }
+                />
               ) : (
                 <ul className="flex flex-col gap-1.5">
                   {previewFile.rows.map((row) => (
-                    <li key={`${row.sheetName}-${row.rowIndex}`} className="flex items-start gap-2 rounded-md border border-border-light bg-surface-secondary px-3 py-2">
-                      <span className="shrink-0 rounded bg-surface-primary px-1.5 py-0.5 font-mono text-[10px] text-text-secondary">
-                        {row.rowIndex + 1}
-                      </span>
-                      <span className="text-xs text-text-primary leading-relaxed break-all">{row.fullRow}</span>
+                    <li key={`${row.sheetName}-${row.rowIndex}`} className="flex flex-col gap-1.5 rounded-md border border-border-light bg-surface-secondary px-3 py-2">
+                      <div className="flex items-start gap-2">
+                        <span className="shrink-0 rounded bg-surface-primary px-1.5 py-0.5 font-mono text-[10px] text-text-secondary">
+                          {row.rowIndex + 1}
+                        </span>
+                        <span className="text-xs text-text-primary leading-relaxed break-all">{row.fullRow}</span>
+                      </div>
+                      {isAliasCapableFile(previewFile.file.filename) && (
+                        <div className="flex flex-wrap items-center gap-2 pl-7">
+                          {(row.aliases || []).length > 0 ? (
+                            (row.aliases || []).map((a) => (
+                              <span key={a} className="rounded border border-border-medium bg-surface-primary px-1.5 py-0.5 text-[10px] text-text-secondary">
+                                {a}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="text-[10px] text-text-tertiary">暂无别名</span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              openAliasEditor({
+                                fileId: previewFile.file.fileId,
+                                filename: previewFile.file.filename,
+                                rowKey: row.rowKey,
+                                rowIndex: row.rowIndex,
+                                fullRow: row.fullRow,
+                                sheetName: row.sheetName,
+                                aliases: row.aliases,
+                              })
+                            }
+                            className="ml-auto text-[11px] text-sky-400 hover:text-sky-300 transition-colors"
+                          >
+                            管理别名
+                          </button>
+                        </div>
+                      )}
                     </li>
                   ))}
                 </ul>
@@ -874,6 +2064,124 @@ export default function KnowledgeBaseManagement() {
             <div className="border-t border-border-light px-5 py-3 flex justify-end">
               <button onClick={() => setPreviewFile(null)} className="rounded-lg bg-surface-secondary px-4 py-1.5 text-sm text-text-secondary hover:text-text-primary transition-colors">
                 关闭
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 别名管理弹窗 */}
+      {aliasEditor && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-xl border border-border-light bg-surface-primary shadow-2xl">
+            <div className="flex items-center justify-between border-b border-border-light px-5 py-3">
+              <div className="min-w-0">
+                <h3 className="text-sm font-semibold text-text-primary">管理别名</h3>
+                <p className="mt-0.5 truncate text-xs text-text-secondary">
+                  {aliasEditor.rowKey}
+                  {aliasEditor.filename ? ` · ${aliasEditor.filename}` : ''}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAliasEditor(null)}
+                className="rounded p-1 text-text-secondary hover:text-text-primary"
+                aria-label="关闭"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="flex flex-col gap-3 px-5 py-4">
+              <ul className="flex flex-col gap-1.5 max-h-48 overflow-auto">
+                {aliasEditor.aliases.length === 0 ? (
+                  <li className="text-xs text-text-tertiary">尚未添加别名。例如「存款余额」。</li>
+                ) : (
+                  aliasEditor.aliases.map((a, idx) => (
+                    <li key={`${a}-${idx}`} className="flex items-center gap-2 rounded-md border border-border-light bg-surface-secondary px-2 py-1.5">
+                      <input
+                        type="text"
+                        value={a}
+                        onChange={(e) => {
+                          const next = [...aliasEditor.aliases];
+                          next[idx] = e.target.value;
+                          setAliasEditor({ ...aliasEditor, aliases: next });
+                        }}
+                        className="flex-1 bg-transparent text-sm text-text-primary outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setAliasEditor({
+                            ...aliasEditor,
+                            aliases: aliasEditor.aliases.filter((_, i) => i !== idx),
+                          })
+                        }
+                        className="rounded p-1 text-text-secondary hover:text-red-400"
+                        title="删除"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </li>
+                  ))
+                )}
+              </ul>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={aliasDraft}
+                  onChange={(e) => setAliasDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      const v = aliasDraft.trim();
+                      if (!v) return;
+                      if (aliasEditor.aliases.some((x) => x.toLowerCase() === v.toLowerCase())) {
+                        showToast({ message: '别名已存在', status: 'warning' });
+                        return;
+                      }
+                      setAliasEditor({ ...aliasEditor, aliases: [...aliasEditor.aliases, v] });
+                      setAliasDraft('');
+                    }
+                  }}
+                  placeholder="输入新别名后回车添加"
+                  className="flex-1 rounded-md border border-border-light bg-surface-secondary px-3 py-1.5 text-sm text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:ring-1 focus:ring-green-500"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    const v = aliasDraft.trim();
+                    if (!v) return;
+                    if (aliasEditor.aliases.some((x) => x.toLowerCase() === v.toLowerCase())) {
+                      showToast({ message: '别名已存在', status: 'warning' });
+                      return;
+                    }
+                    setAliasEditor({ ...aliasEditor, aliases: [...aliasEditor.aliases, v] });
+                    setAliasDraft('');
+                  }}
+                  className="rounded-md border border-border-light px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary hover:bg-surface-secondary"
+                >
+                  添加
+                </button>
+              </div>
+              <p className="text-[11px] text-text-tertiary">
+                保存后，检索别名将作为主列优先命中；重新向量化不会丢失别名。
+              </p>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-border-light px-5 py-3">
+              <button
+                type="button"
+                onClick={() => setAliasEditor(null)}
+                className="rounded-md border border-border-light px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={saveAliasEditor}
+                disabled={aliasSaving}
+                className="rounded-md bg-green-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-green-500 disabled:opacity-50"
+              >
+                {aliasSaving ? '保存中…' : '保存'}
               </button>
             </div>
           </div>

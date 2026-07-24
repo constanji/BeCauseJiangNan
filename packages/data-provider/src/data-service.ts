@@ -823,14 +823,66 @@ export const deleteExcelFile = (
 export const getExcelFileRows = (
   id: string,
   fileId: string,
-  limit?: number,
+  limitOrParams?: number | { limit?: number; q?: string; aliasFilter?: 'all' | 'has' | 'none' },
 ): Promise<{
   success: boolean;
-  data: Array<{ rowIndex: number; fullRow: string; sheetName: string }>;
+  data: Array<{
+    rowIndex: number;
+    fullRow: string;
+    sheetName: string;
+    rowKey?: string;
+    aliases?: string[];
+  }>;
+  filename?: string;
+  totalMatched?: number;
+  truncated?: boolean;
   error?: string;
 }> => {
-  const url = endpoints.dataSources.getExcelFileRows(id, fileId) + (limit ? `?limit=${limit}` : '');
+  const params =
+    typeof limitOrParams === 'number' ? { limit: limitOrParams } : limitOrParams || undefined;
+  const search = new URLSearchParams();
+  if (params?.limit != null) search.set('limit', String(params.limit));
+  if (params?.q) search.set('q', params.q);
+  if (params?.aliasFilter && params.aliasFilter !== 'all') {
+    search.set('aliasFilter', params.aliasFilter);
+  }
+  const qs = search.toString();
+  const url = endpoints.dataSources.getExcelFileRows(id, fileId) + (qs ? `?${qs}` : '');
   return request.get(url);
+};
+
+export const listExcelFileAliases = (
+  id: string,
+  fileId: string,
+): Promise<{
+  success: boolean;
+  filename?: string;
+  data?: Record<string, { rowKey: string; aliases: string[]; displayName?: string; filename?: string }>;
+  error?: string;
+}> => {
+  return request.get(endpoints.dataSources.listExcelFileAliases(id, fileId));
+};
+
+export const setExcelFileAliases = (
+  id: string,
+  fileId: string,
+  body: {
+    rowKey?: string;
+    rowIndex?: number;
+    aliases: string[];
+    fullRow?: string;
+    sheetName?: string;
+  },
+): Promise<{
+  success: boolean;
+  rowKey?: string;
+  aliases?: string[];
+  displayName?: string;
+  rowIndex?: number;
+  filename?: string;
+  error?: string;
+}> => {
+  return request.put(endpoints.dataSources.setExcelFileAliases(id, fileId), body);
 };
 
 export const searchExcelCells = (
@@ -848,10 +900,77 @@ export const searchExcelCells = (
     sheetName: string;
     isPrimaryColumn?: boolean;
     isExactMatch?: boolean;
+    rowKey?: string;
+    aliases?: string[];
+    matchedViaAlias?: boolean;
   }>;
   error?: string;
 }> => {
   return request.post(endpoints.dataSources.searchExcelCells(id), body);
+};
+
+export type KnowledgeExtractResult = {
+  success: boolean;
+  kind?: 'kpi' | 'org';
+  filename?: string;
+  schema?: string;
+  table?: string;
+  dataDt?: string | null;
+  headers?: string[];
+  rows?: Record<string, string>[];
+  rowCount?: number;
+  totalRowCount?: number;
+  previewTruncated?: boolean;
+  mock?: boolean;
+  error?: string;
+};
+
+export const extractKpiDefinition = (
+  id: string,
+  body: { schema?: string; table?: string; source?: string },
+): Promise<KnowledgeExtractResult> => {
+  return request.post(endpoints.dataSources.extractKpiDefinition(id), body);
+};
+
+export const extractOrgInfo = (
+  id: string,
+  body: { schema?: string; table?: string; source?: string },
+): Promise<KnowledgeExtractResult> => {
+  return request.post(endpoints.dataSources.extractOrgInfo(id), body);
+};
+
+export const vectorizeKpiDefinition = (
+  id: string,
+  body: { primary_columns?: string; excluded_columns?: string },
+): Promise<{
+  success: boolean;
+  fileId?: string;
+  rowCount?: number;
+  cellCount?: number;
+  filename?: string;
+  headers?: string[];
+  primaryColumns?: string[];
+  excludedColumns?: string[];
+  error?: string;
+}> => {
+  return request.post(endpoints.dataSources.vectorizeKpiDefinition(id), body);
+};
+
+export const vectorizeOrgInfo = (
+  id: string,
+  body: { primary_columns?: string; excluded_columns?: string },
+): Promise<{
+  success: boolean;
+  fileId?: string;
+  rowCount?: number;
+  cellCount?: number;
+  filename?: string;
+  headers?: string[];
+  primaryColumns?: string[];
+  excludedColumns?: string[];
+  error?: string;
+}> => {
+  return request.post(endpoints.dataSources.vectorizeOrgInfo(id), body);
 };
 
 /* Projects */

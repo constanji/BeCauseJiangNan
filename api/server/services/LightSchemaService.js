@@ -9,9 +9,9 @@
 const path = require('path');
 const { logger } = require('@because/data-schemas');
 
-// GaussDB 专用桥（企业定制安全协议）
+// GaussDB 专用桥（企业定制安全协议）— 相对项目根 /app/Because-2.0
 const { gaussdbJdbcQuery } = require(
-  path.join(__dirname, '../../../Because-2.0/utils/gaussdbJdbcBridge'),
+  path.join(require('~/config/paths').root, 'Because-2.0/utils/gaussdbJdbcBridge'),
 );
 
 // 文本列类型集合（这些列有采样值意义）
