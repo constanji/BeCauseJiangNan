@@ -212,10 +212,21 @@ export const chart: React.ElementType = memo((props: Record<string, unknown>) =>
       );
     }
 
+    // 仍在流式生成：转圈；结束后仍找不到 = id 与工具返回 charts[].id / analysisType 不一致
     return (
       <div className="my-3 flex items-center gap-2 rounded-md border border-border-light bg-surface-secondary px-3 py-4 text-sm text-text-secondary">
-        <div className="h-4 w-4 animate-spin rounded-full border-2 border-border-light border-t-text-primary" />
-        <span>{isSubmitting ? '正在生成图表...' : `图表 ${id || ''} 加载中`}</span>
+        {isSubmitting ? (
+          <>
+            <div className="h-4 w-4 animate-spin rounded-full border-2 border-border-light border-t-text-primary" />
+            <span>正在生成图表...</span>
+          </>
+        ) : (
+          <span>
+            图表未匹配
+            {id ? `（占位 id=${id}）` : ''}
+            ：正文 @ec@ 标记须与 echarts_generator_app 返回的 charts[].id 一致
+          </span>
+        )}
       </div>
     );
   }

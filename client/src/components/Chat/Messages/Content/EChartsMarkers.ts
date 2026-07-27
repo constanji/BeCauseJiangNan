@@ -100,6 +100,8 @@ export function parseEChartsToolOutput(output: string): EChartsChartData[] | nul
 
 /**
  * Build a Map<id, chartData> from all echarts_generator_app tool outputs in message content.
+ * Also indexes by analysisType when present, so markers like @ec@trend_analysis@ec@
+ * still resolve if the model used analysisType as the placeholder id while charts[].id is chart_1.
  */
 export function buildEChartsChartsById(
   toolOutputs: string[],
@@ -114,6 +116,9 @@ export function buildEChartsChartsById(
     for (const chart of charts) {
       if (chart.id) {
         map.set(chart.id, chart);
+      }
+      if (chart.analysisType && !map.has(chart.analysisType)) {
+        map.set(chart.analysisType, chart);
       }
     }
   }

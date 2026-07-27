@@ -47,6 +47,8 @@ describe('EChartsMarkers', () => {
 
     const map = buildEChartsChartsById([sampleOutput]);
     expect(map.get('chart_1')?.title).toBe('测试图表');
+    // analysisType also indexed for mismatched LLM placeholders
+    expect(map.get('line')?.id).toBe('chart_1');
   });
 
   it('returns null for invalid tool output', () => {

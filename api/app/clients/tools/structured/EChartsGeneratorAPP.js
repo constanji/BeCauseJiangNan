@@ -238,7 +238,8 @@ const chartItemSchema = z.object({
   id: z
     .string()
     .describe(
-      '图表唯一标识，用于前端解析匹配（如 chart_1, chart_2 等），对应 markdown 中的 @ec@type:id@ec@ 标记',
+      '图表唯一标识（如 chart_1）。正文占位必须写成 @ec@<图型>:<此id>@ec@，例如 id=chart_1 且为折线 → @ec@line:chart_1@ec@；' +
+        '图型取 series[0].type（bar/line/pie）。禁止把 analysisType 写进占位。',
     ),
   title: z
     .string()
@@ -262,10 +263,9 @@ const chartItemSchema = z.object({
     ])
     .optional()
     .describe(
-      '归因分析场景类型（可选）：' +
-        'dimension_compare=多维度对比分析, trend_analysis=同比/环比趋势分析, ' +
-        'combined_analysis=多维度+时间轴组合归因, composition_distribution=指标构成/分布归因, ' +
-        'general=通用图表',
+      '业务场景标签（可选，仅元数据，不参与正文占位匹配）：' +
+        'dimension_compare / trend_analysis / combined_analysis / composition_distribution / general。' +
+        '切勿写成 @ec@trend_analysis@ec@ —— 占位必须用 @ec@line:chart_1@ec@ 这种 type:id 形式。',
     ),
 });
 
@@ -279,8 +279,14 @@ class EChartsGeneratorAPP extends Tool {
   name = 'echarts_generator_app';
 
   description =
-    'ECharts 图表生成工具。传入 charts 数组（每项含 id、title、echartsOption）生成交互式图表，' +
-    '前端根据 id 匹配正文中的 @ec@type:id@ec@ 标记位置渲染。\n\n' +
+    'ECharts 图表生成工具。传入 charts 数组（每项含 id、title、echartsOption）生成交互式图表。\n\n' +
+    '## 正文占位约定（本工具特有，必须遵守）\n' +
+    '- 调用本工具后，Agent 须在回复正文插入：`@ec@<type>:<id>@ec@`\n' +
+    '- `<type>` = 图型，取 series[0].type：`bar` / `line` / `pie`\n' +
+    '- `<id>` = 本调用 charts[].id（如 chart_1），须逐字一致\n' +
+    '- ✅ `@ec@line:chart_1@ec@`  `@ec@bar:chart_2@ec@`\n' +
+    '- ❌ `@ec@trend_analysis@ec@`（误用 analysisType）  ❌ `@ec@chart_1@ec@`（缺 type）\n' +
+    '- analysisType 只是业务标签，不参与占位匹配\n\n' +
     '**参数格式**：charts 必须是 JSON 数组（[{id,title,echartsOption},...]），不要传 JSON 字符串。\n\n' +
     '支持类型：柱状图(bar)、折线图(line)优先；饼图/环图仅在构成占比场景使用。\n\n' +
     '## 图表生成规则（强制执行）\n\n' +
