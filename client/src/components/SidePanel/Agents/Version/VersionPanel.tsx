@@ -1,9 +1,14 @@
 import { ChevronLeft } from 'lucide-react';
 import { useCallback, useMemo } from 'react';
 import { useToastContext } from '@because/client';
-import { useGetAgentByIdQuery, useRevertAgentVersionMutation } from '~/data-provider';
+import {
+  useGetAgentByIdQuery,
+  useRevertAgentVersionMutation,
+  useUpdateAgentVersionNoteMutation,
+} from '~/data-provider';
 import type { AgentWithVersions, VersionContext } from './types';
 import { isActiveVersion } from './isActiveVersion';
+import { buildVersionChangeMap, sortVersionsAscending } from './getVersionChanges';
 import { useAgentPanelContext } from '~/Providers';
 import VersionContent from './VersionContent';
 import { useLocalize } from '~/hooks';
@@ -34,6 +39,19 @@ export default function VersionPanel() {
     },
   });
 
+  const updateVersionNote = useUpdateAgentVersionNoteMutation({
+    onSuccess: () => {
+      showToast({ message: '备注已保存', status: 'success' });
+      refetch();
+    },
+    onError: (err: Error) => {
+      showToast({
+        message: err?.message || '保存备注失败',
+        status: 'error',
+      });
+    },
+  });
+
   const agentWithVersions = agent as AgentWithVersions;
 
   const currentAgent = useMemo(() => {
@@ -55,6 +73,11 @@ export default function VersionPanel() {
       const bTime = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
       return bTime - aTime;
     });
+  }, [agentWithVersions?.versions]);
+
+  const changeMap = useMemo(() => {
+    const ascending = sortVersionsAscending(agentWithVersions?.versions || []);
+    return buildVersionChangeMap(ascending);
   }, [agentWithVersions?.versions]);
 
   const activeVersion = useMemo(() => {
@@ -116,33 +139,46 @@ export default function VersionPanel() {
     [revertAgentVersion, selectedAgentId, versionIds],
   );
 
+  const handleSaveNote = useCallback(
+    async (originalIndex: number, note: string) => {
+      await updateVersionNote.mutateAsync({
+        agent_id: selectedAgentId,
+        version_index: originalIndex,
+        versionNote: note,
+      });
+    },
+    [selectedAgentId, updateVersionNote],
+  );
+
   return (
-    <div className="scrollbar-gutter-stable h-full min-h-[40vh] overflow-auto pb-12 text-sm">
-      <div className="version-panel relative flex flex-col items-center px-16 py-4 text-center">
-        <div className="absolute left-0 top-4">
+    <div className="scrollbar-gutter-stable h-full min-h-[40vh] overflow-auto pb-12 text-sm text-text-primary dark:text-text-primary">
+      <div className="mx-auto w-full max-w-[1200px] px-4 pt-3">
+        <div className="mb-4 flex items-center gap-3">
           <button
             type="button"
-            className="btn btn-neutral relative"
-            onClick={() => {
-              setActivePanel(Panel.builder);
-            }}
+            className="btn btn-neutral border-token-border-light relative inline-flex h-9 items-center gap-1.5 rounded-lg px-3 text-sm font-medium"
+            onClick={() => setActivePanel(Panel.builder)}
+            aria-label={localize('com_ui_back_to_builder')}
           >
-            <div className="version-panel-content flex w-full items-center justify-center gap-2">
-              <ChevronLeft />
-            </div>
+            <ChevronLeft className="h-4 w-4" aria-hidden />
+            返回编辑
           </button>
+          <div>
+            <h2 className="text-token-text-primary dark:text-text-primary text-lg font-semibold">
+              {localize('com_ui_agent_version_history')}
+            </h2>
+            <p className="text-xs text-text-secondary">按时间查看变更、备注，并恢复历史版本</p>
+          </div>
         </div>
-        <div className="mb-2 mt-2 text-xl font-medium">
-          {localize('com_ui_agent_version_history')}
-        </div>
-      </div>
-      <div className="flex flex-col gap-4 px-2">
+
         <VersionContent
           selectedAgentId={selectedAgentId}
           isLoading={isLoading}
           error={error}
           versionContext={versionContext}
+          changeMap={changeMap}
           onRestore={handleRestore}
+          onSaveNote={handleSaveNote}
         />
       </div>
     </div>

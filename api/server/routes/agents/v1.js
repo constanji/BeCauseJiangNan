@@ -157,6 +157,20 @@ router.post(
 );
 
 /**
+ * Update a version snapshot note.
+ * @route PATCH /agents/:id/versions/:versionIndex/note
+ */
+router.patch(
+  '/:id/versions/:versionIndex/note',
+  checkGlobalAgentShare,
+  canAccessAgentResource({
+    requiredPermission: PermissionBits.EDIT,
+    resourceIdParam: 'id',
+  }),
+  v1.updateAgentVersionNote,
+);
+
+/**
  * Returns a list of agents.
  * @route GET /agents
  * @param {AgentListParams} req.query - The agent list parameters for pagination and sorting.

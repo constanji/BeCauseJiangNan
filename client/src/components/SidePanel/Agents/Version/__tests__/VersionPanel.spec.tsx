@@ -43,6 +43,11 @@ jest.mock('~/data-provider', () => ({
     mutate: jest.fn(),
     isLoading: false,
   })),
+  useUpdateAgentVersionNoteMutation: jest.fn(() => ({
+    mutate: jest.fn(),
+    mutateAsync: jest.fn(),
+    isLoading: false,
+  })),
 }));
 
 jest.mock('../VersionContent', () => ({
@@ -50,9 +55,12 @@ jest.mock('../VersionContent', () => ({
   default: jest.fn(() => <div data-testid="version-content" />),
 }));
 
+jest.mock('@because/client', () => ({
+  useToastContext: jest.fn(() => ({ showToast: jest.fn() })),
+}));
+
 jest.mock('~/hooks', () => ({
   useLocalize: jest.fn().mockImplementation(() => (key) => key),
-  useToast: jest.fn(() => ({ showToast: jest.fn() })),
 }));
 
 // Mock the AgentPanelContext

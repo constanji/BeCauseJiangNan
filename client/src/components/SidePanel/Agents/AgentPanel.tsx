@@ -73,6 +73,7 @@ export function composeAgentUpdatePayload(data: AgentForm, agent_id?: string | n
     category,
     support_contact,
     avatar_action: avatarActionState,
+    versionNote,
   } = data;
 
   const shouldResetAvatar =
@@ -80,6 +81,8 @@ export function composeAgentUpdatePayload(data: AgentForm, agent_id?: string | n
   const model = _model ?? '';
   const provider =
     (typeof _provider === 'string' ? _provider : (_provider as StringOption).value) ?? '';
+
+  const note = versionNote != null ? String(versionNote).trim() : '';
 
   return {
     payload: {
@@ -98,6 +101,7 @@ export function composeAgentUpdatePayload(data: AgentForm, agent_id?: string | n
       category,
       support_contact,
       ...(shouldResetAvatar ? { avatar: null } : {}),
+      ...(agent_id && note ? { versionNote: note } : {}),
     },
     provider,
     model,
@@ -341,6 +345,7 @@ export default function AgentPanel() {
       if (agentOption && typeof agentOption !== 'string') {
         setValue('agent', { ...agentOption, ...data }, { shouldDirty: false });
       }
+      setValue('versionNote', '', { shouldDirty: false });
 
       try {
         await handleAvatarUpload(data.id ?? agent_id);

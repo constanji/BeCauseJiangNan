@@ -72,10 +72,10 @@ AND curr_code = 'CN'
 |------|------|------|
 | **light-schema** | 表结构获取 | `query` + `top_k:8`；已知表名可传 `tables:[]` 减噪 |
 | **database-schema** | light-schema 失败时兜底 | 实时拉库；非常规不必用 |
-| **indicator-understanding** | 指标编码/标准名称/口径 | 固定检索「指标定义信息」；一次一个 query；**勿传 filename** |
-| **org-context** | 机构号/机构名/下级 | 固定检索「机构信息」；一次一个 query；**勿传 filename** |
-| **rag-retrieval** | 术语、规则、非表格知识兜底 | `top_k:5`；结构化未命中时再用 |
-| **sql-executor** | 执行 SQL | 默认 ≤50 行；**无需先校验** |
+| **indicator-understanding** | 指标编码/标准名称/口径 | 固定检索「指标定义信息」；一次一个 query；`top_k` 先 2 再扩到 5 |
+| **org-context** | 机构号/机构名/下级 | 固定检索「机构信息」；一次一个 query；`top_k` 先 2 再扩到 5 |
+| **rag-retrieval** | 术语、同义词、规则；**指标/机构专用库未命中时的兜底** | 默认 `top_k:5`；**分词检索**，禁止整句直接 RAG |
+| **sql-executor** | 执行 SQL | 默认 ≤50 行 |
 | **fluctuation-attribution** | 机构/公式归因 | 见 §7；默认 `compact:true`；**下钻只走路径甲/乙** |
 
 ### 3.2 because_jn 调用格式
@@ -91,16 +91,17 @@ call_tool("because_jn", { command: "indicator-understanding", arguments: "{\"que
 
 ```
 light-schema → 确认表/字段/value_hints（写 SQL 前；失败再 database-schema）
-机构 → 已指定：org-context(top_k=2) → 无命中再 5/10
+机构 → 已指定：org-context(top_k=2→5) → 仍无有效命中 → rag-retrieval 分词兜底(top_k=5)
       未指定：默认 org_code='FR001'（总行），org-context 查 FR001 其下管理行
-指标 → 已给完整 BM/GM 编码直接用；无结果再 indicator-understanding(top_k≥5)；仅名称 → indicator-understanding(top_k≥5)
-背景 → rag-retrieval（结构化未命中或术语/规则时）
+指标 → 已给完整 BM/GM 编码直接用；仅名称/别称 → indicator-understanding(top_k=2→5)
+      → 仍无有效命中（见 §4）→ rag-retrieval 分词兜底(top_k=5)
+背景 → rag-retrieval（术语/规则/同义词；非整句）
 → sql-executor → 输出
 ```
 
 ---
 
-## 4. 指标检索规则
+## 4. 指标 / 机构检索规则
 
 **indicator-understanding / org-context 一次只查一个**
 
@@ -109,13 +110,27 @@ light-schema → 确认表/字段/value_hints（写 SQL 前；失败再 database
 ✅ query="关注类贷款占比"   ❌ query="A指标和B指标"
 ```
 
-| 场景 | 命令 | top_k | 校验 |
-|------|------|-------|------|
-| **未指定机构** | — | ≥2 | 默认 `org_code='FR001'` |
-| 指标编码 BM/GM | indicator-understanding | ≥5 | `matched_value` = query 或 full_row 指标编号 = query |
-| 机构代码 | org-context | 2→5→10 | `matched_value` 或 `full_row.org_code` **须等于** query |
-| 机构名称 | org-context | 2→5→10 | **同名多行时默认 `org_level_name=管理行`**（见 §5）；从选定行的 `full_row` 取 `org_code` |
-| 指标名称 | indicator-understanding | ≥5（歧义 10） | 采纳含 `index_number`/`standard_name` 的指标库行 |
+| 场景 | 命令 | top_k | 命中判定 |
+|------|------|-------|----------|
+| **未指定机构** | — | — | 默认 `org_code='FR001'` |
+| 指标编码 BM/GM | indicator-understanding | **2→5**；仍无 → rag(5) | `matched_value` = query 或 full_row 指标编号 = query |
+| 机构代码 | org-context | **2→5**；仍无 → rag(5) | `matched_value` 或 `full_row.org_code` **须等于** query |
+| 机构名称 | org-context | **2→5**；仍无 → rag(5) | **同名多行时默认 `org_level_name=管理行`**（见 §5）；从选定行的 `full_row` 取 `org_code` |
+| 指标名称 / 别称 | indicator-understanding | **2→5**；仍无 → rag(5) | 采纳含 `index_number`/`standard_name` 且与问法语义相关的指标库行 |
+
+### 4.1 专用库未命中 → 切换 rag-retrieval
+
+**indicator-understanding / org-context** 均按 `top_k=2` 再扩到 `top_k=5`；仍出现以下任一情况，**立即切换**为 `rag-retrieval`（`top_k:5`），不要继续盲目加大 top_k 或整句硬查：
+
+- 返回空 / `results` 为空
+- 有返回但**无法实际命中**（指标：无可用 `index_number` / `standard_name`，或编码、名称与问法对不上；机构：无可用 `org_code` / `org_name`，或与 query 对不上）
+- 返回行与用户意图**语义不相关**（明显跑题、错指标/错机构）
+
+**rag-retrieval 用法（兜底）**
+
+- 默认 `top_k:5`
+- **分词检索，禁止把整句用户问题直接当 query**：先抽出指标/机构相关核心词 / 别称词（可多轮、每次一个短 query），例如用户问「帮我查一下利率平均值最近怎么样」→ 用 `利率平均值`、`平均利率` 等短词检索，**不要**整句 RAG
+- 优先看同义词 / 业务知识命中，把别称归一到标准名或编码后，再写 SQL；仍无法定位 → 明确告知用户，**禁止臆造** `index_number` / `org_code`
 
 **特殊情况**：小微贷款事业部（机构）的指标名较为特殊——**除「小微贷款余额」（BM10014118）外，其余指标名称均带「小微贷款事业部-」前缀**（如「小微贷款事业部-贷款余额」BM10014177）。检索时：带前缀指标须用完整名称或 `query="小微贷款事业部-"` 列出；「小微贷款余额」可直接查名称/编码 BM10014118。记得前缀含 `-`；用 **indicator-understanding** 查指标（与 org-context 隔离，不会误命中机构行）。
 
@@ -127,7 +142,7 @@ light-schema → 确认表/字段/value_hints（写 SQL 前；失败再 database
 **机构处理（写 SQL 前必做）**
 
 1. **未指定机构**（问题中无机构代码/名称）→ 直接默认 `org_code='FR001'`（总行），模式1 本级，**org-context** 查 FR001 其下管理行。
-2. 出现机构代码/名称 → `org-context`（`top_k=2`，无命中 → 5→10）
+2. 出现机构代码/名称 → `org-context`（`top_k=2→5`；仍无有效命中 → `rag-retrieval` top_k=5）
 3. 只采纳「机构信息」行；从 `full_row` 取 `org_code`、`org_level_name`、`leaf_child_codes`、`same_level_codes`、`notes`
 4. 按意图选模式（见下表）；名称展示用 `leaf_child_orgs`/`same_level_orgs`，**禁止**逐个 org_code 再查
 5. **同名歧义**（`org_name` 相同、`org_code` 不同，常见于管理行与下属网点同名，如 **A0002 武进支行** 与 **01011 武进支行**）：

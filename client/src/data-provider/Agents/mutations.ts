@@ -403,6 +403,35 @@ export const useRevertAgentVersionMutation = (
   );
 };
 
+/**
+ * Hook for updating a version snapshot note
+ */
+export const useUpdateAgentVersionNoteMutation = (
+  options?: t.UpdateAgentVersionNoteOptions,
+): UseMutationResult<
+  t.Agent,
+  Error,
+  { agent_id: string; version_index: number; versionNote: string }
+> => {
+  const queryClient = useQueryClient();
+  return useMutation(
+    ({ agent_id, version_index, versionNote }) =>
+      dataService.updateAgentVersionNote({
+        agent_id,
+        version_index,
+        versionNote,
+      }),
+    {
+      onMutate: (variables) => options?.onMutate?.(variables),
+      onError: (error, variables, context) => options?.onError?.(error, variables, context),
+      onSuccess: (updatedAgent, variables, context) => {
+        queryClient.setQueryData<t.Agent>([QueryKeys.agent, variables.agent_id], updatedAgent);
+        return options?.onSuccess?.(updatedAgent, variables, context);
+      },
+    },
+  );
+};
+
 export const invalidateAgentMarketplaceQueries = (queryClient: QueryClient) => {
   queryClient.invalidateQueries([QueryKeys.marketplaceAgents]);
 };

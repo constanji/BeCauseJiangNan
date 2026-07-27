@@ -88,6 +88,8 @@ export const agentUpdateSchema = agentBaseSchema.extend({
   projectIds: z.array(z.string()).optional(),
   removeProjectIds: z.array(z.string()).optional(),
   isCollaborative: z.boolean().optional(),
+  /** 仅写入本次 versions 快照备注，不落 agent 顶层 */
+  versionNote: z.string().max(2000).optional(),
 });
 
 interface ValidateAgentModelParams {

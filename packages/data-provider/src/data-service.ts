@@ -478,6 +478,28 @@ export const revertAgentVersion = ({
   version_index: number;
 }): Promise<a.Agent> => request.post(endpoints.revertAgentVersion(agent_id), { version_index });
 
+export const updateAgentVersionNote = ({
+  agent_id,
+  version_index,
+  versionNote,
+}: {
+  agent_id: string;
+  version_index: number;
+  versionNote: string;
+}): Promise<a.Agent> =>
+  request.patch(endpoints.agentVersionNote(agent_id, version_index), { versionNote });
+
+export const listToolPromptTemplates = (
+  toolId: string,
+): Promise<{ success: boolean; data: Array<{ id: string; label: string }> }> =>
+  request.get(endpoints.toolPromptTemplates(toolId));
+
+export const getToolPromptTemplate = (
+  toolId: string,
+  templateId: string,
+): Promise<{ success: boolean; data: { id: string; label: string; content: string } }> =>
+  request.get(endpoints.toolPromptTemplate(toolId, templateId));
+
 /* Marketplace */
 
 /**

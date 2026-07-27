@@ -1,7 +1,7 @@
 import '@testing-library/jest-dom/extend-expect';
 import { fireEvent, render, screen } from '@testing-library/react';
 import VersionItem from '../VersionItem';
-import { VersionRecord } from '../VersionPanel';
+import type { VersionRecord } from '../types';
 
 jest.mock('~/hooks', () => ({
   useLocalize: jest.fn().mockImplementation(() => (key, params) => {
@@ -32,6 +32,8 @@ describe('VersionItem', () => {
     index: 1,
     isActive: false,
     versionsLength: 3,
+    originalIndex: 1,
+    changeSummary: { kind: 'none' as const, changes: [] },
     onRestore: jest.fn(),
   };
 
@@ -49,13 +51,14 @@ describe('VersionItem', () => {
 
   test('active version badge and no restore button when active', () => {
     render(<VersionItem {...defaultProps} isActive={true} />);
-    expect(screen.getByText('Active Version')).toBeInTheDocument();
+    expect(screen.getByText('当前生效')).toBeInTheDocument();
     expect(screen.queryByText('Restore')).not.toBeInTheDocument();
   });
 
   test('restore button and no active badge when not active', () => {
     render(<VersionItem {...defaultProps} isActive={false} />);
-    expect(screen.queryByText('Active Version')).not.toBeInTheDocument();
+    expect(screen.queryByText('当前生效')).not.toBeInTheDocument();
+    expect(screen.getByText('历史版本')).toBeInTheDocument();
     expect(screen.getByText('Restore')).toBeInTheDocument();
   });
 

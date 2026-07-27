@@ -46,4 +46,6 @@ export type AgentForm = {
   avatar_preview?: string | null;
   avatar_action?: 'upload' | 'reset' | null;
   data_source_id?: string | null;
+  /** 保存时写入本次 versions 快照的备注（不落 agent 顶层） */
+  versionNote?: string | null;
 } & TAgentCapabilities;

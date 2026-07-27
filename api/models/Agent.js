@@ -185,6 +185,7 @@ const isDuplicateVersion = (updateData, currentData, versions, actionsHash = nul
     '__v',
     'versions',
     'actionsHash', // Exclude actionsHash from direct comparison
+    'versionNote', // 备注只挂在版本快照上，不参与重复检测
   ];
 
   const { $push: _$push, $pull: _$pull, $addToSet: _$addToSet, ...directUpdates } = updateData;
@@ -342,6 +343,16 @@ const updateAgent = async (searchParameter, updateData, options = {}) => {
   const { updatingUserId = null, forceVersion = false, skipVersioning = false } = options;
   const mongoOptions = { new: true, upsert: false };
 
+  // versionNote 仅写入本次 versions 快照，不落 agent 顶层
+  const versionNoteRaw = updateData?.versionNote;
+  if (updateData && Object.prototype.hasOwnProperty.call(updateData, 'versionNote')) {
+    delete updateData.versionNote;
+  }
+  const versionNote =
+    versionNoteRaw != null && String(versionNoteRaw).trim()
+      ? String(versionNoteRaw).trim()
+      : '';
+
   const currentAgent = await Agent.findOne(searchParameter);
   if (currentAgent) {
     const {
@@ -401,6 +412,10 @@ const updateAgent = async (searchParameter, updateData, options = {}) => {
       ...directUpdates,
       updatedAt: new Date(),
     };
+
+    if (versionNote) {
+      versionEntry.versionNote = versionNote;
+    }
 
     // Include actions hash in version if available
     if (actionsHash) {
@@ -813,8 +828,34 @@ const revertAgentVersion = async (searchParameter, versionIndex) => {
   delete updateData.versions;
   delete updateData.author;
   delete updateData.updatedBy;
+  delete updateData.versionNote;
+  delete updateData.actionsHash;
 
   return Agent.findOneAndUpdate(searchParameter, updateData, { new: true }).lean();
+};
+
+/**
+ * 更新某一历史版本快照的备注（不新建版本、不改 agent 顶层字段）
+ * @param {Object} searchParameter
+ * @param {number} versionIndex
+ * @param {string} versionNote
+ */
+const updateAgentVersionNote = async (searchParameter, versionIndex, versionNote) => {
+  const agent = await Agent.findOne(searchParameter);
+  if (!agent) {
+    throw new Error('Agent not found');
+  }
+  const idx = Number(versionIndex);
+  if (!agent.versions || !agent.versions[idx]) {
+    throw new Error(`Version ${versionIndex} not found`);
+  }
+
+  const note = versionNote != null ? String(versionNote).trim() : '';
+  await Agent.updateOne(searchParameter, {
+    $set: { [`versions.${idx}.versionNote`]: note },
+  });
+
+  return getAgent(searchParameter);
 };
 
 /**
@@ -892,6 +933,7 @@ module.exports = {
   deleteUserAgents,
   getListAgents,
   revertAgentVersion,
+  updateAgentVersionNote,
   updateAgentProjects,
   addAgentResourceFile,
   getListAgentsByAccess,

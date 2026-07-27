@@ -17,6 +17,13 @@ import DuplicateAgent from './DuplicateAgent';
 import AdminSettings from './AdminSettings';
 import DeleteButton from './DeleteButton';
 import { Panel } from '~/common';
+import { cn, defaultTextProps, removeFocusOutlines } from '~/utils';
+
+const noteInputClass = cn(
+  defaultTextProps,
+  'w-full min-h-[56px] resize-y px-3 py-2 border-border-light bg-surface-secondary text-text-primary dark:text-text-primary placeholder:text-text-secondary',
+  removeFocusOutlines,
+);
 
 export default function AgentFooter({
   activePanel,
@@ -37,7 +44,7 @@ export default function AgentFooter({
 
   const methods = useFormContext<AgentForm>();
 
-  const { control } = methods;
+  const { control, register } = methods;
   const agent = useWatch({ control, name: 'agent' });
   const agent_id = useWatch({ control, name: 'id' });
   const hasAccessToShareAgents = useHasAccess({
@@ -68,6 +75,24 @@ export default function AgentFooter({
 
   return (
     <div className="mb-1 flex w-full flex-col gap-2">
+      {showButtons && agent_id && (
+        <div>
+          <label
+            className="text-token-text-primary dark:text-text-primary mb-1.5 block text-xs font-medium"
+            htmlFor="versionNote"
+          >
+            本次修改备注（可选）
+          </label>
+          <textarea
+            id="versionNote"
+            {...register('versionNote')}
+            rows={2}
+            className={noteInputClass}
+            placeholder="例如：更新 KPI 提示词、调整挂载工具"
+            aria-label="本次修改备注"
+          />
+        </div>
+      )}
       {showButtons && <AdvancedButton setActivePanel={setActivePanel} />}
       {showButtons && agent_id && <VersionButton setActivePanel={setActivePanel} />}
       {user?.role === SystemRoles.ADMIN && showButtons && <AdminSettings />}

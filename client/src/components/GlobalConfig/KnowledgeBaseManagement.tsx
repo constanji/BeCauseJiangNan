@@ -16,6 +16,7 @@ import type { DataSource } from '@because/data-provider';
 import { dataService, request, apiBaseUrl } from '@because/data-provider';
 import { cn } from '~/utils';
 import OrgHierarchyPreview from './OrgHierarchyPreview';
+import * as XLSX from 'xlsx';
 
 // 类型定义
 type KnowledgeEntry = {
@@ -89,6 +90,75 @@ function formatRequestError(err: any, fallback: string) {
     (typeof err === 'string' ? err : '') ||
     fallback
   );
+}
+
+/** 同义词列表分隔：逗号 / 顿号 / & / 空白 */
+function splitSynonymList(raw: string): string[] {
+  return String(raw || '')
+    .split(/[,，、&\s]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function isSynonymHeaderLine(line: string): boolean {
+  const t = line.trim().toLowerCase();
+  if (t.startsWith('#')) return true;
+  return (
+    t === '标准词' ||
+    t === '名词' ||
+    t === 'noun' ||
+    /^标准词[\s,，\t]+别词/.test(t) ||
+    /^名词[\s,，\t]+同义词/.test(t) ||
+    /^noun[\s,，\t]+synonym/.test(t)
+  );
+}
+
+function isExcelSynonymFile(file: File): boolean {
+  const name = (file.name || '').toLowerCase();
+  return name.endsWith('.xlsx') || name.endsWith('.xls');
+}
+
+/**
+ * 将 Excel 首 sheet 转为可复用 parseTextInput 的文本行（标准词\\t别词）
+ * 优先识别表头「标准词/别词」「名词/同义词」；否则默认 A=标准词、B=别词
+ */
+function excelBufferToSynonymText(buffer: ArrayBuffer): string {
+  const workbook = XLSX.read(buffer, { type: 'array' });
+  const sheetName = workbook.SheetNames[0];
+  if (!sheetName) return '';
+  const sheet = workbook.Sheets[sheetName];
+  const rows = XLSX.utils.sheet_to_json(sheet, {
+    header: 1,
+    defval: '',
+    raw: false,
+  }) as Array<Array<string | number | null | undefined>>;
+
+  if (!rows.length) return '';
+
+  let nounCol = 0;
+  let aliasCol = 1;
+  let startRow = 0;
+  const header = (rows[0] || []).map((c) => String(c ?? '').trim());
+  const nounIdx = header.findIndex((h) => ['标准词', '名词', '主词', 'noun'].includes(h));
+  const aliasIdx = header.findIndex((h) =>
+    ['别词', '同义词', '别名', 'synonyms', 'synonym'].includes(h),
+  );
+  if (nounIdx >= 0 && aliasIdx >= 0) {
+    nounCol = nounIdx;
+    aliasCol = aliasIdx;
+    startRow = 1;
+  }
+
+  const lines: string[] = [];
+  for (let i = startRow; i < rows.length; i++) {
+    const row = rows[i] || [];
+    const noun = String(row[nounCol] ?? '').trim();
+    const aliases = String(row[aliasCol] ?? '').trim();
+    if (!noun || !aliases) continue;
+    if (isSynonymHeaderLine(`${noun}\t${aliases}`)) continue;
+    lines.push(`${noun}\t${aliases}`);
+  }
+  return lines.join('\n');
 }
 
 /** Schema / 表：可搜索下拉（支持大量表名过滤） */
@@ -308,6 +378,8 @@ export default function KnowledgeBaseManagement() {
   const [extractTable, setExtractTable] = useState('');
   const [loadingExtractSchemas, setLoadingExtractSchemas] = useState(false);
   const [loadingExtractTables, setLoadingExtractTables] = useState(false);
+  /** 指标/机构抽取：需手动点「连接数据库」后才拉 schema/表，避免每次切 Tab 都连库 */
+  const [extractDbConnected, setExtractDbConnected] = useState(false);
   const [extracting, setExtracting] = useState(false);
   const [vectorizingExtract, setVectorizingExtract] = useState(false);
   const [extractResult, setExtractResult] = useState<{
@@ -388,11 +460,15 @@ export default function KnowledgeBaseManagement() {
     if (isVectorTab(activeTab) && selectedDataSourceId) fetchExcelFiles();
   }, [activeTab, selectedDataSourceId]);
 
-  const loadExtractSchemas = async (dsId: string, prefer: 'kpi' | 'org', gen: number) => {
+  const loadExtractSchemas = async (
+    dsId: string,
+    prefer: 'kpi' | 'org',
+    gen: number,
+  ): Promise<string | null> => {
     setLoadingExtractSchemas(true);
     try {
       const res = await dataService.listDataSourceSchemas(dsId);
-      if (gen !== extractLoadGenRef.current) return '';
+      if (gen !== extractLoadGenRef.current) return null;
       if (!res?.success) {
         throw new Error((res as any)?.error || '获取 schema 列表失败');
       }
@@ -408,13 +484,13 @@ export default function KnowledgeBaseManagement() {
       setExtractSchema(defaultSchema);
       return defaultSchema;
     } catch (err: any) {
-      if (gen !== extractLoadGenRef.current) return '';
+      if (gen !== extractLoadGenRef.current) return null;
       showToast({ message: `加载 schema 失败: ${formatRequestError(err, '未知错误')}`, status: 'error' });
       setExtractSchemas([]);
       setExtractSchema('');
       setExtractTables([]);
       setExtractTable('');
-      return '';
+      return null;
     } finally {
       if (gen === extractLoadGenRef.current) setLoadingExtractSchemas(false);
     }
@@ -453,37 +529,42 @@ export default function KnowledgeBaseManagement() {
     }
   };
 
+  // 切 Tab / 换数据源：清空 schema/表，不自动连库
   useEffect(() => {
-    if (!isTableExtractTab(activeTab) || !selectedDataSourceId) {
-      setExtractSchemas([]);
-      setExtractTables([]);
-      setExtractSchema('');
-      setExtractTable('');
-      setExtractResult(null);
-      return;
-    }
-    const prefer = activeTab === 'kpi_definition' ? 'kpi' : 'org';
-    const gen = ++extractLoadGenRef.current;
-    // 切换数据源时立刻清空，避免残留上一数据源的 schema/表
+    extractLoadGenRef.current += 1;
+    setExtractDbConnected(false);
     setExtractSchemas([]);
     setExtractTables([]);
     setExtractSchema('');
     setExtractTable('');
+    setLoadingExtractSchemas(false);
+    setLoadingExtractTables(false);
     setExtractResult(null);
     setExtractPreviewExpanded(false);
-    (async () => {
-      const schema = await loadExtractSchemas(selectedDataSourceId, prefer, gen);
-      if (gen !== extractLoadGenRef.current) return;
-      if (schema) await loadExtractTables(selectedDataSourceId, schema, prefer, gen);
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, selectedDataSourceId]);
+
+  const handleConnectExtractDb = async () => {
+    if (!selectedDataSourceId || !isTableExtractTab(activeTab)) return;
+    const prefer = activeTab === 'kpi_definition' ? 'kpi' : 'org';
+    const gen = ++extractLoadGenRef.current;
+    setExtractDbConnected(false);
+    setExtractSchemas([]);
+    setExtractTables([]);
+    setExtractSchema('');
+    setExtractTable('');
+    const schema = await loadExtractSchemas(selectedDataSourceId, prefer, gen);
+    if (gen !== extractLoadGenRef.current) return;
+    if (schema === null) return;
+    if (schema) await loadExtractTables(selectedDataSourceId, schema, prefer, gen);
+    if (gen !== extractLoadGenRef.current) return;
+    setExtractDbConnected(true);
+  };
 
   const handleExtractSchemaChange = async (schema: string) => {
     setExtractSchema(schema);
     setExtractTable('');
     setExtractTables([]);
-    if (!selectedDataSourceId || !isTableExtractTab(activeTab)) return;
+    if (!selectedDataSourceId || !isTableExtractTab(activeTab) || !extractDbConnected) return;
     const prefer = activeTab === 'kpi_definition' ? 'kpi' : 'org';
     await loadExtractTables(selectedDataSourceId, schema, prefer);
   };
@@ -1170,9 +1251,21 @@ export default function KnowledgeBaseManagement() {
             <Button
               type="button"
               onClick={handleExtractFromTable}
-              disabled={!selectedDataSourceId || extracting || !extractSchema || !extractTable}
+              disabled={
+                !selectedDataSourceId ||
+                extracting ||
+                !extractDbConnected ||
+                !extractSchema ||
+                !extractTable
+              }
               className="btn btn-primary relative flex items-center gap-2 rounded-lg px-3 py-2"
-              title={!selectedDataSourceId ? '请先选择数据源' : ''}
+              title={
+                !selectedDataSourceId
+                  ? '请先选择数据源'
+                  : !extractDbConnected
+                    ? '请先连接数据库'
+                    : ''
+              }
             >
               {extracting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Database className="h-4 w-4" />}
               {extracting ? '抽取中…' : '从库抽取'}
@@ -1368,14 +1461,46 @@ export default function KnowledgeBaseManagement() {
                 </div>
               )}
               <div className="flex flex-wrap items-end gap-3">
+                <Button
+                  type="button"
+                  onClick={handleConnectExtractDb}
+                  disabled={
+                    !selectedDataSourceId || loadingExtractSchemas || loadingExtractTables
+                  }
+                  className="btn btn-primary flex items-center gap-2 rounded-lg px-3 py-2"
+                  title={
+                    !selectedDataSourceId
+                      ? '请先选择数据源'
+                      : extractDbConnected
+                        ? '重新连接并刷新 schema / 表'
+                        : '连接数据库以加载 schema 与表'
+                  }
+                >
+                  {loadingExtractSchemas || loadingExtractTables ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Database className="h-4 w-4" />
+                  )}
+                  {loadingExtractSchemas || loadingExtractTables
+                    ? '连接中…'
+                    : extractDbConnected
+                      ? '重新连接'
+                      : '连接数据库'}
+                </Button>
                 <div className="min-w-[160px] flex-1">
                   <label className="mb-1 block text-xs text-text-secondary">Schema</label>
                   <SearchableSelect
                     value={extractSchema}
                     onChange={(v) => handleExtractSchemaChange(v || '')}
                     options={extractSchemas}
-                    placeholder={loadingExtractSchemas ? '加载中…' : '选择 / 搜索 schema'}
-                    disabled={loadingExtractSchemas}
+                    placeholder={
+                      loadingExtractSchemas
+                        ? '加载中…'
+                        : !extractDbConnected
+                          ? '请先连接数据库'
+                          : '选择 / 搜索 schema'
+                    }
+                    disabled={!extractDbConnected || loadingExtractSchemas}
                     loading={loadingExtractSchemas}
                     emptyText="无匹配 schema"
                   />
@@ -1389,11 +1514,15 @@ export default function KnowledgeBaseManagement() {
                     placeholder={
                       loadingExtractTables
                         ? '加载中…'
-                        : !extractSchema
-                          ? '请先选 schema'
-                          : '选择 / 搜索表'
+                        : !extractDbConnected
+                          ? '请先连接数据库'
+                          : !extractSchema
+                            ? '请先选 schema'
+                            : '选择 / 搜索表'
                     }
-                    disabled={loadingExtractTables || !extractSchema}
+                    disabled={
+                      !extractDbConnected || loadingExtractTables || !extractSchema
+                    }
                     loading={loadingExtractTables}
                     emptyText="无匹配表"
                   />
@@ -1401,7 +1530,12 @@ export default function KnowledgeBaseManagement() {
                 <Button
                   type="button"
                   onClick={handleExtractFromTable}
-                  disabled={extracting || !extractSchema || !extractTable}
+                  disabled={
+                    extracting ||
+                    !extractDbConnected ||
+                    !extractSchema ||
+                    !extractTable
+                  }
                   className="btn btn-secondary flex items-center gap-2 rounded-lg px-3 py-2"
                 >
                   {extracting ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
@@ -1410,8 +1544,8 @@ export default function KnowledgeBaseManagement() {
               </div>
               <p className="text-xs text-text-tertiary">
                 {activeTab === 'kpi_definition'
-                  ? '指标：从 kpi.kpi_result_ctcx 按 index_number 各自取最新 data_dt 去重，映射为「指标定义信息」（旧日期独有指标也会抽到）。'
-                  : '机构：从 cmdata.c_par_brch_level 按 brchno 各自取最新 data_dt 去重后派生完整 org_master（含 leaf_child_codes / 下级机构列表等；旧日期独有机构也会抽到）。'}
+                  ? '先点「连接数据库」加载 schema/表，再抽取。指标：从 kpi.kpi_result_ctcx 按 index_number 各自取最新 data_dt 去重，映射为「指标定义信息」。'
+                  : '先点「连接数据库」加载 schema/表，再抽取。机构：从 cmdata.c_par_brch_level 按 brchno 各自取最新 data_dt 去重后派生完整 org_master。'}
               </p>
             </div>
 
@@ -2752,7 +2886,7 @@ function AddKnowledgeModal({ type, dataSourceId, onClose, onAdd, isLoading }: Ad
           noun: formData.noun || '',
           synonyms: Array.isArray(formData.synonyms)
             ? formData.synonyms
-            : formData.synonyms?.split(',').map((s: string) => s.trim()) || [],
+            : splitSynonymList(String(formData.synonyms || '')),
           entityId: dataSourceId, // 关联数据源
         },
       });
@@ -3245,10 +3379,10 @@ function AddKnowledgeModal({ type, dataSourceId, onClose, onAdd, isLoading }: Ad
                   value={formData.synonyms || ''}
                   onChange={(e) => setFormData({ ...formData, synonyms: e.target.value })}
                   className="mt-1 block w-full rounded border border-border-light bg-surface-secondary px-3 py-2 text-sm text-text-primary"
-                  placeholder="用逗号分隔，例如：订购, 下单, 购买"
+                  placeholder="用逗号或 & 分隔，例如：订购,下单 或 利率平均值&平均利率值"
                   required
                 />
-                <p className="mt-1 text-xs text-text-tertiary">多个同义词用逗号分隔</p>
+                <p className="mt-1 text-xs text-text-tertiary">多个同义词用逗号、顿号或 & 分隔</p>
               </div>
             </>
           )}
@@ -3844,7 +3978,7 @@ function EditKnowledgeModal({ entry, dataSourceId, onClose, onUpdate, isLoading 
           noun: formData.noun || '',
           synonyms: Array.isArray(formData.synonyms)
             ? formData.synonyms
-            : formData.synonyms?.split(',').map((s: string) => s.trim()) || [],
+            : splitSynonymList(String(formData.synonyms || '')),
         },
       });
     } else if (entry.type === 'business_knowledge') {
@@ -3941,11 +4075,11 @@ function EditKnowledgeModal({ entry, dataSourceId, onClose, onUpdate, isLoading 
                   value={formData.synonyms || ''}
                   onChange={(e) => setFormData({ ...formData, synonyms: e.target.value })}
                   className="mt-1 block w-full rounded border border-border-light bg-surface-secondary px-3 py-2 text-sm text-text-primary"
-                  placeholder="用逗号分隔，例如：订购, 下单, 购买"
+                  placeholder="用逗号或 & 分隔，例如：订购,下单 或 利率平均值&平均利率值"
                   required
                   aria-label="同义词"
                 />
-                <p className="mt-1 text-xs text-text-tertiary">多个同义词用逗号分隔</p>
+                <p className="mt-1 text-xs text-text-tertiary">多个同义词用逗号、顿号或 & 分隔</p>
               </div>
             </>
           )}
@@ -4124,58 +4258,57 @@ function BatchAddKnowledgeModal({ type, dataSourceId, onClose, onAdd, isLoading 
   };
 
   // 解析文本格式的同义词
+  // 支持：冒号行 / 逗号行 / 制表符两列（Excel 粘贴：标准词\t别词1&别词2）
+  // 别词内可用逗号、顿号、&、空白分隔
   const parseTextInput = (text: string): Array<Record<string, string>> => {
-    const lines = text.split('\n').filter(line => line.trim());
+    const lines = text.split('\n').filter((line) => line.trim());
     const parsed: Array<Record<string, string>> = [];
 
-    lines.forEach((line, index) => {
+    lines.forEach((line) => {
       const trimmed = line.trim();
-      if (!trimmed) return;
+      if (!trimmed || isSynonymHeaderLine(trimmed)) return;
 
-      // 支持格式1: 主词：同义词1 同义词2 同义词3（冒号+空格）
-      // 支持格式2: 主词：同义词1,同义词2,同义词3（冒号+逗号）
-      // 支持格式3: 主词,同义词1,同义词2,同义词3（纯逗号）
-      // 支持格式4: 主词 同义词1 同义词2 同义词3（纯空格）
       let noun = '';
-      let synonyms = '';
+      let synonymsPart = '';
 
-      // 检查是否包含冒号（中英文）
-      if (trimmed.includes('：') || trimmed.includes(':')) {
-        const colonIndex = trimmed.indexOf('：') !== -1 ? trimmed.indexOf('：') : trimmed.indexOf(':');
+      if (trimmed.includes('\t')) {
+        // Excel / TSV：标准词 \t 别词…
+        const tabParts = trimmed.split('\t').map((s) => s.trim()).filter(Boolean);
+        if (tabParts.length < 2) return;
+        noun = tabParts[0];
+        synonymsPart = tabParts.slice(1).join(' ');
+      } else if (trimmed.includes('：') || trimmed.includes(':')) {
+        const colonIndex =
+          trimmed.indexOf('：') !== -1 ? trimmed.indexOf('：') : trimmed.indexOf(':');
         noun = trimmed.substring(0, colonIndex).trim();
-        const synonymsPart = trimmed.substring(colonIndex + 1).trim();
-        
-        // 如果包含逗号，按逗号分割；否则按空格分割
-        if (synonymsPart.includes(',') || synonymsPart.includes('，')) {
-          synonyms = synonymsPart.replace(/[，,]/g, ',').split(',').map(s => s.trim()).filter(s => s).join(', ');
+        synonymsPart = trimmed.substring(colonIndex + 1).trim();
+      } else if (trimmed.includes(',') || trimmed.includes('，')) {
+        const parts = trimmed.split(/[,，]/).map((s) => s.trim()).filter(Boolean);
+        if (parts.length < 2) return;
+        noun = parts[0];
+        synonymsPart = parts.slice(1).join(',');
+      } else if (trimmed.includes('&')) {
+        // 支持：
+        // 1) 标准词 别词1&别词2（空格分隔标准词与别词串，Excel 常见）
+        // 2) 标准词&别词1&别词2
+        const spaceParts = trimmed.split(/\s+/).filter(Boolean);
+        if (spaceParts.length >= 2 && !spaceParts[0].includes('&')) {
+          noun = spaceParts[0];
+          synonymsPart = spaceParts.slice(1).join(' ');
         } else {
-          synonyms = synonymsPart.split(/\s+/).filter(s => s).join(', ');
+          const parts = trimmed.split('&').map((s) => s.trim()).filter(Boolean);
+          if (parts.length < 2) return;
+          noun = parts[0];
+          synonymsPart = parts.slice(1).join('&');
         }
       } else {
-        // 没有冒号，检查是否包含逗号
-        if (trimmed.includes(',') || trimmed.includes('，')) {
-          // 按逗号分割（第一个是主词，后面是同义词）
-          const parts = trimmed.split(/[,，]/).map(s => s.trim()).filter(s => s);
-          if (parts.length >= 2) {
-            noun = parts[0];
-            synonyms = parts.slice(1).join(', ');
-          } else {
-            // 如果只有一个部分，可能是格式错误
-            return;
-          }
-        } else {
-          // 纯空格分割（第一个是主词，后面是同义词）
-          const parts = trimmed.split(/\s+/).filter(s => s);
-          if (parts.length >= 2) {
-            noun = parts[0];
-            synonyms = parts.slice(1).join(', ');
-          } else {
-            // 如果只有一个部分，可能是格式错误
-            return;
-          }
-        }
+        const parts = trimmed.split(/\s+/).filter(Boolean);
+        if (parts.length < 2) return;
+        noun = parts[0];
+        synonymsPart = parts.slice(1).join(' ');
       }
 
+      const synonyms = splitSynonymList(synonymsPart).join(', ');
       if (noun && synonyms) {
         parsed.push({ noun, synonyms });
       }
@@ -4203,29 +4336,50 @@ function BatchAddKnowledgeModal({ type, dataSourceId, onClose, onAdd, isLoading 
     const file = event.target.files?.[0];
     if (!file) return;
 
+    const applySynonymContent = (content: string) => {
+      setFileContent(content);
+      const parsed = parseTextInput(content);
+      if (parsed.length > 0) {
+        setItems(parsed);
+        setTextInput(content);
+        showToast({
+          message: `成功解析 ${parsed.length} 条同义词`,
+          status: 'success',
+        });
+      } else {
+        showToast({
+          message: '文件格式不正确，请检查格式（支持 xlsx 两列：标准词 / 别词）',
+          status: 'error',
+        });
+      }
+    };
+
+    if (type === 'synonym' && isExcelSynonymFile(file)) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const buffer = e.target?.result as ArrayBuffer;
+          const content = excelBufferToSynonymText(buffer);
+          applySynonymContent(content);
+        } catch (err: any) {
+          showToast({
+            message: `Excel 解析失败：${err?.message || '未知错误'}`,
+            status: 'error',
+          });
+        }
+      };
+      reader.readAsArrayBuffer(file);
+      return;
+    }
+
     const reader = new FileReader();
     reader.onload = (e) => {
       const content = e.target?.result as string;
       setFileContent(content);
-      
+
       if (type === 'synonym') {
-        // 解析文件内容
-        const parsed = parseTextInput(content);
-        if (parsed.length > 0) {
-          setItems(parsed);
-          setTextInput(content);
-          showToast({
-            message: `成功解析 ${parsed.length} 条同义词`,
-            status: 'success',
-          });
-        } else {
-          showToast({
-            message: '文件格式不正确，请检查格式',
-            status: 'error',
-          });
-        }
+        applySynonymContent(content);
       } else if (type === 'qa_pair') {
-        // 解析QA对文件内容
         const parsed = parseQATextInput(content);
         if (parsed.length > 0) {
           setItems(parsed);
@@ -4324,12 +4478,9 @@ function BatchAddKnowledgeModal({ type, dataSourceId, onClose, onAdd, isLoading 
         }
       } else {
         if (item.noun && item.synonyms) {
-          // 解析同义词，支持逗号和空格分隔
-          const synonymsArray = item.synonyms
-            .split(/[,，\s]+/)
-            .map((s: string) => s.trim())
-            .filter((s: string) => s);
-          
+          // 解析同义词：逗号 / 顿号 / & / 空白
+          const synonymsArray = splitSynonymList(item.synonyms);
+
           if (synonymsArray.length > 0) {
             onAdd({
               type: 'synonym',
@@ -4432,7 +4583,7 @@ function BatchAddKnowledgeModal({ type, dataSourceId, onClose, onAdd, isLoading 
           <input
             ref={fileInputRef}
             type="file"
-            accept=".txt,.csv,.json"
+            accept=".txt,.csv,.tsv,.json,.xlsx,.xls"
             onChange={handleFileUpload}
             className="hidden"
             aria-label="上传文件"
@@ -4463,14 +4614,14 @@ function BatchAddKnowledgeModal({ type, dataSourceId, onClose, onAdd, isLoading 
                   ) : (
                     <>
                       <p className="mb-3 text-xs text-text-tertiary">
-                        用逗号或者空格分割同义词，每行一条
+                        每行一条。支持「标准词：别词」或 Excel 粘贴「标准词[Tab]别词」；别词内可用逗号、顿号或 &amp; 分隔
                       </p>
                       <textarea
                         value={textInput}
                         onChange={(e) => handleTextInputChange(e.target.value)}
                         rows={12}
                         className="w-full rounded border border-border-light bg-surface-secondary px-3 py-2 text-sm text-text-primary font-mono"
-                        placeholder="例如：&#10;订购：下单 购买 采购&#10;销售：售卖 出售 卖出&#10;客户，用户，消费者&#10;产品 商品"
+                        placeholder="例如：&#10;平均利率：利率平均值&amp;平均利率值&#10;绿色产品贷款：绿色产品信贷&amp;绿色产品类贷款&#10;订购：下单,购买,采购"
                         aria-label="批量输入同义词"
                       />
                     </>
@@ -4588,14 +4739,14 @@ function BatchAddKnowledgeModal({ type, dataSourceId, onClose, onAdd, isLoading 
                         </div>
                         <div>
                           <label className="block text-xs font-medium text-text-primary mb-1">
-                            同义词 *（用逗号分隔）
+                            同义词 *（逗号或 & 分隔）
                           </label>
                           <input
                             type="text"
                             value={item.synonyms || ''}
                             onChange={(e) => handleItemChange(index, 'synonyms', e.target.value)}
                             className="w-full rounded border border-border-light bg-surface-primary px-3 py-2 text-sm text-text-primary"
-                            placeholder="例如：订购, 下单, 购买"
+                            placeholder="例如：利率平均值&平均利率值"
                             required
                           />
                         </div>
@@ -4614,7 +4765,7 @@ function BatchAddKnowledgeModal({ type, dataSourceId, onClose, onAdd, isLoading 
             <div className="space-y-3">
               <div>
                 <label className="block text-sm font-medium text-text-primary mb-2">
-                  上传文件（.txt格式）
+                  上传文件（支持 .xlsx / .xls / .tsv / .txt / .csv）
                 </label>
                 <div className="flex items-center gap-2">
                   <button

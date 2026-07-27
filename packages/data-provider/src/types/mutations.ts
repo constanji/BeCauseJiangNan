@@ -172,6 +172,17 @@ export type RevertAgentVersionVariables = {
 
 export type RevertAgentVersionOptions = MutationOptions<Agent, RevertAgentVersionVariables>;
 
+export type UpdateAgentVersionNoteVariables = {
+  agent_id: string;
+  version_index: number;
+  versionNote: string;
+};
+
+export type UpdateAgentVersionNoteOptions = MutationOptions<
+  Agent,
+  UpdateAgentVersionNoteVariables
+>;
+
 export type DeleteConversationOptions = MutationOptions<
   types.TDeleteConversationResponse,
   types.TDeleteConversationRequest

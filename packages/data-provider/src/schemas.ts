@@ -245,6 +245,7 @@ export const defaultAgentFormValues = {
     email: '',
   },
   data_source_id: null,
+  versionNote: '',
 };
 
 export const ImageVisionTool: FunctionTool = {

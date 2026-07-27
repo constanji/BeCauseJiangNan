@@ -1,0 +1,22 @@
+[
+  {
+    "id": "instructions",
+    "label": "BeCause江南 · 系统指令（简版）",
+    "file": "instructions.md"
+  },
+  {
+    "id": "kpi-nochart",
+    "label": "KPI 查数提示词",
+    "file": "prompt-kpi-jn-nochart.md"
+  },
+  {
+    "id": "kpi-compact",
+    "label": "KPI 查数提示词（精简）",
+    "file": "prompt-kpi-jn-compact.md"
+  },
+  {
+    "id": "kpi-nochart-old",
+    "label": "KPI 查数提示词（旧版）",
+    "file": "prompt-kpi-jn-nochart-old.md"
+  }
+]

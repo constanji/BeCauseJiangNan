@@ -27,6 +27,7 @@ const {
   getListAgentsByAccess,
   countPromotedAgents,
   revertAgentVersion,
+  updateAgentVersionNote,
   createAgent,
   updateAgent,
   deleteAgent,
@@ -757,6 +758,37 @@ const revertAgentVersionHandler = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+
+/**
+ * 更新某一版本快照备注
+ * @route PATCH /agents/:id/versions/:versionIndex/note
+ */
+const updateAgentVersionNoteHandler = async (req, res) => {
+  try {
+    const { id, versionIndex } = req.params;
+    const note = req.body?.versionNote ?? req.body?.note ?? '';
+
+    const existingAgent = await getAgent({ id });
+    if (!existingAgent) {
+      return res.status(404).json({ error: 'Agent not found' });
+    }
+
+    const updatedAgent = await updateAgentVersionNote({ id }, versionIndex, note);
+
+    if (updatedAgent.author) {
+      updatedAgent.author = updatedAgent.author.toString();
+    }
+    if (updatedAgent.author !== req.user.id) {
+      delete updatedAgent.author;
+    }
+
+    return res.json(updatedAgent);
+  } catch (error) {
+    logger.error('[/agents/:id/versions/:versionIndex/note] Error', error);
+    const status = /not found/i.test(error.message) ? 404 : 500;
+    res.status(status).json({ error: error.message });
+  }
+};
 /**
  * Get all agent categories with counts
  *
@@ -808,5 +840,6 @@ module.exports = {
   getListAgents: getListAgentsHandler,
   uploadAgentAvatar: uploadAgentAvatarHandler,
   revertAgentVersion: revertAgentVersionHandler,
+  updateAgentVersionNote: updateAgentVersionNoteHandler,
   getAgentCategories,
 };

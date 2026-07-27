@@ -289,6 +289,15 @@ export const projects = {
 
 export const revertAgentVersion = (agent_id: string) => `${agents({ path: `${agent_id}/revert` })}`;
 
+export const agentVersionNote = (agent_id: string, versionIndex: number | string) =>
+  `${agents({ path: `${agent_id}/versions/${versionIndex}/note` })}`;
+
+export const toolPromptTemplates = (toolId: string) =>
+  `${agents({ path: `tools/${toolId}/prompt-templates` })}`;
+
+export const toolPromptTemplate = (toolId: string, templateId: string) =>
+  `${agents({ path: `tools/${toolId}/prompt-templates/${templateId}` })}`;
+
 export const files = () => `${BASE_URL}/api/files`;
 export const fileUpload = () => `${BASE_URL}/api/files`;
 export const fileDelete = () => `${BASE_URL}/api/files`;
