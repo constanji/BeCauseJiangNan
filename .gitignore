@@ -210,3 +210,9 @@ TokenProbe/web/dist/
 *.tar.gz
 *.tgz
 *-amd64.tar
+
+# ModelProbe 便携离线包（体积大）
+ModelProbe便携版/
+
+# Local prompt backups
+Because-jn/*-old.md
