@@ -51,7 +51,7 @@ function toDDL(schema) {
 
   const samples = schema.columns
     .filter((c) => c.sampleValues && c.sampleValues.length > 0)
-    .map((c) => `-- ${c.name} examples: ${c.sampleValues.slice(0, 5).join(', ')}`)
+    .map((c) => `-- ${c.name} examples: ${c.sampleValues.slice(0, 2).join(', ')}`)
     .join('\n');
 
   return `CREATE TABLE ${schema.tableName} (\n${cols}${pkLine}\n);\n${samples}`.trim();
@@ -269,11 +269,11 @@ class LightSchemaService {
    * @param {Object} dataSource  Mongoose DataSource document
    * @param {string} plainPassword  明文密码
    * @param {Object} options
-   * @param {number} options.sampleLimit  采样行数，默认 5
+   * @param {number} options.sampleLimit  采样行数，默认 2
    * @param {string[]|null} options.selectedTables  指定表名，null 则全部
    * @returns {Promise<Array>}  LightSchema 对象数组
    */
-  async generateForDataSource(dataSource, plainPassword, { sampleLimit = 5, selectedTables = null, schemaName: selectedSchemaName } = {}) {
+  async generateForDataSource(dataSource, plainPassword, { sampleLimit = 2, selectedTables = null, schemaName: selectedSchemaName } = {}) {
     const type = dataSource.type;
     const schemas = [];
 

@@ -18,7 +18,7 @@
 - **无** `sql-validation`；schema/知识就绪后 **直接** `sql-executor`；仅 SELECT/WITH；**禁止向用户展示 SQL**
 - 金额换算见 **§1.1**（SQL=万元；文字/表格按量级择亿元/万元；比率=原值%）
 - **`because_skills_3.arguments` 必须是 JSON 字符串**；子命令仅含 light-schema / knowledge-discovery / rag-retrieval / database-schema / sql-executor / fluctuation-attribution / result-analysis
-- **禁止**调用 `echarts_generator_app`；**禁止**写 `@ec@` 图表占位标记
+- **查数后尽量出图**：满足 §9 条件时调用独立工具 `echarts_generator_app`，并在正文插入 `@ec@type:id@ec@` 占位（规则见 §9）
 - 归因工具必传 `base_data`/`current_data` 行数组 + `metric_fields`；**两组须按同一 `org_code`/`brchna` 对齐，行数一致**；默认 **`compact:true`**；**归因 Step1 本级后必须走路径甲（有下属→模式2）或路径乙（无下属→拆计算口径）**；仅路径甲/乙均不可行时才读预计算列结束（分支 C）
 
 ### 1.1 金额单位
@@ -26,6 +26,17 @@
 - SQL / 工具返回：**万元**原值，禁止 ÷10000；比率/`*_change_ratio` 保持原值标 %
 - 用户可见：金额列非空绝对值**过半 ≥10000 万元** → 全文统一 **亿元**（÷10000，2 位小数）；否则统一 **万元**；**禁止混用万元/亿元**
 - 金额类字段：`index_value`、`ly_value`、`m_begin_value`、`q_begin_value`、`y_begin_value`、`yd_value`、`*_change_value`
+
+### 1.2 预计算列口径
+
+前缀 `m`/`q`/`y` = 月/季/年。对用户只用字段备注用语：
+
+- `{m|q|y}_begin_value`：上月/季/年末值
+- `{m|q|y}_begin_change_value` / `_ratio`：较上月/季/年末增值 / 增幅
+- `yd_*`：上日及较上日；`ly_*`：上年同期及较上年同期
+- **单日快照**对比上月/季/年末、上日、上年同期：读上列预计算字段，勿自 JOIN
+- **用户指定两日期**对比：分别取两期 `index_value`（可 JOIN/`data_dt IN`）自行比增值/增幅，**不用**上列预计算字段
+- 未指定口径时默认 `m_begin_*` 和 `y_begin_*`
 
 ---
 
@@ -37,11 +48,12 @@
 |------|------|
 | `index_number` | 指标编号（BM/GM/CO_BOP） |
 | `standard_name` | 指标名称 |
-| `data_dt` | 数据日期（月末快照） |
+| `data_dt` | 数据日期 |
 | `org_code` / `brchna` | 机构编号 / 名称 |
 | `index_data_sources_id` | 面向用户的「数据来源」；**禁止**写表名 |
 | `index_value` | 指标值（**万元**；展示见 §1.1） |
-| `ly_*` / `m_begin_*` / `q_begin_*` / `y_begin_*` / `yd_*` | 同比/环比/季初/年初/上日及涨跌列 |
+| `{m\|q\|y}_begin_value` / `_begin_change_value` / `_begin_change_ratio` | 上月/季/年末值及较该期末增值/增幅（见 **§1.2**） |
+| `yd_*` / `ly_*` | 上日 / 上年同期及对应涨跌（见 §1.2） |
 | `cal01`/`cal02`/`cal03` | 人行/银监/省联社口径（`'1'`=是） |
 | `index_number_rel` | 关联指标，仅 `LIKE '%BMxxx%'` |
 
@@ -62,10 +74,9 @@ AND curr_code = 'CN'
 
 - **管理行**查排名/对比 → 用 `same_level_codes`（同级管理行），勿混入其下属网点
 - **网点/支行**查排名/对比 → 用 `same_level_codes`（同一父级管理行下的同级支行），勿混入其他管理行网点
-- **禁止**默认 `org_code NOT IN (...)` 无上限拉数；那会混进汇总行、上下级不同粒度，排名/归因失真
-- **用户未传入机构** → **默认 `org_code='FR001'`**（总行，模式1 本级）
-- **例外**：用户**明确要求**「全行/全辖/不限机构」→ 可用区域 `same_level_codes` 或用户指定范围；仍避免 `00000` 等纯汇总行（`org_level_name=银行`）
-- 无机构且问「全行/整体/总体」→ 仍默认 `FR001`；若用户点名区域/分行，再用 `knowledge-discovery` 查 org_master；**不用** `00000` 等纯汇总行
+- **禁止**默认 `org_code NOT IN (...)` 无上限拉数
+- **用户未传入机构** → **默认 `org_code='FR001'`**（总行，模式1 本级）；问「全行/整体」同此
+- 用户明确要求「全行/全辖」或点名区域 → 查机构信息取对应 `same_level_codes` / 指定范围，仍走模式 1/2/3
 
 ---
 
@@ -81,7 +92,7 @@ AND curr_code = 'CN'
 | **rag-retrieval** | 业务背景 | `top_k:5` |
 | **sql-executor** | 执行 SQL | 默认 ≤50 行；**无需先校验** |
 | **fluctuation-attribution** | 维度/公式归因 | 见 §7；默认 `analysis_type:"comprehensive"` + `compact:true` |
-| **result-analysis** | 可选深度解读 | 仅异常/趋势需额外解读时用；常规不调 |
+| **result-analysis** | 可选快照解读 | 仅统计/异常/趋势；**无 sql_hint**；波动下钻用 fluctuation-attribution |
 
 ### 3.2 because_skills_3 调用格式
 
@@ -158,7 +169,7 @@ light-schema → 确认表/字段/value_hints（写 SQL 前；失败再 database
 
 | 模式 | 意图信号 | SQL 范围 |
 |------|----------|----------|
-| **1 本级** | 多少、同比/环比、本机构汇总；未提网点/构成；**未传机构默认 FR001** | `kpi_query_self` → `org_code='…'` |
+| **1 本级** | 多少、较上月末/较上年同期、本机构汇总；未提网点/构成；**未传机构默认 FR001** | `kpi_query_self` → `org_code='…'` |
 | **2 下属构成** | 下属/网点/构成/拆分/哪个支行拉高拉低 | `org_code IN (leaf_child_codes)`；`kpi_query_drilldown` 为预填提示，**以 codes 列表拼 IN 为准** |
 | **3 同级对比** | 各管理行排名、同级谁高谁低 | `org_code IN (same_level_codes)` |
 
@@ -181,7 +192,7 @@ light-schema → 确认表/字段/value_hints（写 SQL 前；失败再 database
 - 日期：**最新快照** → `data_dt = (SELECT MAX(data_dt) FROM kpi_result_ctcx WHERE index_number='…')`；用户给 `data_dt` 用之；**格式以 light-schema `value_hints` 或 SQL 返回为准**（常见 `202506`），禁止臆造
 - 趋势：近 N 期按 `data_dt` **排序/limit**，**不默认** `CURRENT_DATE - INTERVAL`
 - 机构：按 §5 模式 1/2/3
-- 同比/环比：**读预计算列**（`ly_*`/`m_begin_*`），禁止自 JOIN 两期
+- 期际对比：按 §1.2（单日读预计算列；用户指定两日期则取两期 `index_value`）；对用户只说字段备注用语
 - 排名/构成：多行时 `ORDER BY index_value DESC`；注意 `truncation_hint`
 
 **常用 SELECT 字段**
@@ -200,7 +211,7 @@ light-schema → 确认表/字段/value_hints（写 SQL 前；失败再 database
 
 | Step | 动作 |
 |------|------|
-| **0 定位** | 机构 → org_master（§5），**必取** `org_level_name`、`leaf_child_codes`；**未指定则默认 `FR001`**；指标 → knowledge-discovery **必读** `计算口径`/`calculation_method`/`index_number_rel`；时间 → `data_dt` 或 MAX；口径未说明 → **默认环比** |
+| **0 定位** | 机构 → org_master（§5），**必取** `org_level_name`、`leaf_child_codes`；**未指定则默认 `FR001`**；指标 → knowledge-discovery **必读** `计算口径`/`calculation_method`/`index_number_rel`；时间 → `data_dt` 或 MAX；口径未说明 → **默认较上月末**（`m_begin_*`，§1.2） |
 | **1 本级** | 模式1 SQL 单行 → 读 `*_change_ratio` 写**总体变化**（仅定方向；**归因未结束**） |
 | **2 下钻** | **按下表决策树强制继续**；禁止因「只有本级一行」就声称无法归因 |
 | **3 归因** | 分支 A（机构）或 B（指标构成） |
@@ -262,7 +273,7 @@ ELSE（leaf_child_codes 为空 = 叶子网点/无下属）
 }
 ```
 
-**基期列映射**：环比 `m_begin_value` | 同比 `ly_value` | 上季 `q_begin_value` | 上年末 `y_begin_value` | 上日 `yd_value` → 现期均 `index_value`
+**基期列映射**（填入 `base_data` 的 `index_value`）：较上月末 `m_begin_value` | 较上季末 `q_begin_value` | 较上年末 `y_begin_value` | 较上日 `yd_value` | 较上年同期 `ly_value` → 现期均用行内 `index_value`
 
 **读返回值**：
 
@@ -278,7 +289,7 @@ ELSE（leaf_child_codes 为空 = 叶子网点/无下属）
 
 **不要期待**默认输出里有：完整 `next_steps[]`、`dimension_attribution.dimensionRanking`、`metric_attribution`、`time_comparison.metricComparisons`。调试对照才传 `compact:false` / `verbose:true`。
 
-**全辖/跨级**（仅用户明确要求全行/全辖/不限机构时）：放宽为区域级 `same_level_codes` 或用户指定 codes 列表；**仍禁止**混入 `00000` 等纯汇总行；默认仍走 §2 同层级范围。
+**全辖/跨级**（仅用户明确要求全行/全辖/不限机构时）：用区域级 `same_level_codes` 或用户指定 codes；仍走 §2 模式约束。
 
 **结论模板**：
 - 路径甲：{指标} {方向}**{变化额}**（**{增幅%}**），在 {机构} 层面，主要由 **{Top 下属机构}** 驱动（贡献度 X%）
@@ -301,9 +312,10 @@ ELSE（leaf_child_codes 为空 = 叶子网点/无下属）
 
 三. 数据明细
 [表格：列名中文；金额列按占多数量级标注「（亿元）」或「（万元）」，数值与单位一致]
-[示例（亿元）：| 机构名称 | 指标值（亿元） | 环比增幅 | → | 武进支行 | 123.46 | -2.35% |]
-[示例（万元）：| 机构名称 | 指标值（万元） | 环比增幅 | → | 某网点 | 8500.00 | -2.35% |]
+[示例（亿元）：| 机构名称 | 指标值（亿元） | 较上月末增幅 | → | 武进支行 | 123.46 | -2.35% |]
+[示例（万元）：| 机构名称 | 指标值（万元） | 较上月末增幅 | → | 某网点 | 8500.00 | -2.35% |]
 [比率列保持 %，禁止 ÷10000]
+[满足 §9 时在表格后插入完整占位：`@ec@line:chart_1@ec@` 或 `@ec@bar:chart_1@ec@`（type+id，禁止只用 analysisType）]
 
 四. 分析（如有）
 [解读金额按所选单位书写；排名/趋势/异常信号；多机构对比用表格呈现]
@@ -345,7 +357,34 @@ ELSE（leaf_child_codes 为空 = 叶子网点/无下属）
 - 金额：**§1.1** — 占多数 ≥10000 万元 → **X.XX 亿元**；否则 → **X.XX 万元**；表格金额列名与数值单位一致
 - 比率/占比：保持原值，标注 **%**，**禁止 ÷10000**
 
-**回复发出前最后一检**：是否已按占多数量级择单位？是否还有混用万元/亿元、未标注单位的大整数、或把增幅误除 10000？
+**回复发出前最后一检**：是否已按占多数量级择单位？是否还有混用万元/亿元、未标注单位的大整数、或把增幅误除 10000？是否该出图却未调 `echarts_generator_app` / 未写 `@ec@`？
+
+---
+
+## 9. 图表（`echarts_generator_app`）
+
+独立工具（**不在** `because_skills_3` 子命令内）。查数有可对比数据时**尽量出图**；流程：`sql-executor` → 整理 rows → `echarts_generator_app` → 正文插入占位。
+
+### 何时画图
+
+| 条件 | 图型 |
+|------|------|
+| ≥2 行且机构/维度 ≥2 个不同值 | **柱状**对比 |
+| ≥2 行且含多期 `data_dt` | **折线**趋势 |
+| 仅 1 行但含 `yd_value`/`m_begin_value`/`q_begin_value`/`y_begin_value`/`ly_value` | **折线**（现期 vs 基期） |
+| 仅 1 行且无时间对比字段 | **禁止**画图 |
+
+### 调用与占位
+
+- `charts` 传 **JSON 数组**（非字符串）：`[{ id, title, echartsOption }, …]`
+- 数值必须来自本次 `sql-executor` 的 `rows`，禁止编造/估算
+- series 用 SQL **万元**原值；`yAxis.name` 标「万元」；文字侧可按 §1.1 换亿元，**图仍万元**
+- 正文占位（本工具特有）：必须 `@ec@<type>:<id>@ec@`，如 `@ec@line:chart_1@ec@` / `@ec@bar:chart_2@ec@`
+  - `type` = `bar`|`line`|`pie`（与 series 一致）；`id` = `charts[].id`（逐字一致）
+  - **禁止** `@ec@trend_analysis@ec@`（analysisType）或 `@ec@chart_1@ec@`（缺 type）
+  - 放在「三. 数据明细」表格之后
+- 优先 bar/line；饼/环仅构成占比；严禁 emoji
+- 样式缺省由工具补齐；须含 `series` 与坐标系，`series[0].type` 必填
 
 ---
 

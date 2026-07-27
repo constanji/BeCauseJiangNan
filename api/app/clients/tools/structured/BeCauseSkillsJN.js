@@ -19,8 +19,8 @@ class BeCauseSkillsJN extends Tool {
     'BeCause江南问数工具。优先使用 indicator-understanding（指标编码/标准名称/口径，固定检索「指标定义信息」）' +
     '与 org-context（机构号/机构名/下级，固定检索「机构信息」）；' +
     '术语、规则、非表格知识用 rag-retrieval 兜底。' +
-    '其余问数命令：light-schema、database-schema、sql-executor、result-analysis、fluctuation-attribution。' +
-    '注意：无 knowledge-discovery / sql-validation；图表请用独立 echarts_generator_app。';
+    '其余问数命令：light-schema、database-schema、sql-executor、fluctuation-attribution。' +
+    '注意：无 knowledge-discovery / sql-validation / result-analysis；下钻走归因路径甲/乙；图表请用独立 echarts_generator_app。';
 
   schema = z.object({
     command: z.enum([
@@ -29,7 +29,6 @@ class BeCauseSkillsJN extends Tool {
       'light-schema',
       'rag-retrieval',
       'database-schema',
-      'result-analysis',
       'sql-executor',
       'fluctuation-attribution',
     ]),
@@ -83,10 +82,6 @@ class BeCauseSkillsJN extends Tool {
         userId: this.userId,
         req: this.req,
         conversation: this.conversation,
-      }),
-      'result-analysis': new BeCauseJN.ResultAnalysisTool({
-        userId: this.userId,
-        req: this.req,
       }),
       'sql-executor': new BeCauseJN.SqlExecutorTool({
         userId: this.userId,

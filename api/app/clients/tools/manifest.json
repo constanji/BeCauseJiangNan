@@ -16,14 +16,14 @@
   {
     "name": "BeCause问数3.0",
     "pluginKey": "because_skills_3",
-    "description": "BeCause问数工具3.0 - 瘦身版。Commands: knowledge-discovery、light-schema、rag-retrieval、database-schema、result-analysis、sql-executor、fluctuation-attribution（默认 LLM 摘要输出，无 sql-validation）。图表请用独立 echarts_generator_app。",
+    "description": "BeCause问数工具3.0 - 瘦身版。Commands: knowledge-discovery、light-schema、rag-retrieval、database-schema、result-analysis（快照统计/异常/趋势，无下钻SQL）、sql-executor、fluctuation-attribution（默认 LLM 摘要，无 sql-validation）。图表请用独立 echarts_generator_app。",
     "icon": "📊",
     "authConfig": []
   },
   {
     "name": "BeCause江南",
     "pluginKey": "because_jn",
-    "description": "BeCause江南问数工具。优先 indicator-understanding（指标定义信息）、org-context（机构信息）；术语/规则用 rag-retrieval 兜底。另含 light-schema、database-schema、sql-executor、result-analysis、fluctuation-attribution。无 knowledge-discovery。图表请用独立 echarts_generator_app。",
+    "description": "BeCause江南问数工具。优先 indicator-understanding（指标定义信息）、org-context（机构信息）；术语/规则用 rag-retrieval 兜底。另含 light-schema、database-schema、sql-executor、fluctuation-attribution。无 knowledge-discovery / result-analysis。图表请用独立 echarts_generator_app。",
     "icon": "🏯",
     "authConfig": []
   },

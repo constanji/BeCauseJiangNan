@@ -13,8 +13,8 @@
  * 4. rag-retrieval-tool: RAG 知识检索（内置重排序）
  * 5. database-schema-tool: 数据库 Schema 实时获取
  * 6. sql-executor-tool: SQL 执行
- * 7. result-analysis-tool: 结果分析
- * 8. fluctuation-attribution-tool: 波动归因（默认瘦身输出）
+ * 7. fluctuation-attribution-tool: 波动归因（默认瘦身输出）
+ * （不挂 result-analysis：KPI 下钻由归因路径甲/乙约束，解读由模型直接基于 rows）
  *
  * 核心算法模块：与 Because-3.0 对齐
  * - utils/statisticsEngine / timeComparison / dimensionDrillDown / metricAttribution
@@ -26,7 +26,6 @@
 
 const RAGRetrievalTool = require('./rag-retrieval-tool/scripts/RAGRetrievalTool');
 const DatabaseSchemaTool = require('./database-schema-tool/scripts/DatabaseSchemaTool');
-const ResultAnalysisTool = require('./result-analysis-tool/scripts/ResultAnalysisTool');
 const SqlExecutorTool = require('./sql-executor-tool/scripts/SqlExecutorTool');
 const FluctuationAttributionTool = require('./fluctuation-attribution-tool/scripts/FluctuationAttributionTool');
 const IndicatorUnderstandingTool = require('./indicator-understanding-tool/scripts/IndicatorUnderstandingTool');
@@ -48,7 +47,6 @@ const DrillDownHints = require('./utils/drillDownHints');
 module.exports = {
   RAGRetrievalTool,
   DatabaseSchemaTool,
-  ResultAnalysisTool,
   SqlExecutorTool,
   FluctuationAttributionTool,
   IndicatorUnderstandingTool,

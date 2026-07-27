@@ -50,6 +50,18 @@ const SQL_EXECUTOR_MAX_ROWS = (() => {
   return Number.isFinite(v) && v > 0 ? v : 50;
 })();
 
+/** 指标问数向的解读指引（成功响应顶层 guidance） */
+const SQL_RESULT_GUIDANCE = [
+  '1. 用自然语言概括查数结论（指标 / 机构 / 时间），数值只能来自 rows。',
+  '2. 多行用表格；突出 index_number、org_code/brchna、index_value、data_dt 等关键字段含义。',
+  '3. 金额按问数单位规则展示；比率保持原值并标 %；禁止混用单位。',
+  '4. 空结果或 truncated 时说明原因，并依 truncation_hint 建议下一步。',
+  '5. 禁止臆造未返回的行/字段；勿向用户粘贴完整 SQL。',
+];
+
+const SQL_RESULT_NOTE =
+  '基于 rows 解释，禁止臆造。可对比数据按会话 prompt §9 调用 echarts_generator_app，数值须与 rows 一致。';
+
 /**
  * SQL Executor Tool - SQL执行工具（重构版）
  * 
@@ -60,7 +72,7 @@ class SqlExecutorTool extends Tool {
   name = 'sql_executor';
 
   description =
-    '执行只读的SQL SELECT查询和WITH子句（CTE），并返回查询结果和详细的归因分析说明。' +
+    '执行只读的SQL SELECT查询和WITH子句（CTE），并返回查询结果（rows）。' +
     '工具会根据Agent配置的数据源自动连接对应的数据库。' +
     '支持MySQL、PostgreSQL和GaussDB数据库。' +
     '支持WITH子句（CTE）、复杂子查询、JOIN等高级SQL特性。';
@@ -256,96 +268,6 @@ class SqlExecutorTool extends Tool {
     } else {
       throw new Error(`不支持的数据库类型: ${dataSource.type}`);
     }
-  }
-
-  /**
-   * 从SQL语句中提取基础结构信息
-   */
-  extractQueryStructure(sql) {
-    const upper = sql.toUpperCase();
-    const structure = {
-      tables: [],
-      hasWhere: false,
-      hasGroupBy: false,
-      hasOrderBy: false,
-      hasLimit: false,
-    };
-
-    try {
-      // 提取FROM之后到WHERE/GROUP BY/ORDER BY/LIMIT之前的部分
-      const fromMatch = upper.match(/\bFROM\b([\s\S]+?)(\bWHERE\b|\bGROUP BY\b|\bORDER BY\b|\bLIMIT\b|$)/);
-      if (fromMatch && fromMatch[1]) {
-        const rawTables = fromMatch[1]
-          .split(',')
-          .map((t) => t.trim())
-          .filter(Boolean);
-        structure.tables = rawTables.map((t) => t.replace(/\s+AS\s+.+$/i, '').split(/\s+/)[0]);
-      }
-
-      structure.hasWhere = /\bWHERE\b/i.test(sql);
-      structure.hasGroupBy = /\bGROUP BY\b/i.test(sql);
-      structure.hasOrderBy = /\bORDER BY\b/i.test(sql);
-      structure.hasLimit = /\bLIMIT\b/i.test(sql);
-    } catch {
-      // 如果解析失败，忽略即可，用默认值
-    }
-
-    return structure;
-  }
-
-  /**
-   * 构建归因分析信息
-   */
-  buildAttribution(sql, rows, dataSource) {
-    const rowCount = Array.isArray(rows) ? rows.length : 0;
-    const sampleRow = rowCount > 0 ? rows[0] : null;
-    const columns = sampleRow ? Object.keys(sampleRow) : [];
-    const structure = this.extractQueryStructure(sql);
-
-    const tablePart =
-      structure.tables.length > 0
-        ? `主要数据来源于以下表：${structure.tables.join('，')}。`
-        : '未能从SQL中可靠解析出表名，请直接结合SQL语句自行说明数据来源。';
-
-    const clauseHints = [];
-    if (structure.hasWhere) clauseHints.push('WHERE过滤条件');
-    if (structure.hasGroupBy) clauseHints.push('GROUP BY分组逻辑');
-    if (structure.hasOrderBy) clauseHints.push('ORDER BY排序规则');
-    if (structure.hasLimit) clauseHints.push('LIMIT行数限制');
-
-    const clausePart =
-      clauseHints.length > 0
-        ? `查询中包含 ${clauseHints.join('、')}，在解释结论时需要特别说明这些条件如何影响结果。`
-        : '查询中未检测到WHERE/GROUP BY/ORDER BY/LIMIT等子句，结果为对全表或视图的直接查询。';
-
-    const columnPart =
-      columns.length > 0
-        ? `结果中包含字段：${columns.join('，')}。在回答用户问题时，请明确指出结论分别来自哪些字段。`
-        : '结果中未检测到字段列表，请在回答中先概括返回的数据结构。';
-
-    const dataSourcePart = dataSource
-      ? `数据来源于数据源"${dataSource.name}"（${dataSource.type} - ${dataSource.database}）。`
-      : '';
-
-    return {
-      summary: `SQL查询已成功执行，返回${rowCount}行数据。${dataSourcePart}${tablePart}`,
-      details: {
-        tables: structure.tables,
-        rowCount,
-        columns,
-        hasWhere: structure.hasWhere,
-        hasGroupBy: structure.hasGroupBy,
-        hasOrderBy: structure.hasOrderBy,
-        hasLimit: structure.hasLimit,
-      },
-      guidance: [
-        '1. 先用自然语言概括查询目的和结果（例如：统计某张表在特定时间范围内的记录数或明细）。',
-        '2. 明确说明结论分别来自哪些表、哪些字段，以及这些字段在业务中的含义。',
-        '3. 如果查询中包含WHERE/GROUP BY/ORDER BY/LIMIT等子句，逐一解释这些条件如何影响结果和结论。',
-        '4. 对于数值结果，给出必要的对比或比例说明（例如：占比、同比、环比），但这些计算必须严格基于返回的数据。',
-        '5. 严格禁止臆造数据库中不存在的字段或行，只能基于本次查询返回的数据进行推理和解释。',
-      ],
-    };
   }
 
   /**
@@ -555,8 +477,8 @@ class SqlExecutorTool extends Tool {
         truncated = true;
       }
 
-      // 构建归因分析
-      const attribution = this.buildAttribution(trimmedSql, rows, dataSource);
+      // 构建精简成功响应（以 rows 为主，无 attribution / dataSource）
+      const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
 
       const result = {
         success: true,
@@ -575,15 +497,9 @@ class SqlExecutorTool extends Tool {
             }
           : {}),
         rows,
-        attribution,
-        dataSource: {
-          id: dataSource._id.toString(),
-          name: dataSource.name,
-          type: dataSource.type,
-          database: dataSource.database,
-        },
-        note:
-          'LLM必须基于rows和attribution进行详细的业务解释，并在回答中明确说明结论来自哪些表、哪些字段以及哪些过滤/分组/排序条件，避免任何臆造。',
+        columns,
+        guidance: SQL_RESULT_GUIDANCE,
+        note: SQL_RESULT_NOTE,
       };
 
       logger.info('[SqlExecutorTool] SQL执行成功:', {

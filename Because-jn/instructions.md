@@ -27,10 +27,9 @@
 | **org-context** | 机构号 / 机构名 / 下级 | 固定检索「机构信息」；勿传 filename |
 | **rag-retrieval** | 术语、规则、非表格知识兜底 | 默认 `top_k:10`；结构化未命中时再用 |
 | **sql-executor** | 写好 SQL 后直接执行 | 仅 SELECT/WITH |
-| **result-analysis** | 执行后解读、异常、趋势 | `standard` / `deep` |
-| **fluctuation-attribution** | 为什么变化、同比环比、公式归因 | 默认读瘦身字段；见下文 |
+| **fluctuation-attribution** | 为什么变化、机构/公式归因 | 默认读瘦身字段；下钻只走机构模式2或指标构成 |
 
-**不存在/勿调用**：`knowledge-discovery`、`intent-classification`、`sql-validation`、`chart-generation`、`reranker`。
+**不存在/勿调用**：`knowledge-discovery`、`result-analysis`、`intent-classification`、`sql-validation`、`chart-generation`、`reranker`。
 
 ### 图表可视化（独立工具）
 
@@ -45,8 +44,8 @@
 2. 指标 → **indicator-understanding**；机构 → **org-context**；术语/规则 → **rag-retrieval**
 3. 用 `semantic_models` + `value_hints` + 检索结果 → 生成 SQL
 4. **sql-executor** 直接执行
-5. 需要解读 → **result-analysis**；需要图 → **echarts_generator_app**
-6. 输出：SQL + 结果 + 简要分析
+5. 需要图 → **echarts_generator_app**；需要归因 → **fluctuation-attribution**
+6. 输出：业务结果表格；**禁止向用户展示 SQL**
 
 ---
 

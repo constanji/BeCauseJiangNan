@@ -961,7 +961,7 @@ class DatabaseSchemaTool extends Tool {
                 data_type: c.type,
                 is_nullable: c.nullable ? 'YES' : 'NO',
                 column_description: c.description || '',
-                sample_values: c.sampleValues || [],
+                sample_values: (c.sampleValues || []).slice(0, 2),
               })),
               primary_keys: schema.primaryKeys || [],
             };
