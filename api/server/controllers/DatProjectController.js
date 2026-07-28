@@ -6,6 +6,7 @@
 const { logger } = require('@because/data-schemas');
 const { extractEnvVariable } = require('@because/data-provider');
 const { getDatProjectModel } = require('~/models/DatProject');
+const { refreshDatProjectCache } = require('~/server/utils/datEngineRefresh');
 
 /**
  * 递归解析配置中的 ${ENV} 占位，写入 DAT 前展开为真实值
@@ -167,6 +168,10 @@ async function updateProject(req, res) {
 
         logger.info(`[PUT /api/dat-projects/${id}] Updated project: ${project.name}`);
 
+        // 通知 DAT 引擎清理该项目缓存的 ProjectRunner，使 LLM/embedding/agents
+        // 等配置改动无需重启 DAT 引擎即可生效
+        refreshDatProjectCache(id);
+
         return res.status(200).json({
             success: true,
             project,
@@ -195,6 +200,9 @@ async function deleteProject(req, res) {
         }
 
         logger.info(`[DELETE /api/dat-projects/${id}] Deleted project: ${project.name}`);
+
+        // 清理 DAT 引擎里可能残留的 ProjectRunner 缓存（含底层数据库连接）
+        refreshDatProjectCache(id);
 
         return res.status(200).json({
             success: true,

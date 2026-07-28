@@ -1,4 +1,5 @@
 const { getDatDatasourceModel } = require('../../models/DatDatasource');
+const { refreshDatProjectCache } = require('~/server/utils/datEngineRefresh');
 
 // Get all datasources (optionally filter by projectId)
 exports.list = async (req, res) => {
@@ -102,6 +103,12 @@ exports.update = async (req, res) => {
         if (!datasource) {
             return res.status(404).json({ error: 'Datasource not found' });
         }
+
+        // 数据源的连接信息（host/port/账号密码）一旦被 DAT 引擎缓存进
+        // ProjectRunner 就不会再变，这里改完顺手让 DAT 清一下该项目的缓存，
+        // 避免继续用旧连接、也不需要重启 DAT 引擎
+        refreshDatProjectCache(projectId);
+
         res.json(datasource);
     } catch (error) {
         console.error('Error updating datasource:', error);
@@ -122,6 +129,9 @@ exports.delete = async (req, res) => {
         if (!datasource) {
             return res.status(404).json({ error: 'Datasource not found' });
         }
+
+        refreshDatProjectCache(datasource.projectId);
+
         res.json({ message: 'Datasource deleted successfully' });
     } catch (error) {
         console.error('Error deleting datasource:', error);

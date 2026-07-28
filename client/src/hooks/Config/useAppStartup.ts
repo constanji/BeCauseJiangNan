@@ -6,6 +6,7 @@ import { useAvailablePluginsQuery } from '@because/data-provider/react-query';
 import type { TStartupConfig, TPlugin, TUser } from '@because/data-provider';
 import { mapPlugins, selectPlugins, processPlugins } from '~/utils';
 import { cleanupTimestampedStorage } from '~/utils/timestamps';
+import { setDatApiBaseUrl } from '~/utils/datApi';
 import useSpeechSettingsInit from './useSpeechSettingsInit';
 import { useMCPToolsQuery } from '~/data-provider';
 import store from '~/store';
@@ -44,6 +45,18 @@ export default function useAppStartup({
   useEffect(() => {
     cleanupTimestampedStorage();
   }, []);
+
+  /**
+   * Set the DAT OpenAPI base URL for direct browser -> DAT engine calls.
+   * `Startup.tsx` only covers the login/register/reset-password routes, so the
+   * authenticated app (this hook) must also propagate it, otherwise every
+   * DAT-related fetch in the main app silently falls back to localhost:8080.
+   */
+  useEffect(() => {
+    if (startupConfig?.datOpenapiBaseUrl) {
+      setDatApiBaseUrl(startupConfig.datOpenapiBaseUrl);
+    }
+  }, [startupConfig?.datOpenapiBaseUrl]);
 
   /** Set the app title */
   useEffect(() => {
