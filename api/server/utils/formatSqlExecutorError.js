@@ -105,6 +105,23 @@ function formatSqlExecutorError(error, context = {}) {
     });
   }
 
+  // 模型传了 query 却未传 sql，旧代码对 undefined.trim() 会抛出英文 TypeError
+  if (
+    /cannot read propert(y|ies) of undefined.*(reading ['"]trim['"])/i.test(raw) ||
+    /reading ['"]trim['"]/i.test(raw)
+  ) {
+    return buildSqlExecutorError({
+      error:
+        '缺少 SQL 语句：请在 arguments 中传入 sql（推荐），也兼容 query / statement。示例：{"sql":"SELECT * FROM dim_region"}。',
+      code: 'MISSING_SQL',
+      category: CATEGORY.SQL_POLICY,
+      hint: '参数名须为 sql 或 query，值为完整只读 SELECT/WITH 语句',
+      sql,
+      dataSource,
+      raw,
+    });
+  }
+
   if (/数据源未激活/.test(lower)) {
     return buildSqlExecutorError({
       error: raw,

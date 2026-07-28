@@ -62,7 +62,6 @@ actions:
     - google.com
     - localhost
     - host.docker.internal
-    - hsp-sql-api
 endpoints:
   agents:
     recursionLimit: 50

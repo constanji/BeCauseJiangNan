@@ -15,3 +15,7 @@ router.get('/sql-comparison/:taskId', BenchmarkController.getSQLComparison);
 router.get('/tasks', BenchmarkController.listTasks);
 
 module.exports = router;
+
+router.post('/upload-dataset', BenchmarkController.uploadDataset);
+router.get('/template', BenchmarkController.downloadTemplate);
+router.post('/run-custom', BenchmarkController.runCustomBenchmark);

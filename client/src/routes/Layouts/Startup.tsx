@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import type { TStartupConfig } from '@because/data-provider';
 import { useGetStartupConfig } from '~/data-provider';
+import { setDatApiBaseUrl } from '~/utils/datApi';
 import AuthLayout from '~/components/Auth/AuthLayout';
 import { TranslationKeys, useLocalize } from '~/hooks';
 
@@ -34,6 +35,7 @@ export default function StartupLayout({ isAuthenticated }: { isAuthenticated?: b
     }
     if (data) {
       setStartupConfig(data);
+      setDatApiBaseUrl(data?.datOpenapiBaseUrl);
     }
   }, [isAuthenticated, navigate, data]);
 

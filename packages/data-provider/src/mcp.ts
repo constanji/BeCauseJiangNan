@@ -2,6 +2,21 @@ import { z } from 'zod';
 import { TokenExchangeMethodEnum } from './types/agents';
 import { extractEnvVariable } from './utils';
 
+/**
+ * Automatic injection of execution context (e.g. projectId/datasourceId) into MCP tool calls.
+ * See api/server/services/McpContextResolver.js for built-in defaults per server.
+ */
+const ContextInjectionRuleSchema = z.object({
+  resolve: z.array(
+    z.object({
+      from: z.enum(['conversation', 'requestBody', 'agentBinding']),
+      field: z.string().optional(),
+    }),
+  ),
+  inject: z.record(z.string(), z.string()),
+  hideFromSchema: z.array(z.string()).optional(),
+});
+
 const BaseOptionsSchema = z.object({
   /**
    * Controls whether the MCP server is initialized during application startup.
@@ -74,6 +89,13 @@ const BaseOptionsSchema = z.object({
         description: z.string(),
       }),
     )
+    .optional(),
+  /**
+   * Automatic injection of execution context (e.g. projectId/datasourceId) into MCP tool calls.
+   * See api/server/services/McpContextResolver.js for built-in defaults per server.
+   */
+  contextInjection: z
+    .union([ContextInjectionRuleSchema, z.record(z.string(), ContextInjectionRuleSchema)])
     .optional(),
 });
 

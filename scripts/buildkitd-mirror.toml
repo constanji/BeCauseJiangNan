@@ -1,0 +1,11 @@
+# BuildKit registry mirror 配置（用于 docker-container 驱动的 buildx builder）
+# 说明：docker-container 驱动的 builder 运行在独立容器里，不会继承宿主机
+# Docker Desktop 的 registry-mirrors 设置，必须单独用这份配置指定镜像加速站。
+#
+# 用法（创建/更新 builder 时指定）：
+#   docker buildx create --name builder-with-mirror --driver docker-container \
+#     --driver-opt network=host --config scripts/buildkitd-mirror.toml --use
+#
+# 若某个源失效，直接删掉对应一行即可，BuildKit 会按顺序尝试下一个。
+[registry."docker.io"]
+  mirrors = ["docker.xuanyuan.me", "docker.1ms.run", "docker.m.daocloud.io"]

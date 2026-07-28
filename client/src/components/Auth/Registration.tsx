@@ -1,5 +1,5 @@
 import { useForm } from 'react-hook-form';
-import React, { useContext, useState } from 'react';
+import React, { useContext, useEffect, useState } from 'react';
 import { Turnstile } from '@marsidev/react-turnstile';
 import { ThemeContext, Spinner, Button, isDark } from '@because/client';
 import { useNavigate, useOutletContext, useLocation } from 'react-router-dom';
@@ -8,7 +8,34 @@ import { loginPage } from '@because/data-provider';
 import type { TRegisterUser, TError } from '@because/data-provider';
 import type { TLoginLayoutContext } from '~/common';
 import { useLocalize, TranslationKeys } from '~/hooks';
+import { getDatApiBaseUrl } from '~/utils/datApi';
 import { ErrorMessage } from './ErrorMessage';
+
+type DatProjectOption = { _id: string; name: string };
+type OrgFlatOption = {
+  orgCode: string;
+  orgName: string;
+  orgType: string;
+  depth: number;
+};
+
+/** 把 /api/v1/org/nodes 返回的嵌套树拍平，保留 depth 用于在下拉里缩进显示层级 */
+function flattenOrgTree(nodes: any[], depth = 0, acc: OrgFlatOption[] = []): OrgFlatOption[] {
+  for (const n of nodes || []) {
+    if (n?.orgCode) {
+      acc.push({
+        orgCode: String(n.orgCode),
+        orgName: String(n.orgName || ''),
+        orgType: String(n.orgType || ''),
+        depth,
+      });
+    }
+    if (n?.children?.length) {
+      flattenOrgTree(n.children, depth + 1, acc);
+    }
+  }
+  return acc;
+}
 
 const Registration: React.FC = () => {
   const navigate = useNavigate();
@@ -28,6 +55,49 @@ const Registration: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [countdown, setCountdown] = useState<number>(3);
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+
+  // 机构选择：项目 → 机构树 → 拍平下拉。失败时静默退化为可选文本输入
+  const [orgProjects, setOrgProjects] = useState<DatProjectOption[]>([]);
+  const [orgProjectId, setOrgProjectId] = useState<string>('');
+  const [orgOptions, setOrgOptions] = useState<OrgFlatOption[]>([]);
+  const [orgLoadError, setOrgLoadError] = useState<string>('');
+  const [orgCode, setOrgCode] = useState<string>('');
+
+  // 注册页是匿名访问，DAT 的项目/机构接口允许公开调用；加载失败不阻断注册
+  useEffect(() => {
+    const baseEl = document.querySelector('base');
+    const baseHref = baseEl?.getAttribute('href') || '/';
+    const apiBase = baseHref.endsWith('/') ? baseHref.slice(0, -1) : baseHref;
+    fetch(`${apiBase}/api/dat-projects`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((data) => {
+        const list: DatProjectOption[] = (data?.projects || []).map((p: any) => ({
+          _id: p._id,
+          name: p.name,
+        }));
+        setOrgProjects(list);
+        if (list.length === 1) {
+          setOrgProjectId(list[0]._id);
+        }
+      })
+      .catch((e) => {
+        setOrgLoadError(e?.message || '加载项目失败');
+      });
+  }, []);
+
+  useEffect(() => {
+    if (!orgProjectId) {
+      setOrgOptions([]);
+      return;
+    }
+    fetch(`${getDatApiBaseUrl()}/api/v1/org/nodes?projectId=${orgProjectId}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((tree) => setOrgOptions(flattenOrgTree(tree)))
+      .catch((e) => {
+        setOrgOptions([]);
+        setOrgLoadError(e?.message || '加载机构失败');
+      });
+  }, [orgProjectId]);
 
   const location = useLocation();
   const queryParams = new URLSearchParams(location.search);
@@ -124,7 +194,11 @@ const Registration: React.FC = () => {
             aria-label="Registration form"
             method="POST"
             onSubmit={handleSubmit((data: TRegisterUser) =>
-              registerUser.mutate({ ...data, token: token ?? undefined }),
+              registerUser.mutate({
+                ...data,
+                token: token ?? undefined,
+                orgCode: orgCode || undefined,
+              }),
             )}
           >
             {renderInput('name', 'com_auth_full_name', 'text', {
@@ -178,6 +252,68 @@ const Registration: React.FC = () => {
               validate: (value: string) =>
                 value === password || localize('com_auth_password_not_match'),
             })}
+
+            {/* 机构绑定（可选）：影响指标问数链路；加载失败则回退为文本输入 */}
+            <div className="mb-4 space-y-2">
+              {orgProjects.length > 1 && (
+                <div className="relative">
+                  <select
+                    value={orgProjectId}
+                    onChange={(e) => {
+                      setOrgProjectId(e.target.value);
+                      setOrgCode('');
+                    }}
+                    aria-label="选择项目"
+                    className="webkit-dark-styles transition-color peer w-full rounded-2xl border border-border-light bg-surface-primary px-3.5 pb-2.5 pt-4 text-sm text-text-primary duration-200 focus:border-green-500 focus:outline-none"
+                  >
+                    <option value="">请选择您所属的项目</option>
+                    {orgProjects.map((p) => (
+                      <option key={p._id} value={p._id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              {orgOptions.length > 0 ? (
+                <div className="relative">
+                  <select
+                    value={orgCode}
+                    onChange={(e) => setOrgCode(e.target.value)}
+                    aria-label="选择机构"
+                    className="webkit-dark-styles transition-color peer w-full rounded-2xl border border-border-light bg-surface-primary px-3.5 pb-2.5 pt-4 text-sm text-text-primary duration-200 focus:border-green-500 focus:outline-none"
+                  >
+                    <option value="">请选择您所属的机构</option>
+                    {orgOptions.map((o) => (
+                      <option key={o.orgCode} value={o.orgCode}>
+                        {'　'.repeat(o.depth)}
+                        {o.orgName ? `${o.orgName} (${o.orgCode})` : o.orgCode}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : (
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={orgCode}
+                    onChange={(e) => setOrgCode(e.target.value)}
+                    aria-label="机构编码"
+                    placeholder=" "
+                    className="webkit-dark-styles transition-color peer w-full rounded-2xl border border-border-light bg-surface-primary px-3.5 pb-2.5 pt-3 text-text-primary duration-200 focus:border-green-500 focus:outline-none"
+                  />
+                  <label className="absolute start-3 top-1.5 z-10 origin-[0] -translate-y-4 scale-75 transform bg-surface-primary px-2 text-sm text-text-secondary-alt duration-200 peer-placeholder-shown:top-1/2 peer-placeholder-shown:-translate-y-1/2 peer-placeholder-shown:scale-100 peer-focus:top-1.5 peer-focus:-translate-y-4 peer-focus:scale-75 peer-focus:px-2 peer-focus:text-green-500">
+                    机构编码
+                  </label>
+                </div>
+              )}
+              {orgLoadError && (
+                <p className="text-xs text-text-secondary">
+                  机构列表加载失败：{orgLoadError}
+                  ，可直接填写机构编码或留空稍后由管理员设置
+                </p>
+              )}
+            </div>
 
             {startupConfig?.turnstile?.siteKey && (
               <div className="my-4 flex justify-center">

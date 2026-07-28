@@ -5,7 +5,9 @@ const { Pool } = require('pg');
 const { logger } = require('@because/data-schemas');
 const { decryptV2 } = require('@because/api');
 const path = require('path');
-const { gaussdbJdbcQuery } = require(path.join(__dirname, '../../utils/gaussdbJdbcBridge'));
+const { gaussdbJdbcQuery, killProcess: killGaussdbProcess } = require(
+  path.join(__dirname, '../../utils/gaussdbJdbcBridge'),
+);
 const {
   retrieveLightSchemaBundle,
   DEFAULT_CELL_TOP_K,
@@ -14,6 +16,24 @@ const {
 // 延迟加载模型函数，避免路径别名问题
 let getDataSourceById = null;
 let getProjectById = null;
+let getDataSourceRevisionFn = null;
+
+/**
+ * 数据源更新/删除后会 bump 版本号；缓存命中时对比版本号，
+ * 不一致就说明配置已变更，需要淘汰旧连接后重建。
+ */
+function loadCacheRegistry() {
+  if (!getDataSourceRevisionFn) {
+    try {
+      getDataSourceRevisionFn = require('~/server/services/DataSourceCacheRegistry').getDataSourceRevision;
+    } catch (e) {
+      getDataSourceRevisionFn = require(
+        path.resolve(__dirname, '../../../api/server/services/DataSourceCacheRegistry'),
+      ).getDataSourceRevision;
+    }
+  }
+  return getDataSourceRevisionFn;
+}
 
 function loadDataSourceModel() {
   if (!getDataSourceById) {
@@ -39,6 +59,24 @@ function loadProjectModel() {
 
 // 连接池缓存（按数据源ID缓存）
 const connectionPools = new Map();
+
+/**
+ * 淘汰一个已过期（数据源配置已变更）的缓存连接。
+ * GaussDB 走 JDBC 常驻子进程，需要显式杀掉；MySQL/PostgreSQL 的 pool 调用 end() 优雅关闭。
+ * 任何一步失败都只记录日志、不阻断重建流程。
+ */
+async function evictConnectionPool(cleanedId, cached) {
+  connectionPools.delete(cleanedId);
+  try {
+    if (cached?.dataSource?.type === 'gaussdb') {
+      killGaussdbProcess(cleanedId);
+    } else if (cached?.pool && typeof cached.pool.end === 'function') {
+      await cached.pool.end();
+    }
+  } catch (err) {
+    logger.warn('[DatabaseSchemaTool] 关闭旧连接池失败（忽略，继续按最新配置重建）:', err.message);
+  }
+}
 
 /**
  * Database Schema Tool - 获取数据库表结构信息（重构版）
@@ -96,10 +134,17 @@ class DatabaseSchemaTool extends Tool {
       cleaned: String(cleanedId || 'null')
     }));
 
-    // 如果已有连接池，直接返回
+    // 数据源当前版本号：更新/删除数据源时会 bump，用来判断缓存是否已过期
+    const currentRevision = loadCacheRegistry()(cleanedId);
+
+    // 如果已有连接池且数据源配置未变更，直接返回
     if (connectionPools.has(cleanedId)) {
       const cached = connectionPools.get(cleanedId);
-      return { pool: cached.pool, dataSource: cached.dataSource };
+      if ((cached.revision || 0) === currentRevision) {
+        return { pool: cached.pool, dataSource: cached.dataSource };
+      }
+      logger.info('[DatabaseSchemaTool] 数据源配置已变更，淘汰旧连接池并重建:', cleanedId);
+      await evictConnectionPool(cleanedId, cached);
     }
 
     // 获取数据源信息
@@ -135,6 +180,7 @@ class DatabaseSchemaTool extends Tool {
       connectionPools.set(cleanedId, {
         pool: { type: 'gaussdb-jdbc', password },
         dataSource,
+        revision: currentRevision,
       });
       logger.info('[DatabaseSchemaTool] GaussDB JDBC 适配器已就绪:', JSON.stringify({
         dataSourceId: cleanedId,
@@ -216,6 +262,7 @@ class DatabaseSchemaTool extends Tool {
     connectionPools.set(cleanedId, {
       pool,
       dataSource,
+      revision: currentRevision,
     });
 
     logger.info('[DatabaseSchemaTool] 创建连接池成功:', JSON.stringify({
@@ -444,15 +491,17 @@ class DatabaseSchemaTool extends Tool {
     logger.info('[DatabaseSchemaTool] 使用GaussDB JDBC桥获取Schema:', JSON.stringify({ database, table: table || 'all' }));
 
     if (table) {
+      // 注意：GaussDB JDBC 桥（GaussJdbcQuery.java）用标准 JDBC PreparedStatement，
+      // 只识别字面量 `?` 作为绑定位，不能用 PostgreSQL 扩展协议风格的 `$1`。
       const columns = await gaussdbJdbcQuery(
-        `SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 ORDER BY ordinal_position`,
+        `SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_schema = 'public' AND table_name = ? ORDER BY ordinal_position`,
         [table],
         dsConfig,
         password,
       );
 
       const pkRows = await gaussdbJdbcQuery(
-        `SELECT a.attname as column_name FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) WHERE i.indrelid = $1::regclass AND i.indisprimary`,
+        `SELECT a.attname as column_name FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) WHERE i.indrelid = ?::regclass AND i.indisprimary`,
         [`public.${table}`],
         dsConfig,
         password,

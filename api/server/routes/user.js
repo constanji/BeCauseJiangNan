@@ -12,6 +12,7 @@ const getUserListController = require('~/server/controllers/UserListController')
 const {
   deleteUserByIdController,
   updateUserRoleController,
+  updateUserOrgCodeController,
   getUserMemoriesController,
   checkAdmin,
 } = require('~/server/controllers/AdminUserController');
@@ -36,6 +37,7 @@ router.post('/verify/resend', verifyEmailLimiter, resendVerificationController);
 // 管理员用户管理路由
 router.delete('/:userId', requireJwtAuth, checkAdmin, deleteUserByIdController);
 router.patch('/:userId/role', requireJwtAuth, checkAdmin, updateUserRoleController);
+router.patch('/:userId/orgCode', requireJwtAuth, checkAdmin, updateUserOrgCodeController);
 router.get('/:userId/memories', requireJwtAuth, checkAdmin, getUserMemoriesController);
 
 module.exports = router;

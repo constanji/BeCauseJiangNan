@@ -31,6 +31,7 @@
   "dependencies": {
     "@ant-design/icons": "^6.1.0",
     "@ant-design/x": "^2.1.1",
+    "@antv/g2": "^5.4.8",
     "@ariakit/react": "^0.4.15",
     "@ariakit/react-core": "^0.4.17",
     "@because/client": "*",

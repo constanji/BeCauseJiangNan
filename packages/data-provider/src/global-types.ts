@@ -378,6 +378,7 @@ export type TRegisterUser = {
   password: string;
   confirm_password?: string;
   token?: string;
+  orgCode?: string;
 };
 
 export type TLoginUser = {

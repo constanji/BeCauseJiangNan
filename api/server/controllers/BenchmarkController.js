@@ -1,15 +1,19 @@
 const path = require('path');
 const crypto = require('crypto');
+const fsPromises = require('fs').promises;
 const { getCustomEndpointConfig, isUserProvided } = require('@because/api');
-const { extractEnvVariable, envVarRegex, EModelEndpoint, isAgentsEndpoint } = require('@because/data-provider');
+const { extractEnvVariable, envVarRegex, EModelEndpoint, isAgentsEndpoint, Constants } = require('@because/data-provider');
 const { getAppConfig } = require('../services/Config');
 const { getUserKeyValues } = require('../services/UserService');
 const BenchmarkService = require('../services/BenchmarkService');
+const { resolveOrgCode } = require('../services/McpContextResolver');
 const { getAgent } = require('~/models/Agent');
+const { validateBenchmarkDataset, generateTemplate } = require('../utils/validateBenchmarkDataset');
 
 const getBenchmarkRoot = () => path.join(__dirname, '../../benchmark');
 // 结果目录放在项目根下，避免 nodemon 监听 api 时因写入结果文件而重启
 const getResultsDir = () => path.join(process.cwd(), 'benchmark_results');
+const getCustomDatasetsDir = () => path.join(getResultsDir(), 'custom_datasets');
 
 /** 总耗时：已完成任务用完成时间减开始时间（固定），未完成用当前时间减开始时间 */
 function getTotalDuration(task) {
@@ -157,6 +161,12 @@ class BenchmarkController {
           toolsConfig: { ...toolsConfig, dataSourceId },
           evaluationMetrics,
           userId: req.user?.id,
+          userOrgCode: resolveOrgCode({ requestBody: req.body, user: req.user }),
+          datasourceId: req.body?.datasourceId || dataSourceId,
+          mcpToolName: req.body?.mcpToolName,
+          mcpToolArguments: req.body?.mcpToolArguments,
+          benchmarkMode: req.body?.benchmarkMode || 'bird',
+          customDatasetId: req.body?.customDatasetId,
         },
         results: null,
         error: null,
@@ -387,6 +397,222 @@ class BenchmarkController {
       res.json({ tasks: taskList });
     } catch (error) {
       console.error('Error listing tasks:', error);
+      res.status(500).json({ error: error.message });
+    }
+  }
+
+  static async uploadDataset(req, res) {
+    try {
+      const { dataset } = req.body;
+
+      if (!dataset) {
+        return res.status(400).json({ error: '请提供 dataset 字段（JSON 数组）' });
+      }
+
+      // 校验数据集格式
+      const validation = validateBenchmarkDataset(dataset);
+      if (!validation.valid) {
+        return res.status(400).json({
+          error: '数据集格式校验失败',
+          details: validation.errors,
+          stats: validation.stats,
+        });
+      }
+
+      // 保存到文件
+      const datasetId = crypto.randomUUID();
+      const datasetsDir = getCustomDatasetsDir();
+      await fsPromises.mkdir(datasetsDir, { recursive: true });
+
+      const filePath = path.join(datasetsDir, `${datasetId}.json`);
+      await fsPromises.writeFile(filePath, JSON.stringify(dataset, null, 2));
+
+      res.json({
+        datasetId,
+        stats: validation.stats,
+        message: '数据集上传成功',
+      });
+    } catch (error) {
+      console.error('Error uploading dataset:', error);
+      res.status(500).json({ error: error.message });
+    }
+  }
+
+  static downloadTemplate(req, res) {
+    try {
+      const template = generateTemplate();
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', 'attachment; filename="custom_benchmark_template.json"');
+      res.json(template);
+    } catch (error) {
+      console.error('Error downloading template:', error);
+      res.status(500).json({ error: error.message });
+    }
+  }
+
+  static async runCustomBenchmark(req, res) {
+    try {
+      const {
+        customDatasetId,
+        sqlDialect,
+        datasourceId,
+        endpointName,
+        model,
+        evaluationMetrics = ['EX'],
+        mcpToolName,
+        mcpToolArguments,
+      } = req.body;
+
+      if (!customDatasetId || !datasourceId || !endpointName || !model) {
+        return res.status(400).json({
+          error: '缺少必填参数: customDatasetId, datasourceId, endpointName, model',
+        });
+      }
+
+      // 验证自定义数据集文件存在
+      const datasetPath = path.join(getCustomDatasetsDir(), `${customDatasetId}.json`);
+      if (!fs.existsSync(datasetPath)) {
+        return res.status(400).json({
+          error: '自定义数据集不存在，请先上传数据集',
+        });
+      }
+
+      // 复用端点解析逻辑（与 runBenchmark 相同）
+      const appConfig = await getAppConfig({ role: req.user?.role });
+      let isAgents = isAgentsEndpoint(endpointName);
+
+      let resolvedEndpointConfig;
+      let modelConfig;
+      let agentConfig = null;
+
+      if (endpointName === 'mcp') {
+        const serverName = model;
+        resolvedEndpointConfig = {
+          type: 'mcp_direct',
+          name: serverName,
+        };
+        modelConfig = { model: serverName };
+        isAgents = false;
+        agentConfig = null;
+      } else if (isAgents) {
+        const agentId = model;
+        const agent = await getAgent({ id: agentId });
+        if (!agent) {
+          return res.status(400).json({
+            error: `智能体 "${agentId}" 不存在，请检查智能体 ID。`,
+          });
+        }
+
+        const agentsEndpointConfig = appConfig?.endpoints?.[EModelEndpoint.agents];
+        if (!agentsEndpointConfig) {
+          return res.status(400).json({
+            error: `Agents 端点未在 Because.yaml 中配置，请检查配置。`,
+          });
+        }
+
+        resolvedEndpointConfig = {
+          type: 'agents',
+          name: endpointName,
+          endpoint: EModelEndpoint.agents,
+        };
+        modelConfig = { model: agent.model_parameters?.model || 'gpt-3.5-turbo' };
+        agentConfig = { agentId, agent };
+      } else {
+        // OpenAI 兼容端点
+        const endpointConfig = getCustomEndpointConfig({
+          endpoint: endpointName,
+          appConfig,
+        });
+        if (!endpointConfig) {
+          return res.status(400).json({
+            error: `端点 "${endpointName}" 未在 Because.yaml 的 endpoints.custom 中配置。`,
+          });
+        }
+
+        const rawApiKey = extractEnvVariable(endpointConfig.apiKey ?? '');
+        const rawBaseURL = extractEnvVariable(endpointConfig.baseURL ?? '');
+        if (rawApiKey.match(envVarRegex)) {
+          return res.status(400).json({
+            error: `端点 "${endpointName}" 的 API Key 未配置。`,
+          });
+        }
+        if (rawBaseURL.match(envVarRegex)) {
+          return res.status(400).json({
+            error: `端点 "${endpointName}" 的 baseURL 未配置。`,
+          });
+        }
+
+        const userProvidesKey = isUserProvided(rawApiKey);
+        const userProvidesURL = isUserProvided(rawBaseURL);
+        let apiKey = rawApiKey;
+        let baseURL = rawBaseURL;
+        if (userProvidesKey || userProvidesURL) {
+          const userValues = await getUserKeyValues({ userId: req.user.id, name: endpointName });
+          if (userProvidesKey) apiKey = userValues?.apiKey ?? '';
+          if (userProvidesURL) baseURL = userValues?.baseURL ?? '';
+        }
+        if (!baseURL || !apiKey) {
+          return res.status(400).json({
+            error: `端点 "${endpointName}" 缺少 baseURL 或 API Key。`,
+          });
+        }
+
+        resolvedEndpointConfig = {
+          type: endpointConfig.type || 'custom',
+          name: endpointName,
+          baseURL,
+          apiKey,
+        };
+        modelConfig = { model };
+      }
+
+      const taskId = crypto.randomUUID();
+      const task = {
+        taskId,
+        status: 'pending',
+        progress: 0,
+        total: 0,
+        completed: 0,
+        statusLogs: [],
+        createdAt: new Date().toISOString(),
+        cancelled: false,
+        config: {
+          benchmarkMode: 'custom',
+          customDatasetId,
+          datasetId: `custom_${customDatasetId}`,
+          sqlDialect: sqlDialect || 'MySQL',
+          datasourceId,
+          endpointConfig: resolvedEndpointConfig,
+          modelConfig,
+          agentConfig,
+          evaluationMetrics,
+          userId: req.user?.id,
+          userOrgCode: resolveOrgCode({ requestBody: req.body, user: req.user }),
+          mcpToolName,
+          mcpToolArguments,
+        },
+        results: null,
+        error: null,
+      };
+
+      tasks.set(taskId, task);
+
+      BenchmarkService.runBenchmarkTask(taskId, task.config, getBenchmarkRoot(), getResultsDir()).catch((error) => {
+        const currentTask = tasks.get(taskId);
+        if (currentTask) {
+          currentTask.status = 'failed';
+          currentTask.error = error.message;
+          tasks.set(taskId, currentTask);
+        }
+      });
+
+      res.json({
+        taskId,
+        status: 'pending',
+        message: '自定义基准测试任务已创建',
+      });
+    } catch (error) {
+      console.error('Error creating custom benchmark task:', error);
       res.status(500).json({ error: error.message });
     }
   }

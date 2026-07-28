@@ -568,8 +568,14 @@ export const listDataSources = (): Promise<d.DataSourceListResponse> => {
   return request.get(endpoints.dataSources.list());
 };
 
-export const getDataSourceById = ({ id }: { id: string }): Promise<d.DataSourceResponse> => {
-  return request.get(endpoints.dataSources.get(id));
+export const getDataSourceById = ({
+  id,
+  includePassword,
+}: {
+  id: string;
+  includePassword?: boolean;
+}): Promise<d.DataSourceResponse> => {
+  return request.get(endpoints.dataSources.get(id, { includePassword }));
 };
 
 export const listDataSourceSchemas = (id: string): Promise<{

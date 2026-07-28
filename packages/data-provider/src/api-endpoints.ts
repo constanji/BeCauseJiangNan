@@ -232,7 +232,10 @@ export const mcp = {
 
 export const dataSources = {
   list: () => `${BASE_URL}/api/config/data-sources`,
-  get: (id: string) => `${BASE_URL}/api/config/data-sources/${id}`,
+  get: (id: string, opts?: { includePassword?: boolean }) => {
+    const q = opts?.includePassword ? '?includePassword=true' : '';
+    return `${BASE_URL}/api/config/data-sources/${id}${q}`;
+  },
   create: () => `${BASE_URL}/api/config/data-sources`,
   update: (id: string) => `${BASE_URL}/api/config/data-sources/${id}`,
   updateAgentBindings: (id: string) => `${BASE_URL}/api/config/data-sources/${id}/agent-bindings`,

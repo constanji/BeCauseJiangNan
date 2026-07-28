@@ -6,11 +6,27 @@ import { cn } from '~/utils';
 import KnowledgeBaseManagement from './KnowledgeBaseManagement';
 import DataSourceManagement from './DataSourceManagement';
 import PromptsManagement from './PromptsManagement';
+import ProjectsManagement from './ProjectsManagement';
+import DatContentDatasourceManagement from './DatContentDatasourceManagement';
+import OrgPermissionManagement from './OrgPermissionManagement';
 
-type TabType = 'dataSources' | 'knowledgeBase' | 'prompts';
+type TabType =
+  | 'dataSources'
+  | 'knowledgeBase'
+  | 'prompts'
+  | 'datProjects'
+  | 'datDatasources'
+  | 'orgPermission';
 
 const isValidTab = (tab: string | null): tab is TabType => {
-  return tab === 'dataSources' || tab === 'knowledgeBase' || tab === 'prompts';
+  return (
+    tab === 'dataSources' ||
+    tab === 'knowledgeBase' ||
+    tab === 'prompts' ||
+    tab === 'datProjects' ||
+    tab === 'datDatasources' ||
+    tab === 'orgPermission'
+  );
 };
 
 export default function AssetCenterContent() {
@@ -48,6 +64,21 @@ export default function AssetCenterContent() {
       id: 'prompts',
       label: '提示集管理',
       description: '管理初始对话界面中显示的提示集',
+    },
+    {
+      id: 'datProjects',
+      label: 'DAT 项目管理',
+      description: '管理 DAT 项目配置，包括 LLM、Agent、嵌入模型、内容管理等',
+    },
+    {
+      id: 'datDatasources',
+      label: 'DAT 数据源管理',
+      description: '管理 DAT/MCP content-store 数据源，并绑定到智能体',
+    },
+    {
+      id: 'orgPermission',
+      label: '机构权限管理',
+      description: '维护平台机构树与权限拦截开关（brchLv / dataScope）',
     },
   ];
 
@@ -93,8 +124,22 @@ export default function AssetCenterContent() {
             <PromptsManagement startupConfig={startupConfig} />
           </div>
         )}
+        {activeTab === 'datProjects' && (
+          <div className="h-full overflow-hidden px-4 py-4">
+            <ProjectsManagement />
+          </div>
+        )}
+        {activeTab === 'datDatasources' && (
+          <div className="h-full overflow-hidden px-4 py-4">
+            <DatContentDatasourceManagement />
+          </div>
+        )}
+        {activeTab === 'orgPermission' && (
+          <div className="h-full overflow-hidden px-4 py-4">
+            <OrgPermissionManagement />
+          </div>
+        )}
       </div>
     </div>
   );
 }
-

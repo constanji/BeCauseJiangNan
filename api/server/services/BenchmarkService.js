@@ -3,11 +3,13 @@ const path = require('path');
 const { execSync } = require('child_process');
 const ModelClient = require('./ModelClient');
 const EvaluationService = require('./EvaluationService');
+const CustomEvaluationService = require('./CustomEvaluationService');
 const { isAgentsEndpoint, EModelEndpoint, Constants } = require('@because/data-provider');
 const AgentClient = require('../controllers/agents/client');
 const { initializeClient } = require('../services/Endpoints/agents/initialize');
 const { getAppConfig } = require('../services/Config');
 const { v4: uuidv4 } = require('uuid');
+const { logger } = require('@because/data-schemas');
 
 function getTasks() {
   const BenchmarkController = require('../controllers/BenchmarkController');
@@ -50,7 +52,10 @@ class BenchmarkService {
       task.startTime = Date.now();
       tasksMap.set(taskId, task);
 
-      const dataset = await this.loadDataset(dataDir, config.datasetId, config.databaseName, config.sqlDialect);
+      const isCustomMode = config.benchmarkMode === 'custom';
+      const dataset = isCustomMode
+        ? await this.loadCustomDataset(resultsDir, config.customDatasetId)
+        : await this.loadDataset(dataDir, config.datasetId, config.databaseName, config.sqlDialect);
       task.total = dataset.length;
       tasksMap.set(taskId, task);
 
@@ -58,7 +63,7 @@ class BenchmarkService {
       const isAgents = isAgentsEndpoint(config.endpointConfig.name);
 
       // 对于 agents 端点，不需要 baseURL 和 apiKey
-      if (!isAgents) {
+      if (!isAgents && config.endpointConfig.type !== 'mcp_direct') {
         if (!config.endpointConfig.baseURL) {
           throw new Error('Endpoint baseURL is missing. Please check your endpoint configuration.');
         }
@@ -93,7 +98,7 @@ class BenchmarkService {
         // 过滤 agent 工具：基准测试只保留 NL2SQL 相关工具
         const benchmarkAgent = this.createBenchmarkAgent(config.agentConfig.agent);
         config._benchmarkAgent = benchmarkAgent;
-      } else {
+      } else if (config.endpointConfig.type !== 'mcp_direct') {
         modelClient = new ModelClient(config.endpointConfig, config.modelConfig);
       }
 
@@ -118,7 +123,19 @@ class BenchmarkService {
         try {
           let predictedSQL;
 
-          if (isAgents) {
+          if (config.endpointConfig.type === 'mcp_direct') {
+            predictedSQL = await this.generateSQLWithMCP({
+              serverName: config.modelConfig.model,
+              item,
+              sqlDialect: config.sqlDialect,
+              knowledgeDir,
+              userId: config.userId,
+              userOrgCode: config.userOrgCode,
+              datasourceId: config.datasourceId,
+              mcpToolName: config.mcpToolName,
+              mcpToolArguments: config.mcpToolArguments,
+            });
+          } else if (isAgents) {
             // ★ 每题创建全新 AgentClient — 彻底隔离上下文、contentParts、memory
             // 必须深拷贝 agent：initializeAgent 会 mutate agent.provider / agent.endpoint
             const agentClone = structuredClone(config._benchmarkAgent);
@@ -194,20 +211,37 @@ class BenchmarkService {
       }
       pushLog(`[BenchmarkService] 预测已保存，开始评估: ${config.evaluationMetrics.join(', ')}`);
 
-      const evaluationResults = await EvaluationService.evaluate(
-        root,
-        predictionsPath,
-        config.datasetId,
-        evalDialect,
-        config.evaluationMetrics,
-        (progress) => {
-          const currentTask = tasksMap.get(taskId);
-          if (currentTask) {
-            currentTask.progress = 60 + Math.round(progress * 0.4);
-            tasksMap.set(taskId, currentTask);
-          }
-        },
-      );
+      let evaluationResults;
+      if (isCustomMode) {
+        pushLog(`[BenchmarkService] 使用自定义评估模式（连接用户数据源执行 SQL 对比）`);
+        evaluationResults = await CustomEvaluationService.evaluate({
+          datasourceId: config.datasourceId,
+          predictions,
+          dataset,
+          onProgress: (progress) => {
+            const currentTask = tasksMap.get(taskId);
+            if (currentTask) {
+              currentTask.progress = 60 + Math.round(progress * 0.4);
+              tasksMap.set(taskId, currentTask);
+            }
+          },
+        });
+      } else {
+        evaluationResults = await EvaluationService.evaluate(
+          root,
+          predictionsPath,
+          config.datasetId,
+          evalDialect,
+          config.evaluationMetrics,
+          (progress) => {
+            const currentTask = tasksMap.get(taskId);
+            if (currentTask) {
+              currentTask.progress = 60 + Math.round(progress * 0.4);
+              tasksMap.set(taskId, currentTask);
+            }
+          },
+        );
+      }
 
       task.status = 'completed';
       task.progress = 100;
@@ -305,6 +339,192 @@ class BenchmarkService {
     return extractedSQL;
   }
 
+  static async loadCustomDataset(resultsDir, customDatasetId) {
+    const filePath = path.join(resultsDir, 'custom_datasets', `${customDatasetId}.json`);
+    try {
+      const content = await fs.readFile(filePath, 'utf-8');
+      const dataset = JSON.parse(content);
+      if (!Array.isArray(dataset) || dataset.length === 0) {
+        throw new Error('自定义数据集为空或格式不正确');
+      }
+      // 确保每项都有 difficulty 字段（默认 simple）
+      return dataset.map((item) => ({
+        ...item,
+        difficulty: item.difficulty || 'simple',
+      }));
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        throw new Error(`自定义数据集文件不存在: ${customDatasetId}`);
+      }
+      throw new Error(`加载自定义数据集失败: ${error.message}`);
+    }
+  }
+
+  static async generateSQLWithMCP({
+    serverName,
+    item,
+    sqlDialect,
+    knowledgeDir,
+    userId,
+    userOrgCode,
+    datasourceId,
+    mcpToolName,
+    mcpToolArguments,
+  }) {
+    const { getMCPManager, getFlowStateManager } = require('~/config');
+    const { getLogStores } = require('~/cache');
+    const { CacheKeys } = require('@because/data-provider');
+    const { findToken, createToken, updateToken } = require('~/models');
+    const { resolveAndInjectMcpContext, resolveOrgCode } = require('./McpContextResolver');
+    const { getAppConfig } = require('./Config');
+    const {
+      isMissingArg,
+      extractTextFromMcpResult,
+      extractSqlFromMcpResponse,
+    } = require('./McpBenchmarkUtils');
+
+    const mcpManager = getMCPManager();
+
+    if (!mcpManager) {
+      throw new Error('MCP Manager not initialized');
+    }
+
+    const connection = await mcpManager.getConnection({
+      user: { id: userId },
+      serverName,
+    });
+
+    if (!connection) {
+      throw new Error(`Failed to get MCP connection for server: ${serverName}`);
+    }
+
+    const prompt = await this.buildAgentPrompt(item, sqlDialect, false, knowledgeDir);
+    const questionText = item.question || item.query || item.text || prompt;
+
+    const tools = await connection.fetchTools();
+    if (!tools || tools.length === 0) {
+      throw new Error(`No tools found in MCP server: ${serverName}`);
+    }
+
+    let toolName = mcpToolName;
+    if (!toolName) {
+      toolName = tools[0].name;
+      const generateSqlTool = tools.find(
+        (t) => t.name.toLowerCase().includes('sql') || t.name.toLowerCase().includes('generate'),
+      );
+      if (generateSqlTool) {
+        toolName = generateSqlTool.name;
+      }
+    }
+
+    let toolArguments = mcpToolArguments ? JSON.parse(JSON.stringify(mcpToolArguments)) : {};
+
+    let hasPromptPlaceholder = false;
+    const processArguments = (args) => {
+      for (const key of Object.keys(args)) {
+        if (typeof args[key] === 'string') {
+          if (args[key].includes('{{prompt}}')) {
+            args[key] = args[key].replace(/\{\{prompt\}\}/g, prompt || '');
+            hasPromptPlaceholder = true;
+          }
+          if (args[key].includes('{{question}}')) {
+            args[key] = args[key].replace(/\{\{question\}\}/g, questionText);
+            hasPromptPlaceholder = true;
+          }
+        } else if (args[key] && typeof args[key] === 'object') {
+          processArguments(args[key]);
+        }
+      }
+    };
+    processArguments(toolArguments);
+
+    const schema = tools.find((t) => t.name === toolName)?.inputSchema;
+    const propKeys = schema?.properties ? Object.keys(schema.properties) : [];
+    const requiredKeys = schema?.required || [];
+    const questionLikeKeys = [...propKeys, ...requiredKeys].filter(
+      (key, index, arr) =>
+        arr.indexOf(key) === index &&
+        (key.toLowerCase().includes('query') ||
+          key.toLowerCase().includes('question') ||
+          key.toLowerCase().includes('prompt') ||
+          key.toLowerCase().includes('input')),
+    );
+
+    if (!hasPromptPlaceholder && !mcpToolArguments) {
+      if (schema && schema.properties) {
+        if (requiredKeys.length > 0) {
+          const targetKey =
+            questionLikeKeys.find((k) => requiredKeys.includes(k)) ||
+            requiredKeys.find(
+              (k) => k.toLowerCase().includes('query') || k.toLowerCase().includes('question'),
+            ) ||
+            requiredKeys[requiredKeys.length - 1];
+          toolArguments[targetKey] = questionText;
+        } else if (propKeys.length > 0) {
+          const targetKey =
+            questionLikeKeys[0] ||
+            propKeys.find(
+              (k) => k.toLowerCase().includes('query') || k.toLowerCase().includes('question'),
+            ) ||
+            propKeys[propKeys.length - 1];
+          toolArguments[targetKey] = questionText;
+        }
+      } else {
+        toolArguments = { query: questionText };
+      }
+    } else if (schema && schema.properties) {
+      const keysToFill = [...requiredKeys, ...questionLikeKeys];
+      keysToFill.forEach((key) => {
+        if (isMissingArg(toolArguments[key])) {
+          toolArguments[key] = questionText;
+        }
+      });
+    }
+
+    const appConfig = await getAppConfig();
+    const orgCode = resolveOrgCode({ user: { orgCode: userOrgCode } });
+    const configurable = {
+      user: { id: userId, ...(orgCode ? { orgCode } : {}) },
+      requestBody: {
+        ...(datasourceId ? { datasourceId } : {}),
+        ...(orgCode ? { orgCode } : {}),
+      },
+    };
+    const finalToolArguments = await resolveAndInjectMcpContext({
+      serverName,
+      toolName,
+      toolArguments,
+      configurable,
+      mcpConfig: appConfig?.mcpConfig,
+    });
+
+    logger.info(
+      `[BenchmarkService][${serverName}][${toolName}] Final tool arguments: ${JSON.stringify(finalToolArguments)}`,
+    );
+
+    const flowManager = getFlowStateManager(getLogStores(CacheKeys.FLOWS));
+    const result = await mcpManager.callTool({
+      serverName,
+      toolName,
+      toolArguments: finalToolArguments,
+      user: { id: userId },
+      requestBody: configurable.requestBody,
+      flowManager,
+      tokenMethods: {
+        findToken,
+        createToken,
+        updateToken,
+      },
+    });
+
+    const responseText = extractTextFromMcpResult(result);
+    if (!responseText || responseText === '(No response)') {
+      throw new Error(`MCP tool ${toolName} returned empty response`);
+    }
+
+    return extractSqlFromMcpResponse(serverName, responseText, (text) => this.extractSQL(text));
+  }
+
   static extractTextFromAgentResponse(response) {
     if (response.content && typeof response.content === 'string') {
       return response.content;
@@ -348,6 +568,8 @@ class BenchmarkService {
         conversationId: config._benchmarkConversationId || null,
         data_source_id: config.toolsConfig?.dataSourceId || null,
         project_id: config.toolsConfig?.projectId || null,
+        projectId: config.datasource?.projectId || config.toolsConfig?.projectId || null,
+        datasourceId: config.datasourceId || null,
         _benchmarkAllowedCommands: ['database-schema', 'sql-validation'],
       },
     };
@@ -655,7 +877,6 @@ SELECT ...
   static createBenchmarkAgent(agent) {
     const BENCHMARK_ALLOWED_TOOLS = new Set([
       'because_skills_2',
-      'sql_executor',
     ]);
 
     const filteredTools = (agent.tools || []).filter((t) => {

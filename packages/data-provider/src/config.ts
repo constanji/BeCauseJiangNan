@@ -680,6 +680,8 @@ export type TStartupConfig = {
   >;
   mcpPlaceholder?: string;
   conversationImportMaxFileSize?: number;
+  /** DAT OpenAPI base URL (dat-server-openapi), served from DAT_OPENAPI_BASE_URL */
+  datOpenapiBaseUrl?: string;
 };
 
 export enum OCRStrategy {

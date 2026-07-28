@@ -15,6 +15,7 @@ const {
   formatConnectionTestError,
   buildConnectionTestApiPayload,
 } = require('~/server/utils/formatConnectionTestError');
+const { bumpDataSourceRevision } = require('~/server/services/DataSourceCacheRegistry');
 
 // GaussDB Java JDBC 桥（企业定制安全协议，无法用标准 pg 包连接）
 // 必须相对项目根 /app/Because-2.0，勿用 __dirname 相对路径（Knowledge 等更深目录会落到 /app/api/Because-2.0）
@@ -814,12 +815,31 @@ async function getDataSourceHandler(req, res) {
       });
     }
 
-    // 移除密码字段，确保 isPublic 字段存在（兼容旧数据）
+    // 默认移除密码；管理员可用 ?includePassword=true 取解密后的连接信息（用于回填 DAT 等）
     const { password, ...rest } = dataSource;
     const sanitizedDataSource = {
       ...rest,
       isPublic: rest.isPublic !== undefined ? Boolean(rest.isPublic) : false,
     };
+
+    const wantPassword =
+      req.query.includePassword === 'true' || req.query.includePassword === '1';
+    if (wantPassword) {
+      if (req.user.role !== SystemRoles.ADMIN) {
+        return res.status(403).json({
+          success: false,
+          error: '仅管理员可获取数据源密码',
+        });
+      }
+      try {
+        sanitizedDataSource.password = password
+          ? await decryptPassword(password)
+          : '';
+      } catch (decryptError) {
+        logger.warn('[getDataSourceHandler] 密码解密失败:', decryptError);
+        sanitizedDataSource.password = '';
+      }
+    }
 
     return res.status(200).json({
       success: true,
@@ -1056,6 +1076,11 @@ async function updateDataSourceHandler(req, res) {
       });
     }
 
+    // 数据源配置已变更：通知 database-schema-tool / sql-executor-tool /
+    // DataSourceQueryService 等各处缓存的连接池失效，下次使用时会按最新配置重建
+    // （含 GaussDB JDBC 常驻子进程），避免继续用旧 host/密码/库名连接。
+    bumpDataSourceRevision(id);
+
     // 移除密码字段，确保 isPublic 字段存在（兼容旧数据）
     const { password: _, ...rest } = updatedDataSource;
     const sanitizedDataSource = {
@@ -1109,6 +1134,11 @@ async function deleteDataSourceHandler(req, res) {
         error: '数据源不存在',
       });
     }
+
+    // 淘汰所有缓存的连接（含 GaussDB JDBC 常驻子进程），避免继续持有已删除数据源的连接。
+    // 注意：这里只 bump 不 clear —— clear 会把版本号重置回默认值 0，
+    // 如果某个调用方缓存的正好是版本号 0，就会误判为"未过期"而漏掉这次失效。
+    bumpDataSourceRevision(id);
 
     return res.status(200).json({
       success: true,

@@ -202,9 +202,19 @@ class BeCauseSkillsTool3 extends Tool {
     } catch (err) {
       const duration = Date.now() - startTime;
       logger.error(`[BeCauseSkillsTool3] 执行错误 (耗时: ${duration}ms):`, err);
+      const msg = err?.message || '';
+      if (/cannot read propert(y|ies) of undefined.*(reading ['"]trim['"])/i.test(msg)) {
+        return JSON.stringify({
+          success: false,
+          error:
+            '缺少 SQL 语句：请在 arguments 中传入 sql（推荐），也兼容 query / statement。示例：{"sql":"SELECT * FROM dim_region"}。',
+          code: 'MISSING_SQL',
+          hint: '参数名须为 sql 或 query，值为完整只读 SELECT/WITH 语句',
+        });
+      }
       return JSON.stringify({
         success: false,
-        error: err.message || 'BeCause问数工具3.0执行失败',
+        error: msg || 'BeCause问数工具3.0执行失败',
       });
     }
   }

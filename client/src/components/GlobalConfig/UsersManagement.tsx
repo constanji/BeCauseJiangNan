@@ -2,8 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { Button, useToastContext } from '@because/client';
 import { useAuthContext } from '~/hooks';
 import { cn } from '~/utils';
+import { getDatApiBaseUrl } from '~/utils/datApi';
 import * as Ariakit from '@ariakit/react';
-import { RefreshCw, User as UserIcon, Mail, Calendar, Download, Eye, X, List, Grid, Settings, Shield, User, Trash2 } from 'lucide-react';
+import { RefreshCw, User as UserIcon, Mail, Calendar, Download, Eye, X, List, Grid, Settings, Shield, User, Trash2, Network, Pencil } from 'lucide-react';
 
 interface User {
   _id: string;
@@ -13,6 +14,7 @@ interface User {
   avatar?: string | null;
   provider: string;
   role: string;
+  orgCode?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -472,6 +474,130 @@ export default function UsersManagement() {
     }
   };
 
+  // ============ 机构编码（orgCode）管理 ============
+  type DatProjectOption = { _id: string; name: string };
+  type OrgFlatOption = { orgCode: string; orgName: string; orgType: string; depth: number };
+
+  const flattenOrgTree = (nodes: any[], depth = 0, acc: OrgFlatOption[] = []): OrgFlatOption[] => {
+    for (const n of nodes || []) {
+      if (n?.orgCode) {
+        acc.push({
+          orgCode: String(n.orgCode),
+          orgName: String(n.orgName || ''),
+          orgType: String(n.orgType || ''),
+          depth,
+        });
+      }
+      if (n?.children?.length) flattenOrgTree(n.children, depth + 1, acc);
+    }
+    return acc;
+  };
+
+  const [editingOrgUser, setEditingOrgUser] = useState<User | null>(null);
+  const [orgProjects, setOrgProjects] = useState<DatProjectOption[]>([]);
+  const [orgProjectId, setOrgProjectId] = useState<string>('');
+  const [orgOptions, setOrgOptions] = useState<OrgFlatOption[]>([]);
+  const [orgDraftCode, setOrgDraftCode] = useState<string>('');
+  const [orgLoading, setOrgLoading] = useState(false);
+  const [orgSaving, setOrgSaving] = useState(false);
+
+  const openOrgEditor = async (target: User) => {
+    setEditingOrgUser(target);
+    setOrgDraftCode(target.orgCode || '');
+    setOrgOptions([]);
+    setOrgProjectId('');
+    setOrgLoading(true);
+    try {
+      const baseEl = document.querySelector('base');
+      const baseHref = baseEl?.getAttribute('href') || '/';
+      const apiBase = baseHref.endsWith('/') ? baseHref.slice(0, -1) : baseHref;
+      const headers: HeadersInit = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      const resp = await fetch(`${apiBase}/api/dat-projects`, {
+        method: 'GET',
+        headers,
+        credentials: 'include',
+      });
+      const data = await resp.json().catch(() => ({}));
+      const list: DatProjectOption[] = (data?.projects || []).map((p: any) => ({
+        _id: p._id,
+        name: p.name,
+      }));
+      setOrgProjects(list);
+      if (list.length === 1) setOrgProjectId(list[0]._id);
+    } catch (err) {
+      showToast({
+        message: `加载项目列表失败: ${err instanceof Error ? err.message : '未知错误'}`,
+        status: 'warning',
+      });
+    } finally {
+      setOrgLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!editingOrgUser || !orgProjectId) {
+      setOrgOptions([]);
+      return;
+    }
+    setOrgLoading(true);
+    fetch(`${getDatApiBaseUrl()}/api/v1/org/nodes?projectId=${orgProjectId}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((tree) => setOrgOptions(flattenOrgTree(tree)))
+      .catch((err) => {
+        setOrgOptions([]);
+        showToast({
+          message: `加载机构列表失败: ${err instanceof Error ? err.message : '未知错误'}`,
+          status: 'warning',
+        });
+      })
+      .finally(() => setOrgLoading(false));
+  }, [editingOrgUser, orgProjectId]);
+
+  const closeOrgEditor = () => {
+    setEditingOrgUser(null);
+    setOrgProjects([]);
+    setOrgProjectId('');
+    setOrgOptions([]);
+    setOrgDraftCode('');
+  };
+
+  const saveOrgCode = async () => {
+    if (!editingOrgUser) return;
+    setOrgSaving(true);
+    try {
+      const baseEl = document.querySelector('base');
+      const baseHref = baseEl?.getAttribute('href') || '/';
+      const apiBase = baseHref.endsWith('/') ? baseHref.slice(0, -1) : baseHref;
+      const headers: HeadersInit = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      const resp = await fetch(`${apiBase}/api/user/${editingOrgUser._id}/orgCode`, {
+        method: 'PATCH',
+        headers,
+        credentials: 'include',
+        body: JSON.stringify({ orgCode: orgDraftCode.trim() }),
+      });
+      const isJson = resp.headers.get('content-type')?.includes('application/json');
+      const body = isJson ? await resp.json().catch(() => ({})) : {};
+      if (!resp.ok) throw new Error(body?.error || `HTTP ${resp.status}`);
+      const updated = body?.user;
+      setUsers((prev) =>
+        prev.map((u) =>
+          u._id === editingOrgUser._id ? { ...u, orgCode: updated?.orgCode ?? null } : u,
+        ),
+      );
+      showToast({ message: body?.message || '已保存', status: 'success' });
+      closeOrgEditor();
+    } catch (err) {
+      showToast({
+        message: `保存失败: ${err instanceof Error ? err.message : '未知错误'}`,
+        status: 'error',
+      });
+    } finally {
+      setOrgSaving(false);
+    }
+  };
+
   return (
     <div className="flex h-full flex-col">
       <div className="mb-4 flex items-center justify-between">
@@ -486,12 +612,12 @@ export default function UsersManagement() {
           <div className="flex items-center gap-1 rounded-lg border border-border-light bg-surface-secondary p-1">
             <button
               type="button"
-              onClick={() => setViewMode('detailed')}
+              onClick={() => setViewMode("detailed")}
               className={cn(
-                'rounded px-2 py-1 text-sm transition-colors',
-                viewMode === 'detailed'
-                  ? 'bg-surface-primary text-text-primary'
-                  : 'text-text-secondary hover:bg-surface-hover',
+                "rounded px-2 py-1 text-sm transition-colors",
+                viewMode === "detailed"
+                  ? "bg-surface-primary text-text-primary"
+                  : "text-text-secondary hover:bg-surface-hover",
               )}
               title="详细视图"
               aria-label="详细视图"
@@ -500,12 +626,12 @@ export default function UsersManagement() {
             </button>
             <button
               type="button"
-              onClick={() => setViewMode('compact')}
+              onClick={() => setViewMode("compact")}
               className={cn(
-                'rounded px-2 py-1 text-sm transition-colors',
-                viewMode === 'compact'
-                  ? 'bg-surface-primary text-text-primary'
-                  : 'text-text-secondary hover:bg-surface-hover',
+                "rounded px-2 py-1 text-sm transition-colors",
+                viewMode === "compact"
+                  ? "bg-surface-primary text-text-primary"
+                  : "text-text-secondary hover:bg-surface-hover",
               )}
               title="表格视图"
               aria-label="表格视图"
@@ -520,8 +646,8 @@ export default function UsersManagement() {
             className="btn btn-neutral border-token-border-light relative flex items-center gap-2 rounded-lg px-3 py-2"
             aria-label="刷新用户列表"
           >
-            <RefreshCw className={cn('h-4 w-4', isLoading && 'animate-spin')} />
-            {isLoading ? '加载中...' : '刷新'}
+            <RefreshCw className={cn("h-4 w-4", isLoading && "animate-spin")} />
+            {isLoading ? "加载中..." : "刷新"}
           </Button>
         </div>
       </div>
@@ -536,9 +662,15 @@ export default function UsersManagement() {
             <p className="text-sm">暂无用户</p>
           </div>
         ) : (
-          <div className={cn(viewMode === 'compact' ? 'grid grid-cols-1 gap-2 md:grid-cols-2 lg:grid-cols-3' : 'space-y-2')}>
+          <div
+            className={cn(
+              viewMode === "compact"
+                ? "grid grid-cols-1 gap-2 md:grid-cols-2 lg:grid-cols-3"
+                : "space-y-2",
+            )}
+          >
             {users.map((user) => {
-              if (viewMode === 'compact') {
+              if (viewMode === "compact") {
                 // 表格视图：只显示头像、昵称、用户名、身份
                 return (
                   <div
@@ -549,14 +681,17 @@ export default function UsersManagement() {
                       {/* 头像 */}
                       <div className="flex-shrink-0">
                         <img
-                          src={user.avatar || '/assets/logo.png'}
+                          src={user.avatar || "/assets/logo.png"}
                           alt={user.name || user.email}
                           className="h-10 w-10 rounded-full object-cover"
                           onError={(e) => {
                             // 如果头像加载失败，使用logo.png
                             const target = e.target as HTMLImageElement;
-                            if (target.src !== `${window.location.origin}/assets/logo.png`) {
-                              target.src = '/assets/logo.png';
+                            if (
+                              target.src !==
+                              `${window.location.origin}/assets/logo.png`
+                            ) {
+                              target.src = "/assets/logo.png";
                             }
                           }}
                         />
@@ -565,12 +700,12 @@ export default function UsersManagement() {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
                           <h4 className="text-sm font-semibold text-text-primary line-clamp-1">
-                            {user.name || '未设置昵称'}
+                            {user.name || "未设置昵称"}
                           </h4>
-                          {user.role === 'ADMIN' && (
+                          {user.role === "ADMIN" && (
                             <span
                               className={cn(
-                                'rounded-xl px-2 py-0.5 text-xs font-medium',
+                                "rounded-xl px-2 py-0.5 text-xs font-medium",
                                 getRoleColor(user.role),
                               )}
                             >
@@ -599,10 +734,19 @@ export default function UsersManagement() {
                       </button>
                       <button
                         type="button"
-                        onClick={() => deleteUser(user._id, user.name || user.email)}
-                        disabled={deletingUser === user._id || currentUser?.id === user._id}
+                        onClick={() =>
+                          deleteUser(user._id, user.name || user.email)
+                        }
+                        disabled={
+                          deletingUser === user._id ||
+                          currentUser?.id === user._id
+                        }
                         className="rounded p-1.5 text-red-500 transition-colors hover:bg-red-50 hover:text-red-600 disabled:opacity-50 dark:hover:bg-red-900/20"
-                        title={currentUser?.id === user._id ? '不能删除自己' : '删除用户'}
+                        title={
+                          currentUser?.id === user._id
+                            ? "不能删除自己"
+                            : "删除用户"
+                        }
                         aria-label="删除用户"
                       >
                         <Trash2 className="h-4 w-4" />
@@ -623,14 +767,17 @@ export default function UsersManagement() {
                     {/* 头像 */}
                     <div className="flex-shrink-0">
                       <img
-                        src={user.avatar || '/assets/logo.png'}
+                        src={user.avatar || "/assets/logo.png"}
                         alt={user.name || user.email}
                         className="h-12 w-12 rounded-full object-cover"
                         onError={(e) => {
                           // 如果头像加载失败，使用logo.png
                           const target = e.target as HTMLImageElement;
-                          if (target.src !== `${window.location.origin}/assets/logo.png`) {
-                            target.src = '/assets/logo.png';
+                          if (
+                            target.src !==
+                            `${window.location.origin}/assets/logo.png`
+                          ) {
+                            target.src = "/assets/logo.png";
                           }
                         }}
                       />
@@ -641,12 +788,12 @@ export default function UsersManagement() {
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
                           <h3 className="text-base font-semibold text-text-primary">
-                            {user.name || user.username || '未设置名称'}
+                            {user.name || user.username || "未设置名称"}
                           </h3>
-                          {user.role === 'ADMIN' && (
+                          {user.role === "ADMIN" && (
                             <span
                               className={cn(
-                                'rounded-xl px-2 py-0.5 text-xs font-medium',
+                                "rounded-xl px-2 py-0.5 text-xs font-medium",
                                 getRoleColor(user.role),
                               )}
                             >
@@ -667,10 +814,19 @@ export default function UsersManagement() {
                           </button>
                           <button
                             type="button"
-                            onClick={() => deleteUser(user._id, user.name || user.email)}
-                            disabled={deletingUser === user._id || currentUser?.id === user._id}
+                            onClick={() =>
+                              deleteUser(user._id, user.name || user.email)
+                            }
+                            disabled={
+                              deletingUser === user._id ||
+                              currentUser?.id === user._id
+                            }
                             className="rounded p-1.5 text-red-500 transition-colors hover:bg-red-50 hover:text-red-600 disabled:opacity-50 dark:hover:bg-red-900/20"
-                            title={currentUser?.id === user._id ? '不能删除自己' : '删除用户'}
+                            title={
+                              currentUser?.id === user._id
+                                ? "不能删除自己"
+                                : "删除用户"
+                            }
                             aria-label="删除用户"
                           >
                             <Trash2 className="h-4 w-4" />
@@ -690,10 +846,32 @@ export default function UsersManagement() {
                           </div>
                         )}
                         <div className="flex items-center gap-2 text-text-secondary">
+                          <Network className="h-4 w-4" />
+                          <span className="truncate">
+                            机构：
+                            {user.orgCode ? (
+                              <span className="font-mono text-text-primary">
+                                {user.orgCode}
+                              </span>
+                            ) : (
+                              <span className="text-text-tertiary">未绑定</span>
+                            )}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => openOrgEditor(user)}
+                            className="ml-1 inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-xs text-blue-500 hover:bg-surface-hover"
+                            title="设置机构"
+                          >
+                            <Pencil className="h-3 w-3" />
+                            编辑
+                          </button>
+                        </div>
+                        <div className="flex items-center gap-2 text-text-secondary">
                           <Calendar className="h-4 w-4" />
                           <span>注册时间: {formatDate(user.createdAt)}</span>
                         </div>
-                        {user.provider && user.provider !== 'email' && (
+                        {user.provider && user.provider !== "email" && (
                           <div className="text-xs text-text-tertiary">
                             登录方式: {user.provider}
                           </div>
@@ -708,6 +886,112 @@ export default function UsersManagement() {
         )}
       </div>
 
+      {/* 机构编辑模态框 */}
+      {editingOrgUser && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-xl rounded-lg border border-border-light bg-surface-primary shadow-lg">
+            <div className="flex items-center justify-between border-b border-border-light p-4">
+              <div>
+                <h3 className="text-lg font-semibold text-text-primary">
+                  设置机构
+                </h3>
+                <p className="mt-0.5 text-xs text-text-secondary">
+                  {editingOrgUser.name ||
+                    editingOrgUser.username ||
+                    editingOrgUser.email}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeOrgEditor}
+                className="rounded p-1 text-text-secondary hover:bg-surface-hover"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="space-y-3 p-4">
+              {orgProjects.length > 1 && (
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-text-primary">
+                    项目
+                  </label>
+                  <select
+                    value={orgProjectId}
+                    onChange={(e) => setOrgProjectId(e.target.value)}
+                    className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+                  >
+                    <option value="">请选择您所属的项目</option>
+                    {orgProjects.map((p) => (
+                      <option key={p._id} value={p._id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              <div>
+                <label className="mb-1 block text-sm font-medium text-text-primary">
+                  机构
+                </label>
+                {orgLoading ? (
+                  <div className="rounded-md border border-border-light px-3 py-2 text-sm text-text-secondary">
+                    加载中...
+                  </div>
+                ) : orgOptions.length > 0 ? (
+                  <select
+                    value={orgDraftCode}
+                    onChange={(e) => setOrgDraftCode(e.target.value)}
+                    className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+                  >
+                    <option value="">请选择您所属的机构</option>
+                    {orgOptions.map((o) => (
+                      <option key={o.orgCode} value={o.orgCode}>
+                        {"　".repeat(o.depth)}
+                        {o.orgName ? `${o.orgName} (${o.orgCode})` : o.orgCode}
+                        {/*{o.orgType ? `  ·  ${o.orgType}` : ""}*/}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    type="text"
+                    value={orgDraftCode}
+                    onChange={(e) => setOrgDraftCode(e.target.value)}
+                    placeholder={
+                      orgProjects.length === 0
+                        ? "无项目，可直接手填机构编码"
+                        : orgProjectId
+                          ? "机构列表为空，可直接手填"
+                          : "请先选择项目"
+                    }
+                    className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+                  />
+                )}
+                <p className="mt-1 text-xs text-text-tertiary">
+                  当前机构：
+                  <span className="font-mono">
+                    {editingOrgUser.orgCode || "未绑定"}
+                  </span>
+                  。留空保存表示清空机构绑定。
+                </p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-border-light p-4">
+              <Button onClick={closeOrgEditor} className="btn btn-neutral">
+                取消
+              </Button>
+              <Button
+                onClick={saveOrgCode}
+                disabled={orgSaving}
+                className="btn btn-primary"
+              >
+                {orgSaving ? "保存中..." : "保存"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 记忆查看模态框 */}
       {viewingMemories && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4">
@@ -715,7 +999,9 @@ export default function UsersManagement() {
             {/* 头部 */}
             <div className="flex items-center justify-between border-b border-border-light p-4">
               <div>
-                <h3 className="text-lg font-semibold text-text-primary">用户记忆</h3>
+                <h3 className="text-lg font-semibold text-text-primary">
+                  用户记忆
+                </h3>
                 {memoriesData && (
                   <p className="mt-1 text-sm text-text-secondary">
                     {memoriesData.userName} ({memoriesData.userEmail})
@@ -780,7 +1066,7 @@ export default function UsersManagement() {
                           <div className="mt-1 text-sm text-text-primary">
                             {memoriesData.memories[0]?.updated_at
                               ? formatDate(memoriesData.memories[0].updated_at)
-                              : '未知'}
+                              : "未知"}
                           </div>
                         </div>
                       </div>
@@ -794,12 +1080,16 @@ export default function UsersManagement() {
                           className="rounded-lg border border-border-light bg-surface-secondary p-4"
                         >
                           <div className="mb-2 flex items-center justify-between">
-                            <h4 className="font-semibold text-text-primary">{memory.key}</h4>
+                            <h4 className="font-semibold text-text-primary">
+                              {memory.key}
+                            </h4>
                             <div className="flex items-center gap-2 text-xs text-text-secondary">
                               {memory.tokenCount && (
                                 <span>{memory.tokenCount} tokens</span>
                               )}
-                              <span>更新于: {formatDate(memory.updated_at)}</span>
+                              <span>
+                                更新于: {formatDate(memory.updated_at)}
+                              </span>
                             </div>
                           </div>
                           <p className="text-sm text-text-secondary whitespace-pre-wrap break-words">

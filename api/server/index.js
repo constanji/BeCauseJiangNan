@@ -145,7 +145,12 @@ const startServer = async () => {
   app.use('/api/tags', routes.tags);
   app.use('/api/mcp', routes.mcp);
   app.use('/api/rag', routes.rag);
+  app.use('/api/optimize', routes.optimize);
+  app.use('/api/dat-projects', routes.datProjects);
+  app.use('/api/dat-datasources', routes.datDatasources);
+  app.use('/api/datasource-prompts', routes.datasourcePrompts);
   app.use('/api/benchmark', routes.benchmark);
+  app.use('/api/org-permission', routes.orgPermission);
 
   app.use(ErrorController);
 

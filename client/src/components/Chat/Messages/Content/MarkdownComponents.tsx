@@ -10,6 +10,7 @@ import { handleDoubleClick } from '~/utils';
 import { useLocalize } from '~/hooks';
 import store from '~/store';
 import EChartsChart from './EChartsChart';
+import ReportPreview from '~/components/Chat/Messages/Content/ReportPreview';
 type TCodeProps = {
   inline?: boolean;
   className?: string;
@@ -24,10 +25,11 @@ export const code: React.ElementType = memo(({ className, children }: TCodeProps
   const match = /language-(\w+)/.exec(className ?? '');
   const lang = match && match[1];
   const isMath = lang === 'math';
+  const isReport = lang === 'report';
   const isSingleLine = typeof children === 'string' && children.split('\n').length === 1;
 
   const { getNextIndex, resetCounter } = useCodeBlockContext();
-  const blockIndex = useRef(getNextIndex(isMath || isSingleLine)).current;
+  const blockIndex = useRef(getNextIndex(isMath || isSingleLine || isReport)).current;
 
   useEffect(() => {
     resetCounter();
@@ -35,6 +37,14 @@ export const code: React.ElementType = memo(({ className, children }: TCodeProps
 
   if (isMath) {
     return <>{children}</>;
+  } else if (isReport) {
+    const content =
+      typeof children === 'string'
+        ? children
+        : Array.isArray(children)
+          ? children.join('')
+          : String(children);
+    return <ReportPreview content={content} />;
   } else if (isSingleLine) {
     return (
       <code onDoubleClick={handleDoubleClick} className={className}>
@@ -59,6 +69,14 @@ export const codeNoExecution: React.ElementType = memo(({ className, children }:
 
   if (lang === 'math') {
     return children;
+  } else if (lang === 'report') {
+    const content =
+      typeof children === 'string'
+        ? children
+        : Array.isArray(children)
+          ? children.join('')
+          : String(children);
+    return <ReportPreview content={content} />;
   } else if (typeof children === 'string' && children.split('\n').length === 1) {
     return (
       <code onDoubleClick={handleDoubleClick} className={className}>

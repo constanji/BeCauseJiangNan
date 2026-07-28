@@ -28,7 +28,12 @@ const keys = require('./keys');
 const user = require('./user');
 const mcp = require('./mcp');
 const rag = require('./rag');
+const datProjects = require('./datProjects');
+const datDatasources = require('./datDatasources');
+const datasourcePrompts = require('./datasourcePrompts');
+const optimize = require('./optimize');
 const benchmark = require('./benchmark');
+const orgPermission = require('./orgPermission');
 
 module.exports = {
   mcp,
@@ -61,5 +66,10 @@ module.exports = {
   staticRoute,
   accessPermissions,
   rag,
+  datProjects,
+  datDatasources,
+  datasourcePrompts,
+  optimize,
   benchmark,
+  orgPermission,
 };

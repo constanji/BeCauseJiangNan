@@ -33,6 +33,7 @@ import SendButton from './SendButton';
 import EditBadges from './EditBadges';
 import BadgeRow from './BadgeRow';
 import Mention from './Mention';
+import PromptOptimizeButton from './PromptOptimizeButton';
 import store from '~/store';
 
 const ChatForm = memo(({ index = 0 }: { index?: number }) => {
@@ -340,7 +341,12 @@ const ChatForm = memo(({ index = 0 }: { index?: number }) => {
                   isSubmitting={isSubmitting}
                 />
               )}
-              <div className={`${isRTL ? 'ml-2' : 'mr-2'}`}>
+              <div className={`${isRTL ? 'ml-2' : 'mr-2'} flex items-center gap-1`}>
+                <PromptOptimizeButton
+                  methods={methods}
+                  textAreaRef={textAreaRef}
+                  disabled={filesLoading || isSubmitting || disableInputs || isNotAppendable}
+                />
                 {(isSubmitting || isSubmittingAdded) && (showStopButton || showStopAdded) ? (
                   <StopButton stop={handleStopGenerating} setShowStopButton={setShowStopButton} />
                 ) : (

@@ -64,6 +64,7 @@ const registerSchema = z
       .refine((value) => value.trim().length > 0, {
         message: 'Password cannot be only spaces',
       }),
+    orgCode: z.string().max(64).optional().nullable(),
   })
   .superRefine(({ confirm_password, password }, ctx) => {
     if (confirm_password !== password) {

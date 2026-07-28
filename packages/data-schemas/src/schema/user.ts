@@ -146,6 +146,11 @@ const userSchema = new Schema<IUser>(
       type: String,
       sparse: true,
     },
+    /** 机构编码：指标问数链路必传，写入 MCP arg4 + 用作数据权限隔离键 */
+    orgCode: {
+      type: String,
+      index: true,
+    },
   },
   { timestamps: true },
 );

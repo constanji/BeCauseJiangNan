@@ -22,6 +22,7 @@ async function getUserListController(req, res) {
         avatar: 1,
         provider: 1,
         role: 1,
+        orgCode: 1,
         createdAt: 1,
         updatedAt: 1,
       }

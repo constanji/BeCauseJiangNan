@@ -38,6 +38,8 @@ export interface IUser extends Document {
   updatedAt?: Date;
   /** Field for external source identification (for consistency with TPrincipal schema) */
   idOnTheSource?: string;
+  /** 机构编码：平台前置上下文，MCP/工具注入与数据权限隔离键 */
+  orgCode?: string;
 }
 
 export interface BalanceConfig {

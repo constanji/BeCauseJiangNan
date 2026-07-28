@@ -1,11 +1,17 @@
 import { useEffect, memo, useMemo, useState } from 'react';
+import copy from 'copy-to-clipboard';
 import { ConfigProvider, Typography, Flex } from 'antd';
 import type { ThoughtChainItemType } from '@ant-design/x';
-import { ThoughtChain, CodeHighlighter } from '@ant-design/x';
+import { ThoughtChain } from '@ant-design/x';
 import { CheckCircleTwoTone, LoadingOutlined, CloseCircleTwoTone, CodeOutlined } from '@ant-design/icons';
+import { Copy, Check } from 'lucide-react';
 import { actionDelimiter, actionDomainSeparator, Constants } from '@because/data-provider';
 import { useChatContext } from '~/Providers';
-import type { MessageToolCalls, MessageContentItem } from '~/utils/parseDatServerResponse';
+import type {
+  MessageToolCalls,
+  MessageContentItem,
+  ThoughtChainData,
+} from '~/utils/parseDatServerResponse';
 import { mapAttachments } from '~/utils/map';
 import { useLocalize } from '~/hooks';
 import MarkdownLite from '~/components/Chat/Messages/Content/MarkdownLite';
@@ -30,37 +36,382 @@ interface ThoughtChainPanelProps {
   onRenderChange: (shouldRender: boolean) => void;
 }
 
+/**
+ * Dat-Server 思维链内容组件 - 显示推理过程
+ * 展示 ask_data / becauseai-server 工具调用输出中解析出的
+ * 意图分类 / SQL 生成推理 / SQL 生成 / 语义 SQL 转换 / SQL 执行结果
+ */
+function DatServerThoughtChainContent({ data }: { data: ThoughtChainData }) {
+  const items = useMemo(() => {
+    const result: ExtendedThoughtChainItemType[] = [];
+
+    // 1. 意图分类
+    if (data.intentClassification) {
+      const intent = data.intentClassification;
+      result.push({
+        key: 'intent',
+        title: '意图分类',
+        description: intent.intent || '',
+        status: 'success',
+        collapsible: true,
+        content: (
+          <div className="space-y-2 text-sm">
+            {intent.rephrased_question && (
+              <div>
+                <span className="font-medium">重述问题:</span> {intent.rephrased_question}
+              </div>
+            )}
+            {intent.reasoning && (
+              <div>
+                <span className="font-medium">推理:</span> {intent.reasoning}
+              </div>
+            )}
+          </div>
+        ),
+      });
+    }
+
+    // 2. SQL 生成推理
+    if (data.sqlGenerationReasoning) {
+      result.push({
+        key: 'reasoning',
+        title: 'SQL 生成推理',
+        status: 'success',
+        collapsible: true,
+        content: (
+          <div className="markdown prose prose-sm dark:prose-invert max-w-none">
+            <MarkdownLite content={data.sqlGenerationReasoning} />
+          </div>
+        ),
+      });
+    }
+
+    // 3. SQL 生成
+    if (data.sqlGenerate) {
+      result.push({
+        key: 'generate',
+        title: 'SQL 生成',
+        status: 'success',
+        collapsible: true,
+        content: <SqlCodeBlock sql={data.sqlGenerate} />,
+      });
+    }
+
+    // 4. 语义 SQL 转换
+    if (data.semanticToSql) {
+      const isError =
+        typeof data.semanticToSql === 'string' &&
+        data.semanticToSql.toLowerCase().includes('error');
+      result.push({
+        key: 'semantic',
+        title: '语义 SQL 转换',
+        status: isError ? 'error' : 'success',
+        collapsible: true,
+        content: isError ? (
+          <div className="sql-chain-content text-sm text-red-500">{data.semanticToSql}</div>
+        ) : (
+          <SqlCodeBlock sql={data.semanticToSql} />
+        ),
+      });
+    }
+
+    // 5. SQL 执行结果
+    if (data.sqlExecute) {
+      result.push({
+        key: 'execute',
+        title: 'SQL 执行结果',
+        status: 'success',
+        collapsible: true,
+        content: <SqlExecuteResult content={data.sqlExecute} />,
+      });
+    }
+
+    // 6. 异常信息
+    if (data.exception) {
+      result.push({
+        key: 'exception',
+        title: '异常信息',
+        description: data.exception.message || '',
+        status: 'error',
+      });
+    }
+
+    return result;
+  }, [data]);
+
+  if (items.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="mt-2 border-t border-border-light pt-2">
+      <div className="mb-2 text-xs font-medium text-text-primary">推理过程</div>
+      <ThoughtChain items={items} defaultExpandedKeys={[]} />
+    </div>
+  );
+}
 
 /**
- * SQL 执行结果组件
+ * 把单行/紧凑 SQL 格式化成可读多行（按子句断行 + 缩进）
+ */
+function formatSqlForDisplay(sql: string): string {
+  const text = sql.trim().replace(/\s+/g, ' ');
+  if (!text) return '';
+
+  // 保护字符串字面量，避免内部关键字被误断行
+  const literals: string[] = [];
+  const protectedSql = text.replace(/('([^'\\]|\\.)*'|"([^"\\]|\\.)*"|`([^`\\]|\\.)*`)/g, (m) => {
+    literals.push(m);
+    return `__SQL_LIT_${literals.length - 1}__`;
+  });
+
+  let out = protectedSql
+    // 主子句前换行
+    .replace(
+      /\s+(SELECT|FROM|WHERE|GROUP BY|ORDER BY|HAVING|LIMIT|UNION ALL|UNION|LEFT\s+JOIN|RIGHT\s+JOIN|INNER\s+JOIN|OUTER\s+JOIN|FULL\s+JOIN|CROSS\s+JOIN|JOIN)\b/gi,
+      '\n$1',
+    )
+    // SELECT 后多个字段换行缩进
+    .replace(/\bSELECT\s+/i, 'SELECT\n  ')
+    .replace(/,(?!\s*\n)/g, ',\n  ')
+    // JOIN ... ON 条件换行
+    .replace(/\s+ON\s+/gi, '\n  ON ')
+    // WHERE/HAVING 内 AND/OR 换行缩进
+    .replace(/\s+(AND|OR)\s+/gi, '\n  $1 ');
+
+  // 给非首行主子句保持顶格；续行保持两空格缩进
+  out = out
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .filter((line, idx, arr) => line.trim() !== '' || (idx > 0 && idx < arr.length - 1))
+    .join('\n');
+
+  return out.replace(/__SQL_LIT_(\d+)__/g, (_, i) => literals[Number(i)] ?? '');
+}
+
+const SQL_KEYWORD_RE =
+  /^(SELECT|FROM|WHERE|GROUP|BY|ORDER|HAVING|LIMIT|JOIN|LEFT|RIGHT|INNER|OUTER|FULL|CROSS|ON|AND|OR|AS|IN|NOT|NULL|IS|LIKE|BETWEEN|EXISTS|CASE|WHEN|THEN|ELSE|END|DISTINCT|UNION|ALL|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|WITH|SUM|COUNT|AVG|MAX|MIN|COALESCE|IFNULL|CAST)$/i;
+
+type SqlToken = { type: 'keyword' | 'string' | 'number' | 'comment' | 'plain'; text: string };
+
+function tokenizeSql(sql: string): SqlToken[] {
+  const tokens: SqlToken[] = [];
+  const re =
+    /(\/\*[\s\S]*?\*\/|--[^\n]*|'([^'\\]|\\.)*'|"([^"\\]|\\.)*"|`([^`\\]|\\.)*`|\b\d+(\.\d+)?\b|[A-Za-z_][\w$]*|[^\s]|(\s+))/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(sql)) !== null) {
+    const text = match[0];
+    if (/^\s+$/.test(text)) {
+      tokens.push({ type: 'plain', text });
+    } else if (text.startsWith('--') || text.startsWith('/*')) {
+      tokens.push({ type: 'comment', text });
+    } else if (
+      (text.startsWith("'") && text.endsWith("'")) ||
+      (text.startsWith('"') && text.endsWith('"')) ||
+      (text.startsWith('`') && text.endsWith('`'))
+    ) {
+      tokens.push({ type: 'string', text });
+    } else if (/^\d+(\.\d+)?$/.test(text)) {
+      tokens.push({ type: 'number', text });
+    } else if (SQL_KEYWORD_RE.test(text)) {
+      tokens.push({ type: 'keyword', text: text.toUpperCase() });
+    } else {
+      tokens.push({ type: 'plain', text });
+    }
+  }
+  return tokens;
+}
+
+/**
+ * 主题一致的 SQL 代码块：子句格式化 + 关键字高亮 + 不拆中文词
+ */
+function SqlCodeBlock({ sql }: { sql: string }) {
+  const formatted = useMemo(() => formatSqlForDisplay(sql), [sql]);
+  const tokens = useMemo(() => tokenizeSql(formatted), [formatted]);
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = () => {
+    const ok = copy(sql.trim(), { format: 'text/plain' });
+    if (!ok) return;
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="sql-chain-content mt-1 w-full overflow-hidden rounded-md border border-border-light bg-surface-tertiary">
+      <div className="flex items-center justify-between border-b border-border-light px-3 py-1.5">
+        <span className="text-[11px] font-medium uppercase tracking-wide text-text-secondary">
+          SQL
+        </span>
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary"
+          aria-label={copied ? '已复制' : '复制 SQL'}
+          title={copied ? '已复制' : '复制 SQL'}
+        >
+          {copied ? <Check size={12} /> : <Copy size={12} />}
+          <span>{copied ? '已复制' : '复制'}</span>
+        </button>
+      </div>
+      <div className="max-h-72 overflow-auto px-3 py-2.5">
+        <pre className="sql-code-pre m-0 font-mono text-[12px] leading-6">
+          <code>
+            {tokens.map((token, idx) => {
+              if (token.type === 'keyword') {
+                return (
+                  <span key={idx} className="sql-tok-keyword font-semibold">
+                    {token.text}
+                  </span>
+                );
+              }
+              if (token.type === 'string') {
+                return (
+                  <span key={idx} className="sql-tok-string">
+                    {token.text}
+                  </span>
+                );
+              }
+              if (token.type === 'number') {
+                return (
+                  <span key={idx} className="sql-tok-number">
+                    {token.text}
+                  </span>
+                );
+              }
+              if (token.type === 'comment') {
+                return (
+                  <span key={idx} className="sql-tok-comment">
+                    {token.text}
+                  </span>
+                );
+              }
+              return <span key={idx}>{token.text}</span>;
+            })}
+          </code>
+        </pre>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 尝试把 sql_execute 段的各类转义/二次编码内容解析成 JSON
+ */
+function parseSqlExecutePayload(content: string): unknown {
+  let text = content.trim().replace(/^(?:Query Results)\s*:\s*/i, '').trim();
+  if (!text) return null;
+
+  const tryParse = (value: string): unknown => {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return undefined;
+    }
+  };
+
+  // 1) 直接解析
+  let parsed = tryParse(text);
+  if (parsed !== undefined) return parsed;
+
+  // 2) 去掉首尾多余引号后再解析（含尾部游离 "）
+  const trimmedQuotes = text.replace(/^"+/, '').replace(/"+$/, '');
+  parsed = tryParse(trimmedQuotes);
+  if (parsed !== undefined) return parsed;
+
+  // 3) 字面量转义：{\"key\":1} → {"key":1}
+  if (text.includes('\\"') || text.includes('\\n')) {
+    const unescaped = text
+      .replace(/\\"/g, '"')
+      .replace(/\\n/g, '\n')
+      .replace(/\\r/g, '\r')
+      .replace(/\\t/g, '\t')
+      .replace(/\\\\/g, '\\')
+      .replace(/^"+/, '')
+      .replace(/"+$/, '');
+    parsed = tryParse(unescaped);
+    if (parsed !== undefined) return parsed;
+  }
+
+  // 4) 从文本中截取第一个 JSON 数组/对象
+  const arrayMatch = text.match(/\[[\s\S]*\]/);
+  if (arrayMatch) {
+    const candidate = arrayMatch[0].replace(/\\"/g, '"');
+    parsed = tryParse(candidate);
+    if (parsed !== undefined) return parsed;
+  }
+  const objectMatch = text.match(/\{[\s\S]*\}/);
+  if (objectMatch) {
+    const candidate = objectMatch[0].replace(/\\"/g, '"');
+    parsed = tryParse(candidate);
+    if (parsed !== undefined) return parsed;
+  }
+
+  return null;
+}
+
+function formatSqlCellValue(value: unknown): string {
+  if (value == null) return '';
+  if (typeof value === 'number') {
+    return value.toLocaleString('zh-CN', { maximumFractionDigits: 2 });
+  }
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+}
+
+/**
+ * SQL 执行结果组件 — 优先渲染为表格
  */
 function SqlExecuteResult({ content }: { content: string }) {
-  const parsed = useMemo(() => {
+  const parsed = useMemo(() => parseSqlExecutePayload(content), [content]);
+
+  const rows = useMemo(() => {
+    if (Array.isArray(parsed)) {
+      return parsed.filter((row) => row != null && typeof row === 'object') as Record<
+        string,
+        unknown
+      >[];
+    }
+    if (parsed && typeof parsed === 'object') {
+      return [parsed as Record<string, unknown>];
+    }
+    return [];
+  }, [parsed]);
+
+  const fallbackText = useMemo(() => {
+    const unescaped = content
+      .replace(/\\"/g, '"')
+      .replace(/\\n/g, '\n')
+      .replace(/\\t/g, '\t');
     try {
-      let toParse = content.trim();
-      if (toParse.startsWith('"') && toParse.endsWith('"')) {
-        toParse = JSON.parse(toParse);
-      }
-      if (typeof toParse === 'string') {
-        return JSON.parse(toParse);
-      }
-      return toParse;
+      return JSON.stringify(
+        JSON.parse(unescaped.replace(/^"+/, '').replace(/"+$/, '')),
+        null,
+        2,
+      );
     } catch {
-      return null;
+      return unescaped;
     }
   }, [content]);
 
-  if (Array.isArray(parsed) && parsed.length > 0) {
-    const keys = Object.keys(parsed[0]);
+  if (rows.length > 0) {
+    const keys = Array.from(
+      rows.reduce((set, row) => {
+        Object.keys(row).forEach((k) => set.add(k));
+        return set;
+      }, new Set<string>()),
+    );
+
     return (
-      <div className="overflow-x-auto">
+      <div className="sql-chain-content overflow-x-auto">
         <table className="min-w-full border-collapse border border-border-light text-sm">
           <thead>
             <tr className="bg-surface-secondary">
               {keys.map((key) => (
                 <th
                   key={key}
-                  className="border border-border-light px-2 py-1 text-left font-medium text-text-primary"
+                  className="border border-border-light px-2 py-1.5 text-left font-medium text-text-primary"
                 >
                   {key}
                 </th>
@@ -68,22 +419,23 @@ function SqlExecuteResult({ content }: { content: string }) {
             </tr>
           </thead>
           <tbody>
-            {parsed.slice(0, 20).map((row: any, idx: number) => (
+            {rows.slice(0, 50).map((row, idx) => (
               <tr key={idx} className="hover:bg-surface-tertiary">
                 {keys.map((key) => (
-                  <td key={key} className="border border-border-light px-2 py-1 text-text-primary">
-                    {typeof row[key] === 'number'
-                      ? row[key].toLocaleString('zh-CN', { maximumFractionDigits: 2 })
-                      : String(row[key] ?? '')}
+                  <td
+                    key={key}
+                    className="border border-border-light px-2 py-1.5 text-text-primary"
+                  >
+                    {formatSqlCellValue(row[key])}
                   </td>
                 ))}
               </tr>
             ))}
           </tbody>
         </table>
-        {parsed.length > 20 && (
+        {rows.length > 50 && (
           <div className="mt-1 text-xs text-text-secondary">
-            显示前 20 条，共 {parsed.length} 条记录
+            显示前 50 条，共 {rows.length} 条记录
           </div>
         )}
       </div>
@@ -91,8 +443,10 @@ function SqlExecuteResult({ content }: { content: string }) {
   }
 
   return (
-    <div className="max-h-40 overflow-auto rounded bg-surface-tertiary p-2 text-sm text-text-primary">
-      <pre className="whitespace-pre-wrap break-words text-text-primary">{content}</pre>
+    <div className="sql-chain-content max-h-48 overflow-auto rounded-md border border-border-light bg-surface-tertiary p-2 text-sm">
+      <pre className="m-0 whitespace-pre-wrap break-words font-mono text-xs text-text-primary">
+        {fallbackText}
+      </pre>
     </div>
   );
 }
@@ -142,6 +496,7 @@ function ToolCallDetailContent({
   output,
   domain,
   function_name,
+  thoughtChain,
   localize,
   isLoading,
 }: {
@@ -149,6 +504,7 @@ function ToolCallDetailContent({
   output?: string | null;
   domain: string | null;
   function_name: string;
+  thoughtChain: ThoughtChainData | null;
   localize: any;
   isLoading: boolean;
 }) {
@@ -202,6 +558,9 @@ function ToolCallDetailContent({
           <OptimizedCodeBlock text={previewOutput} />
         </div>
       )}
+
+      {/* dat-server 结构化推理过程（意图分类 / SQL 生成 / SQL 执行结果等） */}
+      {thoughtChain && <DatServerThoughtChainContent data={thoughtChain} />}
     </div>
   );
 }
@@ -212,6 +571,7 @@ function ToolCallDetailContent({
  */
 function SidePanelToolCallItem({
   toolCall,
+  thoughtChain,
   isSubmitting,
   itemKey,
 }: {
@@ -224,6 +584,7 @@ function SidePanelToolCallItem({
     auth?: string;
     expires_at?: number;
   };
+  thoughtChain: ThoughtChainData | null;
   attachments?: any[];
   isSubmitting: boolean;
   itemKey: string;
@@ -355,7 +716,7 @@ function SidePanelToolCallItem({
   };
 
   // 是否有详情内容
-  const hasDetails = args || hasOutput;
+  const hasDetails = args || hasOutput || thoughtChain;
 
   // 构建 ThoughtChain 项目 - 显式指定类型避免类型错误
   const status = getStatus();
@@ -378,6 +739,7 @@ function SidePanelToolCallItem({
           output={toolCall.output}
           domain={domain}
           function_name={function_name}
+          thoughtChain={thoughtChain}
           localize={localize}
           isLoading={status === 'loading'}
         />
@@ -526,6 +888,7 @@ const ThoughtChainPanel = memo(function ThoughtChainPanel({
                     key={tcKey}
                     itemKey={tcKey}
                     toolCall={item.toolCall.toolCall}
+                    thoughtChain={item.toolCall.thoughtChain}
                     attachments={tcAttachments}
                     isSubmitting={isSubmitting}
                   />
@@ -598,6 +961,45 @@ const ThoughtChainPanel = memo(function ThoughtChainPanel({
             .thought-chain-container *::before,
             .thought-chain-container *::after {
               color: var(--text-tertiary) !important;
+            }
+            /* SQL / 执行结果内容使用主文字色，避免表格和代码块对比度不足 */
+            .thought-chain-container .sql-chain-content,
+            .thought-chain-container .sql-chain-content *,
+            .thought-chain-container .sql-chain-content *::before,
+            .thought-chain-container .sql-chain-content *::after {
+              color: var(--text-primary) !important;
+            }
+            .thought-chain-container .sql-chain-content .text-text-secondary,
+            .thought-chain-container .sql-chain-content .text-text-secondary * {
+              color: var(--text-secondary) !important;
+            }
+            .thought-chain-container .sql-chain-content button,
+            .thought-chain-container .sql-chain-content button * {
+              color: var(--text-secondary) !important;
+            }
+            .thought-chain-container .sql-chain-content button:hover,
+            .thought-chain-container .sql-chain-content button:hover * {
+              color: var(--text-primary) !important;
+            }
+            /* SQL 代码块：保留格式、不拆中文词；关键字/字符串高亮 */
+            .thought-chain-container .sql-chain-content .sql-code-pre {
+              white-space: pre;
+              word-break: keep-all;
+              overflow-wrap: normal;
+              color: var(--text-primary) !important;
+            }
+            .thought-chain-container .sql-chain-content .sql-tok-keyword {
+              color: #38bdf8 !important; /* sky-400 */
+            }
+            .thought-chain-container .sql-chain-content .sql-tok-string {
+              color: #86efac !important; /* green-300 */
+            }
+            .thought-chain-container .sql-chain-content .sql-tok-number {
+              color: #fbbf24 !important; /* amber-400 */
+            }
+            .thought-chain-container .sql-chain-content .sql-tok-comment {
+              color: var(--text-secondary) !important;
+              font-style: italic;
             }
             /* 标题元素使用主文字色，保证层级感 */
             .thought-chain-container [class*="title"],

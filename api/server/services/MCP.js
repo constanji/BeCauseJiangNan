@@ -26,6 +26,11 @@ const { reinitMCPServer } = require('./Tools/mcp');
 const { getAppConfig } = require('./Config');
 const { getLogStores } = require('~/cache');
 const { mcpServersRegistry } = require('@because/api');
+const {
+  getContextInjectionConfig,
+  stripHiddenParamsFromSchema,
+  resolveAndInjectMcpContext,
+} = require('./McpContextResolver');
 
 /**
  * @param {object} params
@@ -308,7 +313,14 @@ function createToolInstance({ res, toolName, serverName, toolDefinition, provide
   /** @type {LCTool} */
   const { description, parameters } = toolDefinition;
   const isGoogle = _provider === Providers.VERTEXAI || _provider === Providers.GOOGLE;
-  let schema = convertWithResolvedRefs(parameters, {
+
+  const injectionConfig = getContextInjectionConfig(serverName, undefined, toolName);
+  const parametersForSchema = stripHiddenParamsFromSchema(
+    parameters,
+    injectionConfig?.hideFromSchema,
+  );
+
+  let schema = convertWithResolvedRefs(parametersForSchema, {
     allowEmptyObject: !isGoogle,
     transformOneOfAnyOf: true,
   });
@@ -360,11 +372,24 @@ function createToolInstance({ res, toolName, serverName, toolDefinition, provide
       const customUserVars =
         config?.configurable?.userMCPAuthMap?.[`${Constants.mcp_prefix}${serverName}`];
 
+      const appConfig = await getAppConfig();
+      const finalToolArguments = await resolveAndInjectMcpContext({
+        serverName,
+        toolName,
+        toolArguments,
+        configurable: config?.configurable,
+        mcpConfig: appConfig?.mcpConfig,
+      });
+
+      logger.info(
+        `[MCP][${serverName}][${toolName}] Final tool arguments: ${JSON.stringify(finalToolArguments)}`,
+      );
+
       const result = await mcpManager.callTool({
         serverName,
         toolName,
         provider,
-        toolArguments,
+        toolArguments: finalToolArguments,
         options: {
           signal: derivedSignal,
         },

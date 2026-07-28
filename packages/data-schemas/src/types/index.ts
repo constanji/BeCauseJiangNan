@@ -27,5 +27,6 @@ export * from './aclEntry';
 export * from './group';
 export * from './dataSource';
 export * from './agentPromptsConfig';
+export * from './orgPermission';
 /* Web */
 export * from './web';

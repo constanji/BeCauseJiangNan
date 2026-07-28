@@ -30,6 +30,10 @@ services:
       # - RAG_API_URL=http://rag_api:8000
       - BECAUSE_LOG_DIR=/app/api/logs
       - CONFIG_PATH=/app/Because.yaml
+      # DAT / OpenClaw（按需配置；也可放在 .env 中；端口需与 DAT引擎服务器用文件/.env 一致）
+      # - DAT_MONGO_URI=mongodb://host.docker.internal:27017/dat
+      # - DAT_OPENAPI_BASE_URL=http://host.docker.internal:18081
+      # - OPENCLAW_TOKEN=
 
     volumes:
       - type: bind

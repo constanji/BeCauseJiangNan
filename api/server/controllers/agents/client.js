@@ -1173,6 +1173,8 @@ class AgentClient extends BaseClient {
             messageId: this.responseMessageId,
             conversationId: this.conversationId,
             parentMessageId: this.parentMessageId,
+            // 平台前置：请求体显式 orgCode 可覆盖用户表机构编码（OpenClaw 等服务账号场景）
+            orgCode: this.options.req?.body?.orgCode,
           },
           user: createSafeUser(this.options.req.user),
         },

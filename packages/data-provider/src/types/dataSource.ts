@@ -23,6 +23,8 @@ export interface DataSource {
   port: number;
   database: string;
   username: string;
+  /** 仅在管理员请求 includePassword=true 时返回 */
+  password?: string;
   status?: 'active' | 'inactive';
   isPublic?: boolean;
   agentIds?: string[];

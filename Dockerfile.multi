@@ -56,6 +56,10 @@ ENV SHARP_FORCE_GLOBAL_LIBVIPS=1
 # sharp 0.32（@xenova/transformers 嵌套依赖）：用 pkg-config 检测 vips-cpp，Debian 多架构 .pc 在 /usr/lib/<triplet>/pkgconfig
 # 默认 PATH 不含该目录 → 检测失败 → 走 GitHub 下载 → 国内易 aborted；显式设置后走「检测到系统 libvips → node-gyp 编译」分支
 ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/lib/arm-linux-gnueabihf/pkgconfig
+# 兜底：检测失败仍要下载时，走 npmmirror 现行 CDN 路径（旧 mirrors/* 路径对 sharp 0.32
+# 所需的 libvips 8.14.5 会返回 "not yet available"，必须用 cdn.npmmirror.com/binaries/* 才有缓存）
+ENV npm_config_sharp_binary_host=https://cdn.npmmirror.com/binaries/sharp
+ENV npm_config_sharp_libvips_binary_host=https://cdn.npmmirror.com/binaries/sharp-libvips
 # jemalloc 库路径随 CPU 架构变化，不可写死 x86_64（arm64 构建会找不到文件并报 ld.so 错误，进而干扰 sharp 等 native 安装）
 # 容器启动时按 dpkg 架构设置 LD_PRELOAD（构建阶段不再设置错误的 ENV）
 RUN printf '%s\n' \

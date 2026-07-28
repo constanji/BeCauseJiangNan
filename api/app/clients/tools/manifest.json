@@ -28,13 +28,6 @@
     "authConfig": []
   },
   {
-    "name": "SQL Executor",
-    "pluginKey": "sql_executor",
-    "description": "执行只读的 SQL SELECT 查询并返回结果和归因分析。调用内部 hsp-sql-api 服务的 /sql_query 接口执行查询，返回数据行、行数统计以及结构化的归因说明，帮助智能体在回答时清晰说明结论来自哪张表、哪些字段、哪些过滤条件。",
-    "icon": "💾",
-    "authConfig": []
-  },
-  {
     "name": "ECharts 图表生成",
     "pluginKey": "echarts_generator_app",
     "description": "ECharts 多图生成工具（金融指标样式规范）。传入 charts 数组（每项含 id、title、echartsOption），自动补齐柱状对比/折线趋势默认样式后返回；模型在正文中用 @ec@type:id@ec@ 标记内联位置。优先 bar/line。",

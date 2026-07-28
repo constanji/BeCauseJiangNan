@@ -282,6 +282,35 @@ async function gaussdbTestConnection(dataSource, password) {
 }
 
 /**
+ * 主动终止指定数据源的持久进程（数据源配置更新/删除后调用）。
+ * 进程的 host/端口/账号/密码是在 spawn 时通过环境变量固化的，
+ * 配置变化后必须杀掉重建，否则会一直用旧配置连接。
+ * @param {string} dsKey 通常是数据源 _id 字符串
+ * @returns {boolean} 是否确实存在并终止了一个进程
+ */
+function killProcess(dsKey) {
+  const state = processPool.get(dsKey);
+  if (!state) return false;
+
+  processPool.delete(dsKey);
+  state.dead = true;
+
+  const reason = '数据源配置已更新，连接已失效，请重试';
+  for (const [, req] of state.pending) {
+    clearTimeout(req.timer);
+    req.reject(new Error(reason));
+  }
+  state.pending.clear();
+
+  try {
+    state.child.kill('SIGTERM');
+  } catch (_) {
+    // 进程可能已经退出，忽略
+  }
+  return true;
+}
+
+/**
  * 优雅关闭所有持久进程（服务退出时调用）
  */
 function shutdownAll() {
@@ -298,4 +327,4 @@ function shutdownAll() {
 
 process.on('exit', shutdownAll);
 
-module.exports = { gaussdbJdbcQuery, gaussdbTestConnection, shutdownAll };
+module.exports = { gaussdbJdbcQuery, gaussdbTestConnection, killProcess, shutdownAll };

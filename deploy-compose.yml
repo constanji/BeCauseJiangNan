@@ -24,6 +24,10 @@ services:
       - PORT=3080
       - NODE_ENV=production
       - MONGO_URI=mongodb://Because-MongoDB:27017/BecauseAi
+      # DAT / OpenClaw（按需配置；也可放在 .env 中；端口需与 DAT引擎服务器用文件/.env 一致）
+      # - DAT_MONGO_URI=mongodb://host.docker.internal:27017/dat
+      # - DAT_OPENAPI_BASE_URL=http://host.docker.internal:18081
+      # - OPENCLAW_TOKEN=
       # MeiliSearch 已禁用
       # - MEILI_HOST=http://meilisearch:7700
       # - MEILI_MASTER_KEY=${MEILI_MASTER_KEY}

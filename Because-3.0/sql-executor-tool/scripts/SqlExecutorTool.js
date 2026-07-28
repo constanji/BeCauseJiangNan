@@ -5,7 +5,9 @@ const { Pool } = require('pg');
 const { logger } = require('@because/data-schemas');
 const { decryptV2 } = require('@because/api');
 const path = require('path');
-const { gaussdbJdbcQuery } = require(path.join(__dirname, '../../utils/gaussdbJdbcBridge'));
+const { gaussdbJdbcQuery, killProcess: killGaussdbProcess } = require(
+  path.join(__dirname, '../../utils/gaussdbJdbcBridge'),
+);
 const {
   CATEGORY,
   stringifySqlExecutorError,
@@ -14,6 +16,24 @@ const {
 // 延迟加载模型函数，避免路径别名问题
 let getDataSourceById = null;
 let getProjectById = null;
+let getDataSourceRevisionFn = null;
+
+/**
+ * 数据源更新/删除后会 bump 版本号；缓存命中时对比版本号，
+ * 不一致就说明配置已变更，需要淘汰旧连接后重建。
+ */
+function loadCacheRegistry() {
+  if (!getDataSourceRevisionFn) {
+    try {
+      getDataSourceRevisionFn = require('~/server/services/DataSourceCacheRegistry').getDataSourceRevision;
+    } catch (e) {
+      getDataSourceRevisionFn = require(
+        path.resolve(__dirname, '../../../api/server/services/DataSourceCacheRegistry'),
+      ).getDataSourceRevision;
+    }
+  }
+  return getDataSourceRevisionFn;
+}
 
 function loadDataSourceModel() {
   if (!getDataSourceById) {
@@ -39,6 +59,24 @@ function loadProjectModel() {
 
 // 连接池缓存（按数据源ID缓存）
 const connectionPools = new Map();
+
+/**
+ * 淘汰一个已过期（数据源配置已变更）的缓存连接。
+ * GaussDB 走 JDBC 常驻子进程，需要显式杀掉；MySQL/PostgreSQL 的 pool 调用 end() 优雅关闭。
+ * 任何一步失败都只记录日志、不阻断重建流程。
+ */
+async function evictConnectionPool(cleanedId, cached) {
+  connectionPools.delete(cleanedId);
+  try {
+    if (cached?.dataSource?.type === 'gaussdb') {
+      killGaussdbProcess(cleanedId);
+    } else if (cached?.pool && typeof cached.pool.end === 'function') {
+      await cached.pool.end();
+    }
+  } catch (err) {
+    logger.warn('[SqlExecutorTool] 关闭旧连接池失败（忽略，继续按最新配置重建）:', err.message);
+  }
+}
 
 /**
  * SQL 结果行数上限。
@@ -81,9 +119,15 @@ class SqlExecutorTool extends Tool {
     sql: z
       .string()
       .min(1)
+      .optional()
       .describe(
-        '要执行的SQL SELECT查询语句或WITH子句（CTE）。必须是只读查询，禁止包含INSERT/UPDATE/DELETE/DDL等写操作。支持WITH子句、复杂子查询、JOIN等高级SQL特性。',
+        '要执行的SQL SELECT查询语句或WITH子句（CTE）。必须是只读查询，禁止包含INSERT/UPDATE/DELETE/DDL等写操作。支持WITH子句、复杂子查询、JOIN等高级SQL特性。与 query 二选一，优先使用本字段。',
       ),
+    query: z
+      .string()
+      .min(1)
+      .optional()
+      .describe('sql 的别名；部分模型会传 query，与 sql 等价，二选一即可。'),
     max_rows: z
       .number()
       .int()
@@ -122,9 +166,17 @@ class SqlExecutorTool extends Tool {
       cleaned: cleanedId 
     });
 
-    // 如果已有连接池，直接返回
+    // 数据源当前版本号：更新/删除数据源时会 bump，用来判断缓存是否已过期
+    const currentRevision = loadCacheRegistry()(cleanedId);
+
+    // 如果已有连接池且数据源配置未变更，直接返回
     if (connectionPools.has(cleanedId)) {
-      return connectionPools.get(cleanedId);
+      const cached = connectionPools.get(cleanedId);
+      if ((cached.revision || 0) === currentRevision) {
+        return cached;
+      }
+      logger.info('[SqlExecutorTool] 数据源配置已变更，淘汰旧连接池并重建:', cleanedId);
+      await evictConnectionPool(cleanedId, cached);
     }
 
     // 获取数据源信息
@@ -161,6 +213,7 @@ class SqlExecutorTool extends Tool {
       connectionPools.set(cleanedId, {
         pool: { type: 'gaussdb-jdbc', password },
         dataSource,
+        revision: currentRevision,
       });
       logger.info('[SqlExecutorTool] GaussDB JDBC 适配器已就绪:', {
         dataSourceId: cleanedId,
@@ -241,6 +294,7 @@ class SqlExecutorTool extends Tool {
     connectionPools.set(cleanedId, {
       pool,
       dataSource,
+      revision: currentRevision,
     });
 
     logger.info('[SqlExecutorTool] 创建连接池成功:', {
@@ -353,8 +407,21 @@ class SqlExecutorTool extends Tool {
    * @override
    */
   async _call(input) {
-    const { sql, max_rows } = input;
-    const trimmedSql = sql.trim();
+    const rawSql =
+      input?.sql ?? input?.query ?? input?.statement ?? input?.SQL ?? input?.Query;
+    const max_rows = input?.max_rows;
+
+    if (rawSql == null || String(rawSql).trim() === '') {
+      return stringifySqlExecutorError({
+        error:
+          '缺少 SQL 语句：请在 arguments 中传入 sql（推荐），也兼容 query / statement。示例：{"sql":"SELECT * FROM dim_region"}。',
+        code: 'MISSING_SQL',
+        category: CATEGORY.SQL_POLICY,
+        hint: '不要只传空对象；参数名须为 sql 或 query，值为完整只读 SELECT/WITH 语句',
+      });
+    }
+
+    const trimmedSql = String(rawSql).trim();
 
     // 基础校验：支持SELECT和WITH子句（CTE）
     const upper = trimmedSql.toUpperCase().trim();

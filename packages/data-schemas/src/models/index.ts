@@ -28,6 +28,8 @@ import { createGroupModel } from './group';
 import { createKnowledgeBaseModel } from './knowledgeBase';
 import { createDataSourceModel } from './dataSource';
 import { createAgentPromptsConfigModel } from './agentPromptsConfig';
+import { createOrgPermissionUnitModel } from './orgPermissionUnit';
+import { createOrgPermissionSettingsModel } from './orgPermissionSettings';
 
 /**
  * Creates all database models for all collections
@@ -64,5 +66,7 @@ export function createModels(mongoose: typeof import('mongoose')) {
     KnowledgeEntry: createKnowledgeBaseModel(mongoose),
     DataSource: createDataSourceModel(mongoose),
     AgentPromptsConfig: createAgentPromptsConfigModel(mongoose),
+    OrgPermissionUnit: createOrgPermissionUnitModel(mongoose),
+    OrgPermissionSettings: createOrgPermissionSettingsModel(mongoose),
   };
 }

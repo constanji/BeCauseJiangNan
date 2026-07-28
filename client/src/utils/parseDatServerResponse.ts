@@ -15,9 +15,145 @@ export interface ToolCallInfo {
   expires_at?: number;
 }
 
+/**
+ * 意图分类结果（来自 ask_data / becauseai-server 的 intent_classification 分段）
+ */
+export interface IntentClassificationData {
+  intent?: string;
+  rephrased_question?: string;
+  reasoning?: string;
+}
+
+/**
+ * ask_data / becauseai-server 结构化推理过程
+ * 原始输出以 `--------------------- section_name ---------------------` 分段，
+ * 常见分段：intent_classification / sql_generation_reasoning / sql_generate /
+ * semantic_to_sql / sql_execute / exception
+ */
+export interface ThoughtChainData {
+  intentClassification: IntentClassificationData | null;
+  sqlGenerationReasoning: string | null;
+  sqlGenerate: string | null;
+  semanticToSql: string | null;
+  sqlExecute: string | null;
+  exception: { message: string } | null;
+}
+
 export interface ToolCallWithThoughtChain {
-  thoughtChain: null; // 已移除 dat-server 思维链支持
+  thoughtChain: ThoughtChainData | null;
   toolCall: ToolCallInfo;
+}
+
+/**
+ * 归一化转义的换行/制表符/引号（部分 MCP 输出会被 JSON 转义）
+ */
+function normalizeBecauseAiOutput(text: string): string {
+  if (!text.includes('\\n') && !text.includes('\\t') && !text.includes('\\r') && !text.includes('\\"')) {
+    return text;
+  }
+  return text
+    .replace(/\\n/g, '\n')
+    .replace(/\\r/g, '\r')
+    .replace(/\\t/g, '\t')
+    .replace(/\\"/g, '"');
+}
+
+/**
+ * 将 `--------------------- section_name ---------------------` 分段的原始文本
+ * 拆解为 { section_name: content } 的映射
+ */
+function splitBecauseAiSections(rawText: string): Record<string, string> {
+  const text = normalizeBecauseAiOutput(rawText);
+  const sectionRegex = /-{3,}\s*([a-zA-Z_]+)\s*-{3,}/g;
+  const matches = [...text.matchAll(sectionRegex)];
+  const sections: Record<string, string> = {};
+
+  matches.forEach((match, idx) => {
+    const name = match[1];
+    const start = (match.index ?? 0) + match[0].length;
+    const end = idx + 1 < matches.length ? matches[idx + 1].index : text.length;
+    const content = text.slice(start, end).trim();
+    if (content) {
+      sections[name] = content;
+    }
+  });
+
+  return sections;
+}
+
+/**
+ * 去除常见的 SQL/结果标签前缀，如 "SQL:"、"Query SQL:"、"Query Results:"
+ * 并去掉首尾多余引号
+ */
+function stripBecauseAiLabel(content: string): string {
+  return content
+    .trim()
+    .replace(/^(?:SQL|Semantic SQL|Query SQL|Query Results)\s*:\s*/i, '')
+    .trim()
+    .replace(/^"+/, '')
+    .replace(/"+$/, '')
+    .trim();
+}
+
+/**
+ * 解析 ask_data / becauseai-server 工具输出中的结构化推理过程。
+ * 若输出不包含分段标记，返回 null（普通工具调用不受影响）。
+ */
+export function parseThoughtChainFromOutput(
+  output: string | null | undefined,
+): ThoughtChainData | null {
+  if (!output || typeof output !== 'string' || !output.includes('---')) {
+    return null;
+  }
+
+  const sections = splitBecauseAiSections(output);
+  if (Object.keys(sections).length === 0) {
+    return null;
+  }
+
+  let intentClassification: IntentClassificationData | null = null;
+  const intentRaw = sections['intent_classification'];
+  if (intentRaw) {
+    try {
+      const parsed = JSON.parse(intentRaw);
+      intentClassification =
+        parsed && typeof parsed === 'object' ? parsed : { reasoning: intentRaw };
+    } catch {
+      intentClassification = { reasoning: intentRaw };
+    }
+  }
+
+  const sqlGenerationReasoning = sections['sql_generation_reasoning'] || null;
+  const sqlGenerate = sections['sql_generate']
+    ? stripBecauseAiLabel(sections['sql_generate'])
+    : null;
+  const semanticToSql = sections['semantic_to_sql']
+    ? stripBecauseAiLabel(sections['semantic_to_sql'])
+    : null;
+  const sqlExecute = sections['sql_execute']
+    ? stripBecauseAiLabel(sections['sql_execute'])
+    : null;
+  const exception = sections['exception'] ? { message: sections['exception'] } : null;
+
+  if (
+    !intentClassification &&
+    !sqlGenerationReasoning &&
+    !sqlGenerate &&
+    !semanticToSql &&
+    !sqlExecute &&
+    !exception
+  ) {
+    return null;
+  }
+
+  return {
+    intentClassification,
+    sqlGenerationReasoning,
+    sqlGenerate,
+    semanticToSql,
+    sqlExecute,
+    exception,
+  };
 }
 
 /**
@@ -96,7 +232,7 @@ export function extractAllToolCalls(messages: any[]): ToolCallWithThoughtChain[]
       // 添加工具调用，即使参数还在流式传输中也要显示
       // 这样可以实现实时展示流式传输的参数
       result.push({
-        thoughtChain: null,
+        thoughtChain: parseThoughtChainFromOutput(output),
         toolCall: toolCallInfo,
       });
     }
@@ -185,7 +321,7 @@ export function extractToolCallsByMessage(messages: any[]): MessageToolCalls[] {
         };
 
         const toolCallWithChain: ToolCallWithThoughtChain = {
-          thoughtChain: null,
+          thoughtChain: parseThoughtChainFromOutput(output),
           toolCall: toolCallInfo,
         };
 

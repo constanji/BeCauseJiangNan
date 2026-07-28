@@ -26,6 +26,7 @@ const ALLOWED_USER_FIELDS = [
   'emailVerified',
   'twoFactorEnabled',
   'termsAccepted',
+  'orgCode',
 ] as const;
 
 type AllowedUserField = (typeof ALLOWED_USER_FIELDS)[number];

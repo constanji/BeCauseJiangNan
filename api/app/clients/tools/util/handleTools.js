@@ -21,7 +21,6 @@ const {
 const {
   availableTools,
   manifestToolMap,
-  SqlExecutor,
   BeCauseSkills2,
   BeCauseSkills3,
   BeCauseSkillsJN,
@@ -32,6 +31,7 @@ const { primeFiles: primeCodeFiles } = require('~/server/services/Files/Code/pro
 const { createFileSearchTool, primeFiles: primeSearchFiles } = require('./fileSearch');
 const { getUserPluginAuthValue } = require('~/server/services/PluginService');
 const { createMCPTool, createMCPTools } = require('~/server/services/MCP');
+const { resolveOrgCode } = require('~/server/services/McpContextResolver');
 const { loadAuthValues } = require('~/server/services/Tools/credentials');
 const { getMCPServerTools } = require('~/server/services/Config');
 const { getRoleByName } = require('~/models/Role');
@@ -167,7 +167,6 @@ const loadTools = async ({
     because_skills_2: BeCauseSkills2, // BeCause问数工具2.0 - 波动归因增强版
     because_skills_3: BeCauseSkills3, // BeCause问数工具3.0 - 瘦身版
     because_jn: BeCauseSkillsJN, // BeCause江南 - 指标理解/机构背景专用
-    sql_executor: SqlExecutor,
     generate_excel: GenerateExcel,
     echarts_generator_app: EChartsGeneratorAPP,
   };
@@ -175,6 +174,11 @@ const loadTools = async ({
   const customConstructors = {};
 
   const requestedTools = {};
+
+  const resolvedOrgCode = resolveOrgCode({
+    requestBody: options.req?.body,
+    user: options.req?.user,
+  });
 
   const toolOptions = {
     because_skills_2: {
@@ -184,6 +188,7 @@ const loadTools = async ({
       conversation: options.conversation,
       agentId: agent?.id || options.req?.body?.agent_id || options.req?.body?.endpointOption?.agent_id || null,
       dataSourceId: agent?.data_source_id || null,
+      orgCode: resolvedOrgCode,
     },
     because_skills_3: {
       userId: user,
@@ -192,6 +197,7 @@ const loadTools = async ({
       conversation: options.conversation,
       agentId: agent?.id || options.req?.body?.agent_id || options.req?.body?.endpointOption?.agent_id || null,
       dataSourceId: agent?.data_source_id || null,
+      orgCode: resolvedOrgCode,
     },
     because_jn: {
       userId: user,
@@ -200,9 +206,7 @@ const loadTools = async ({
       conversation: options.conversation,
       agentId: agent?.id || options.req?.body?.agent_id || options.req?.body?.endpointOption?.agent_id || null,
       dataSourceId: agent?.data_source_id || null,
-    },
-    sql_executor: {
-      apiUrl: process.env.SQL_API_URL || 'http://33.114.3.59:13002',
+      orgCode: resolvedOrgCode,
     },
     generate_excel: {
       req: options.req,

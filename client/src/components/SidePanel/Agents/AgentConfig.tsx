@@ -394,7 +394,7 @@ export default function AgentConfig() {
                 className="mb-1 flex items-center justify-between"
                 htmlFor="support-contact-name"
               >
-                <span className="text-sm">{localize('com_ui_support_contact_name')}</span>
+                <span className="text-sm text-text-primary">{localize('com_ui_support_contact_name')}</span>
               </label>
               <Controller
                 name="support_contact.name"
@@ -438,7 +438,7 @@ export default function AgentConfig() {
                 className="mb-1 flex items-center justify-between"
                 htmlFor="support-contact-email"
               >
-                <span className="text-sm">{localize('com_ui_support_contact_email')}</span>
+                <span className="text-sm text-text-primary">{localize('com_ui_support_contact_email')}</span>
               </label>
               <Controller
                 name="support_contact.email"
