@@ -172,8 +172,24 @@ export default function useChatFunctions({
 
     /** This becomes part of the `endpointOption` */
     // 从localStorage获取最新的data_source_id和project_id，确保用户选择的数据源立即生效
-    const latestDataSourceId = localStorage.getItem(LocalStorageKeys.LAST_DATA_SOURCE_ID);
-    const latestProjectId = localStorage.getItem(LocalStorageKeys.LAST_PROJECT_ID);
+    // 注意：这两个 key 是通过 useLocalStorage（JSON.stringify 写入）维护的，
+    // 直接 getItem 拿到的是带引号的 JSON 字符串（如 '"abc123"'），必须 JSON.parse
+    // 还原成真实 ID；否则后端按此 ID 查数据源会查不到，进而回退到错误的
+    // 会话缓存/默认数据源，导致机构权限校验用错项目（"换机构后无可用指标"的根因之一）。
+    const readLocalStorageId = (key: string): string | undefined => {
+      const raw = localStorage.getItem(key);
+      if (!raw) {
+        return undefined;
+      }
+      try {
+        const parsed = JSON.parse(raw);
+        return parsed == null || parsed === '' ? undefined : String(parsed);
+      } catch {
+        return raw;
+      }
+    };
+    const latestDataSourceId = readLocalStorageId(LocalStorageKeys.LAST_DATA_SOURCE_ID);
+    const latestProjectId = readLocalStorageId(LocalStorageKeys.LAST_PROJECT_ID);
     
     // 合并conversation和localStorage中的数据源ID
     const conversationWithDataSource = {
@@ -198,6 +214,11 @@ export default function useChatFunctions({
         // 确保data_source_id和project_id包含在endpointOption中
         ...(latestDataSourceId ? { data_source_id: latestDataSourceId } : {}),
         ...(latestProjectId ? { project_id: latestProjectId } : {}),
+        // 同时带上 camelCase 别名：createPayload 会把 endpointOption 展平进请求体顶层，
+        // McpContextResolver/Because.yaml 的 contextInjection 按 `datasourceId` 这个
+        // 字段名去 requestBody 里取值，只发 data_source_id 会被它读不到。
+        ...(latestDataSourceId ? { datasourceId: latestDataSourceId } : {}),
+        ...(latestProjectId ? { projectId: latestProjectId } : {}),
       },
       convo,
     ) as TEndpointOption;

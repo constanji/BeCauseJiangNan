@@ -247,8 +247,23 @@ const useNewConvo = (index = 0) => {
           : _template;
 
       // 从localStorage获取项目ID和数据源ID（如果template中没有）
-      const projectId = template.project_id || localStorage.getItem(LocalStorageKeys.LAST_PROJECT_ID) || undefined;
-      const dataSourceId = localStorage.getItem(LocalStorageKeys.LAST_DATA_SOURCE_ID) || undefined;
+      // 注意：该 key 由 useLocalStorage（JSON.stringify 写入）维护，直接 getItem 拿到的是
+      // 带引号的 JSON 字符串（如 '"abc123"'），必须 JSON.parse 还原成真实 ID，否则后续
+      // 按此 ID 查数据源/项目会查不到。
+      const readLocalStorageId = (key: string): string | undefined => {
+        const raw = localStorage.getItem(key);
+        if (!raw) {
+          return undefined;
+        }
+        try {
+          const parsed = JSON.parse(raw);
+          return parsed == null || parsed === '' ? undefined : String(parsed);
+        } catch {
+          return raw;
+        }
+      };
+      const projectId = template.project_id || readLocalStorageId(LocalStorageKeys.LAST_PROJECT_ID);
+      const dataSourceId = readLocalStorageId(LocalStorageKeys.LAST_DATA_SOURCE_ID);
       
       const conversation = {
         conversationId: Constants.NEW_CONVO as string,

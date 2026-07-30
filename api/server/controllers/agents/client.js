@@ -1162,6 +1162,15 @@ class AgentClient extends BaseClient {
       /** @type {AppConfig['endpoints']['agents']} */
       const agentsEConfig = appConfig.endpoints?.[EModelEndpoint.agents];
 
+      // 前端 localStorage 里未选过数据源时，历史上会存成 JSON.stringify(null) === "null"
+      // 这个 4 字符字符串；直接透传会被当成"合法但不存在"的 ID 去查库导致报错，这里统一
+      // 把 "null"/"undefined"/空串 当作未选择处理。
+      const rawDatasourceId = this.options.req?.body?.datasourceId || this.options.req?.body?.data_source_id;
+      const sanitizedDatasourceId =
+        rawDatasourceId != null && !['null', 'undefined', ''].includes(String(rawDatasourceId).trim())
+          ? rawDatasourceId
+          : undefined;
+
       config = {
         runName: 'AgentRun',
         configurable: {
@@ -1173,6 +1182,12 @@ class AgentClient extends BaseClient {
             messageId: this.responseMessageId,
             conversationId: this.conversationId,
             parentMessageId: this.parentMessageId,
+            // 修复合并回归：DAT→JN 合并时这里丢了 datasourceId，导致 McpContextResolver
+            // 拿不到当前选定的数据源，只能回退到旧会话缓存/Agent绑定/默认数据源，进而用错
+            // projectId 去解析机构权限（"换机构后 ask_data 返回无可用指标"的根因）。
+            // 兼容两种字段名：datasourceId（MCP 协议 / Because.yaml 约定）与
+            // data_source_id（当前前端 endpointOption 实际发送的字段名）。
+            datasourceId: sanitizedDatasourceId,
             // 平台前置：请求体显式 orgCode 可覆盖用户表机构编码（OpenClaw 等服务账号场景）
             orgCode: this.options.req?.body?.orgCode,
           },

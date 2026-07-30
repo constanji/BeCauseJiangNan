@@ -259,6 +259,11 @@ sudo bash root-all.sh [--diagnose-only] [--no-restart] [--user jnapp]
 原 `start.sh` / `deploy.sh` / `stop.sh` 在检测不到 compose 时也会自动转调上述脚本。  
 优先仍建议用本目录脚本把 compose 修好；docker run 仅作运维兜底。
 
+**注意：**
+
+- 切回 `docker compose` 前先跑对应 `./stop-docker.sh --rm`，否则同名容器会冲突，且 `compose down` 管不到纯 docker 起的容器。
+- DAT 的 `JAVA_OPTS` / 带空格配置依赖脚本内 `get_env`（不可用 `tr -d` 删空格）。
+
 ## root 跑 jnapp 上传的脚本仍报 Permission denied？
 
 ```bash

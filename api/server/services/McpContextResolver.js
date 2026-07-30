@@ -137,11 +137,23 @@ function stripHiddenParamsFromSchema(parameters, hideFromSchema) {
   return modified;
 }
 
+/** Mongo ObjectId 是 24 位十六进制字符串；用来在查库前挡掉 "null"/"undefined"/脏字符串等非法 ID，
+ * 避免 Mongoose 抛 CastError 把整个 MCP 工具调用打挂（现网真实出现过：前端 localStorage 里存的是
+ * JSON.stringify(null) === "null" 这个 4 字符字符串，被当成合法 ID 传到这里）。 */
+function isValidObjectIdString(id) {
+  return typeof id === "string" && /^[0-9a-fA-F]{24}$/.test(id);
+}
+
 /**
  * @param {string} datasourceId
  * @returns {Promise<{ projectId: string, datasourceId: string } | null>}
  */
 async function lookupDatasource(datasourceId) {
+  if (!isValidObjectIdString(datasourceId)) {
+    logger.warn(`[McpContext] Ignoring invalid datasourceId (not an ObjectId): ${datasourceId}`);
+    return null;
+  }
+
   const cached = datasourceCache.get(datasourceId);
   if (cached && cached.expiresAt > Date.now()) {
     return {
@@ -150,8 +162,14 @@ async function lookupDatasource(datasourceId) {
     };
   }
 
-  const DatDatasource = await getDatDatasourceModel();
-  const dataSource = await DatDatasource.findById(datasourceId).lean();
+  let dataSource;
+  try {
+    const DatDatasource = await getDatDatasourceModel();
+    dataSource = await DatDatasource.findById(datasourceId).lean();
+  } catch (error) {
+    logger.warn(`[McpContext] Datasource lookup failed for ${datasourceId}:`, error);
+    return null;
+  }
   if (dataSource) {
     logger.info(
       `[McpContext] Datasource ${datasourceId}: provider=${dataSource.provider}, configurationKeys=${JSON.stringify(Object.keys(dataSource.configuration || {}))}`,
@@ -220,9 +238,13 @@ async function resolveMcpExecutionContext({ resolveSources, configurable }) {
       const field = source.field || "datasourceId";
       const rawId = requestBody?.[field];
       if (rawId) {
-        const ctx = await resolveFromDatasourceId(String(rawId), "requestBody");
-        if (ctx) {
-          return ctx;
+        try {
+          const ctx = await resolveFromDatasourceId(String(rawId), "requestBody");
+          if (ctx) {
+            return ctx;
+          }
+        } catch (error) {
+          logger.warn(`[McpContext] Failed to resolve requestBody.${field}:`, error);
         }
       }
     }

@@ -312,6 +312,33 @@ describe('McpContextResolver', () => {
       expect(result).toEqual({ arg5: 'how many' });
       expect(result.arg4).toBeUndefined();
     });
+
+    it('does not crash when requestBody.datasourceId is the literal string "null"', async () => {
+      // 回归用例：localStorage 未选数据源时历史上存的是 JSON.stringify(null) === "null"，
+      // 曾经被当成合法 ID 直传到 Mongoose，导致 CastError 把整个 ask_data 工具调用打挂。
+      const findById = jest.fn();
+      getDatDatasourceModel.mockResolvedValue({
+        findById,
+        findOne: jest.fn().mockReturnValue({
+          sort: jest.fn().mockReturnValue({ lean: jest.fn().mockResolvedValue(null) }),
+        }),
+      });
+
+      const result = await resolveAndInjectMcpContext({
+        serverName: 'becauseai-server',
+        toolName: 'ask_data',
+        toolArguments: { arg5: 'how many' },
+        configurable: {
+          requestBody: { datasourceId: 'null', orgCode: 'ORG99' },
+          user: { id: 'u1', orgCode: 'USER01' },
+        },
+      });
+
+      // 非法 ID 直接被挡在查库之前，绝不应该触发 Mongoose CastError
+      expect(findById).not.toHaveBeenCalled();
+      expect(result.arg2).toBeUndefined();
+      expect(result.arg5).toBe('how many');
+    });
   });
 
   describe('org permission enforcement', () => {
