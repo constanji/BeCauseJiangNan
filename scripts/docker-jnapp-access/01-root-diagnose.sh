@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # root: 只诊断，不修改系统
+# 覆盖: daemon/socket/组/二进制权限/插件父目录/软链/PATH/实测
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -12,7 +13,7 @@ usage() {
   cat <<EOF
 用法: sudo bash $0 [--user NAME]
 
-只诊断 Docker / socket / 组 / Compose，不改动系统。
+只诊断 Docker / socket / 组 / 二进制权限 / 插件目录 / Compose / PATH，不改动系统。
 EOF
 }
 
@@ -58,21 +59,29 @@ else
   warn "无 systemctl，跳过服务状态检查"
 fi
 
-section "2. Docker socket（组权限）—— 关键阻断点"
+section "2. Docker socket（组权限）"
 if [[ -S "${SOCK}" ]]; then
   meta="$(sock_meta)"
   IFS='|' read -r perms owner group <<<"${meta}"
   note "${SOCK} 权限=${perms} 属主=${owner}:${group}"
+  if command -v getfacl >/dev/null 2>&1; then
+    acl_mask="$(getfacl -cp "${SOCK}" 2>/dev/null | awk -F: '/^mask::/ {print $3; exit}' || true)"
+    [[ -n "${acl_mask}" ]] && note "${SOCK} ACL mask=${acl_mask}"
+    if [[ -n "${acl_mask}" && "${acl_mask}" != "rw-" ]]; then
+      fail "socket ACL mask 不是 rw-，即使 stat 看着 660 也可能限制 docker 组访问"
+      note "下一步: sudo bash ${SCRIPT_DIR}/03-root-fix-socket.sh"
+      inc
+    fi
+  fi
   if [[ "${group}" == "docker" && ( "${perms}" == "660" || "${perms}" == "0660" ) ]]; then
     ok "socket 权限符合预期 (root:docker 0660)"
   else
     fail "socket 属组/权限不对：当前 ${owner}:${group} ${perms}，期望 root:docker 0660"
-    note "jnapp 在 docker 组也无法访问 root:root 的 660 socket"
     note "下一步: sudo bash ${SCRIPT_DIR}/03-root-fix-socket.sh"
     inc
   fi
 else
-  fail "未找到 ${SOCK}"; inc
+  fail "未找到 ${SOCK}"; note "下一步: sudo bash ${SCRIPT_DIR}/root-recover-docker.sh"; inc
 fi
 
 section "3. 用户与 docker 组"
@@ -97,65 +106,150 @@ else
   inc
 fi
 
-section "4. Compose 插件 / 独立二进制 / PATH"
+section "4. 二进制可执行权限（BDVIEW: Permission denied）"
+if [[ -e /usr/bin/docker ]]; then
+  note "/usr/bin/docker: $(ls -l /usr/bin/docker 2>/dev/null || true)"
+  if run_as_target 'test -x /usr/bin/docker'; then
+    ok "${TARGET_USER} 可执行 /usr/bin/docker"
+  else
+    fail "${TARGET_USER} 无法执行 /usr/bin/docker → bash: /usr/bin/docker: Permission denied"
+    note "下一步: sudo bash ${SCRIPT_DIR}/05-root-fix-bin-perms.sh"
+    inc
+  fi
+else
+  fail "不存在 /usr/bin/docker"; inc
+fi
+
+section "5. 插件父目录可进入性（BDVIEW: unknown command: docker compose）"
+for d in /usr /usr/bin /usr/libexec /usr/libexec/docker /usr/libexec/docker/cli-plugins /usr/local /usr/local/bin; do
+  if [[ -d "${d}" ]]; then
+    note "$(ls -ld "${d}" 2>/dev/null || true)"
+    if run_as_target "test -x ${d}"; then
+      ok "${TARGET_USER} 可进入目录: ${d}"
+    else
+      fail "${TARGET_USER} 无法进入目录: ${d}（常见 750）"
+      note "即使插件文件是 755，进不去父目录也会 unknown command / command not found"
+      note "下一步: sudo bash ${SCRIPT_DIR}/05-root-fix-bin-perms.sh"
+      inc
+    fi
+  else
+    warn "目录不存在: ${d}"
+  fi
+done
+
+section "6. Compose 插件 / 软链 / PATH（BDVIEW: command not found）"
 has_plugin=0
 has_standalone=0
 
 if [[ -e "${PLUGIN_PATH}" ]]; then
-  if [[ -x "${PLUGIN_PATH}" ]]; then
-    ok "插件存在且可执行: ${PLUGIN_PATH}"
+  note "插件: $(ls -l "${PLUGIN_PATH}" 2>/dev/null || true)"
+  if run_as_target "test -r ${PLUGIN_PATH} && test -x ${PLUGIN_PATH}"; then
+    ok "${TARGET_USER} 可读可执行插件: ${PLUGIN_PATH}"
     has_plugin=1
-    note "文件类型: $(file -b "${PLUGIN_PATH}" 2>/dev/null || echo unknown)"
   else
-    fail "插件存在但不可执行: ${PLUGIN_PATH}"; inc
+    fail "${TARGET_USER} 无法访问插件文件（权限或父目录）"
+    note "下一步: sudo bash ${SCRIPT_DIR}/05-root-fix-bin-perms.sh"
+    inc
   fi
 else
-  warn "缺少 Compose 插件路径: ${PLUGIN_PATH}（仅影响 docker compose 带空格命令）"
+  warn "缺少 Compose 插件: ${PLUGIN_PATH}"
 fi
 
-if [[ -L "${COMPAT_LINK}" ]]; then
-  target="$(readlink -f "${COMPAT_LINK}" 2>/dev/null || readlink "${COMPAT_LINK}")"
-  note "兼容入口是软链: ${COMPAT_LINK} -> ${target}"
-  if [[ -x "${COMPAT_LINK}" ]]; then
-    ok "docker-compose 软链可执行"; has_standalone=1
+if [[ -L "${COMPAT_LINK}" || -e "${COMPAT_LINK}" ]]; then
+  note "兼容入口: $(ls -l "${COMPAT_LINK}" 2>/dev/null || true)"
+  has_standalone=1
+  if run_as_target "test -x ${COMPAT_LINK}"; then
+    ok "${TARGET_USER} 可执行 ${COMPAT_LINK}"
   else
-    fail "docker-compose 软链不可执行/断链"; inc
-  fi
-elif [[ -e "${COMPAT_LINK}" ]]; then
-  note "${COMPAT_LINK} 是独立文件（非软链）: $(ls -l "${COMPAT_LINK}")"
-  if [[ -x "${COMPAT_LINK}" ]]; then
-    ok "独立 docker-compose 可执行 —— 部署脚本用 docker-compose 即可"
-    has_standalone=1
-  else
-    fail "${COMPAT_LINK} 不可执行"; inc
+    fail "${TARGET_USER} 无法执行 ${COMPAT_LINK}"
+    note "下一步: sudo bash ${SCRIPT_DIR}/05-root-fix-bin-perms.sh"
+    inc
   fi
 else
-  fail "缺少 ${COMPAT_LINK}"
-  note "下一步: sudo bash ${SCRIPT_DIR}/04-root-fix-compose.sh"
+  fail "缺少 ${COMPAT_LINK}（会导致 docker-compose: command not found）"
+  if [[ "${has_plugin}" -eq 1 ]]; then
+    note "插件在，缺软链 → sudo bash ${SCRIPT_DIR}/05-root-fix-bin-perms.sh 或 04-root-fix-compose.sh"
+  else
+    note "下一步: sudo bash ${SCRIPT_DIR}/04-root-fix-compose.sh --from <离线包>"
+  fi
   inc
-fi
-
-if [[ "${has_plugin}" -eq 0 && "${has_standalone}" -eq 1 ]]; then
-  note "结论: 有独立 docker-compose，无插件 → 用 docker-compose 即可；可选跑 04-root-fix-compose.sh 启用 docker compose"
-elif [[ "${has_plugin}" -eq 0 && "${has_standalone}" -eq 0 ]]; then
-  fail "既无插件也无独立 docker-compose，需要从离线包补装"; inc
 fi
 
 target_path="$(run_as_target 'echo "$PATH"' 2>/dev/null || true)"
 if [[ -n "${target_path}" ]]; then
   note "${TARGET_USER} 登录 PATH=${target_path}"
   if echo "${target_path}" | tr ':' '\n' | grep -qx '/usr/local/bin'; then
-    ok "${TARGET_USER} PATH 包含 /usr/local/bin"
+    ok "PATH 包含 /usr/local/bin"
   else
-    fail "${TARGET_USER} PATH 不包含 /usr/local/bin"
-    note "下一步: sudo bash ${SCRIPT_DIR}/04-root-fix-compose.sh --fix-path"
+    fail "PATH 不包含 /usr/local/bin"
+    note "软链在 /usr/local/bin 也会 command not found"
+    note "下一步: sudo bash ${SCRIPT_DIR}/06-root-fix-path.sh"
     inc
   fi
 else
   warn "无法读取 ${TARGET_USER} 登录 PATH"
 fi
 
-section "5. 以 ${TARGET_USER} 登录环境实测三种命令"
+# 区分：绝对路径能跑 vs PATH 找不到
+if [[ -e "${COMPAT_LINK}" ]]; then
+  if run_as_target "${COMPAT_LINK} version >/dev/null 2>&1"; then
+    ok "绝对路径可运行: ${COMPAT_LINK} version"
+    if ! run_as_target 'command -v docker-compose >/dev/null 2>&1'; then
+      fail "绝对路径能跑，但 command -v docker-compose 找不到 → 纯 PATH 问题"
+      note "下一步: sudo bash ${SCRIPT_DIR}/06-root-fix-path.sh"
+      inc
+    fi
+  else
+    warn "绝对路径 ${COMPAT_LINK} version 失败（权限/坏链/依赖）"
+  fi
+fi
+
+if [[ "${has_plugin}" -eq 0 && "${has_standalone}" -eq 0 ]]; then
+  fail "既无插件也无独立 docker-compose，需要离线包"; inc
+fi
+
+# PATH 中若存在多个 docker-compose，实际生效的可能不是 /usr/local/bin 里这个（如旧版 pip 装的 v1）
+dup_compose="$(run_as_target 'command -v -a docker-compose 2>/dev/null' 2>/dev/null || true)"
+dup_count="$(echo "${dup_compose}" | sed '/^$/d' | wc -l | tr -d ' ')"
+if [[ "${dup_count}" -gt 1 ]]; then
+  warn "${TARGET_USER} PATH 中发现多个 docker-compose，可能命中了错误版本:"
+  echo "${dup_compose}" | sed 's/^/  /'
+  note "实际生效: $(run_as_target 'command -v docker-compose' 2>/dev/null || true)（PATH 中排最前的那个）"
+fi
+
+section "7. SELinux（若启用，root 与普通用户可能表现不同）"
+if command -v getenforce >/dev/null 2>&1; then
+  se_status="$(getenforce 2>/dev/null || true)"
+  note "SELinux 状态: ${se_status:-未知}"
+  if [[ "${se_status}" == "Enforcing" ]]; then
+    warn "SELinux 处于 Enforcing：root 常以 unconfined 运行不受限，${TARGET_USER} 可能被拦截"
+    note "即使文件权限/属组都正确，仍可能报 permission denied（本质是 SELinux 拒绝，非 DAC 权限位）"
+    for p in /usr/bin/docker /usr/libexec/docker/cli-plugins/docker-compose "${COMPAT_LINK}"; do
+      [[ -e "${p}" ]] || continue
+      ctx="$(ls -Z "${p}" 2>/dev/null | awk '{print $1}')"
+      note "$(printf '%-55s' "${p}") 上下文=${ctx:-未知}"
+      if [[ -n "${ctx}" && "${ctx}" != *"bin_t"* ]]; then
+        fail "${p} 的 SELinux 上下文非 bin_t，可能被拦截执行"
+        note "下一步: restorecon -v ${p} 或 chcon -t bin_t ${p}（也可跑 05-root-fix-bin-perms.sh 自动尝试）"
+        inc
+      fi
+    done
+    if command -v ausearch >/dev/null 2>&1; then
+      note "如需确认是否真被 SELinux 拒绝: ausearch -m avc -ts recent 2>/dev/null | grep -i docker"
+    fi
+  else
+    ok "SELinux 非 Enforcing（${se_status:-disabled}），暂不是阻断因素"
+  fi
+else
+  note "系统无 getenforce，跳过 SELinux 检查（非 RHEL 系发行版通常无需关心）"
+fi
+
+section "8. 以 ${TARGET_USER} 登录环境实测"
+docker_env="$(run_as_target 'env | grep -E "^(DOCKER_HOST|DOCKER_CONTEXT|DOCKER_CONFIG)=" || true' 2>/dev/null || true)"
+if [[ -n "${docker_env}" ]]; then
+  warn "${TARGET_USER} 登录环境存在 Docker 相关变量，可能覆盖默认 ${SOCK}"
+  echo "${docker_env}" | sed 's/^/  /'
+fi
 if out="$(run_as_target 'docker version --format "Client={{.Client.Version}} Server={{.Server.Version}}"' 2>&1)"; then
   ok "docker: ${out}"
 else
@@ -165,33 +259,44 @@ if out="$(run_as_target 'docker compose version' 2>&1)"; then
   ok "docker compose: ${out}"
 else
   warn "docker compose: ${out}"
-  note "若 docker-compose（无空格）可用，部署可继续用 docker-compose"
+  note "常见: 父目录 750 / 插件不可读 → 05-root-fix-bin-perms.sh"
 fi
 if out="$(run_as_target 'command -v docker-compose; docker-compose version' 2>&1)"; then
   ok "docker-compose: ${out}"
 else
   fail "docker-compose: ${out}"; inc
+  note "常见: 缺软链 / PATH 无 /usr/local/bin → 05 + 06"
 fi
 
-section "6. 症状判断与建议步骤"
+section "9. 症状判断与建议"
 docker_ok=0 compose_plugin_ok=0 compose_bin_ok=0
 run_as_target 'docker info >/dev/null 2>&1' && docker_ok=1 || true
 run_as_target 'docker compose version >/dev/null 2>&1' && compose_plugin_ok=1 || true
 run_as_target 'docker-compose version >/dev/null 2>&1' && compose_bin_ok=1 || true
 
+if ! run_as_target 'test -x /usr/bin/docker' 2>/dev/null; then
+  warn "优先修二进制: sudo bash ${SCRIPT_DIR}/05-root-fix-bin-perms.sh"
+fi
+if [[ -e "${PLUGIN_PATH}" ]] && ! run_as_target "test -x /usr/libexec/docker/cli-plugins" 2>/dev/null; then
+  warn "优先修插件父目录: sudo bash ${SCRIPT_DIR}/05-root-fix-bin-perms.sh"
+fi
+if [[ ! -e "${COMPAT_LINK}" && -e "${PLUGIN_PATH}" ]]; then
+  warn "缺软链: ln -sfn ${PLUGIN_PATH} ${COMPAT_LINK} 或跑 05/04"
+fi
+if [[ -e "${COMPAT_LINK}" ]] && run_as_target "${COMPAT_LINK} version >/dev/null 2>&1" && ! run_as_target 'command -v docker-compose >/dev/null'; then
+  warn "纯 PATH 问题: sudo bash ${SCRIPT_DIR}/06-root-fix-path.sh"
+fi
+
 meta="$(sock_meta || true)"
 IFS='|' read -r perms owner group <<<"${meta}"
-
 if [[ "${owner:-}" == "root" && "${group:-}" == "root" ]]; then
-  warn "根因高概率: socket=root:root → 请先跑: sudo bash ${SCRIPT_DIR}/03-root-fix-socket.sh"
+  warn "socket=root:root → sudo bash ${SCRIPT_DIR}/03-root-fix-socket.sh"
 fi
-if [[ "${compose_bin_ok}" -eq 1 && "${compose_plugin_ok}" -eq 0 ]]; then
-  warn "docker-compose 已可用；docker compose 可选: sudo bash ${SCRIPT_DIR}/04-root-fix-compose.sh"
-fi
-if [[ "${docker_ok}" -eq 0 ]]; then
-  warn "jnapp 的 docker 不可用：优先修 socket，再确认组"
-elif [[ "${docker_ok}" -eq 1 && "${compose_bin_ok}" -eq 1 ]]; then
+
+if [[ "${docker_ok}" -eq 1 && "${compose_bin_ok}" -eq 1 ]]; then
   ok "目标已达成: jnapp 可用 docker + docker-compose"
+elif [[ "${docker_ok}" -eq 1 && "${compose_plugin_ok}" -eq 1 ]]; then
+  ok "可用 docker + docker compose；若脚本写 docker-compose 再补 PATH/软链"
 fi
 
 section "总结"
@@ -200,6 +305,6 @@ if [[ "${DIAG_ISSUES}" -eq 0 ]]; then
   exit 0
 fi
 warn "诊断完成：发现 ${DIAG_ISSUES} 项问题"
-note "一键全修: sudo bash ${SCRIPT_DIR}/root-all.sh"
-note "或按项执行: 02-root-fix-group.sh / 03-root-fix-socket.sh / 04-root-fix-compose.sh"
+note "智能一键: sudo bash ${SCRIPT_DIR}/root-auto.sh --yes"
+note "或: 05 / 06-root-fix-path.sh / 04 / 03"
 exit "${DIAG_ISSUES}"

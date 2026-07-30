@@ -133,6 +133,7 @@ systemctl enable docker >/dev/null 2>&1 || true
 systemctl enable containerd >/dev/null 2>&1 || true
 
 if [[ -S "${SOCK}" ]]; then
+  command -v setfacl >/dev/null 2>&1 && setfacl -b "${SOCK}" 2>/dev/null || true
   chown root:docker "${SOCK}" || true
   chmod 0660 "${SOCK}" || true
   ok "已校正当前 socket: $(ls -l "${SOCK}")"
@@ -154,6 +155,7 @@ else
   fi
   sleep 1
   if [[ -S "${SOCK}" ]]; then
+    command -v setfacl >/dev/null 2>&1 && setfacl -b "${SOCK}" 2>/dev/null || true
     chown root:docker "${SOCK}" || true
     chmod 0660 "${SOCK}" || true
     note "重启后 socket: $(ls -l "${SOCK}")"

@@ -55,6 +55,22 @@ sock_meta() {
   echo "${perms}|${owner}|${group}"
 }
 
+# 目录是否对「其他人」可进入（至少 other 有 x，或对目标用户可 access）
+dir_world_traversable() {
+  local d="$1"
+  [[ -d "${d}" ]] || return 1
+  local mode
+  mode="$(stat -c '%a' "${d}" 2>/dev/null || stat -f '%OLp' "${d}")"
+  # 末位为奇数 => other 有 x
+  local last="${mode: -1}"
+  [[ "${last}" == "1" || "${last}" == "3" || "${last}" == "5" || "${last}" == "7" ]]
+}
+
+user_can_access_path() {
+  local path="$1"
+  run_as_target "test -e $(printf '%q' "${path}")" 2>/dev/null
+}
+
 # 解析 --user / -h；其余参数原样留下由调用方处理
 parse_common_args() {
   local -a kept=()
