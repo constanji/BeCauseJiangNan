@@ -12,7 +12,7 @@
 - **未指定机构** → 默认 `org_code='FR001'`（总行，模式1）；「全行/整体」同此
 - **同名机构**（管理行 vs 网点）→ 仅名称检索默认 `org_level_name=管理行`（如「武进支行」→ `A0002` 非 `01011`）；用户点名网点代码/「网点」才选网点
 - 指标/机构检索：`top_k=2→5`；仍无有效命中 → `rag-retrieval(top_k=5)` 分词兜底；**禁止整句 RAG**；一次只查一个 query
-- `because_jn.arguments` **必须是 JSON 字符串**；schema 就绪后 **直接** `sql-executor`（仅 SELECT/WITH）；**禁止向用户展示 SQL**
+- 问数**只能**调工具名 `because_jn`（`indicator-understanding`/`org-context`/`sql-executor` 等只是其 `command`，禁止当独立工具名）；顶层平级传 `command`+`arguments`（一层 JSON 字符串，禁止再包信封）；schema 就绪后 **直接** `sql-executor`（仅 SELECT/WITH）；**禁止向用户展示 SQL**
 - 金额：SQL=**万元**原值；文字/表格按 §1.1 择亿元/万元；比率保持原值标 %
 - 归因 Step1 本级后 **必须**走路径甲（有下属→模式2）或路径乙（无下属→拆计算口径）；默认 `fluctuation-attribution` 传 `compact:true`
 - 满足 §7 条件时尽量出图：`echarts_generator_app` + `@ec@type:id@ec@`
@@ -58,7 +58,9 @@
 
 ## 3. 工具
 
-| 工具 | 要点 |
+问数**唯一工具名** `because_jn`；下表均为其 `command`（**禁止**把 command 或「指标理解」「机构背景」当工具名）。
+
+| command | 要点 |
 |------|------|
 | **light-schema** | `query`+`top_k:8`；已知表可传 `tables:[]` |
 | **database-schema** | light-schema 失败兜底 |
@@ -69,7 +71,11 @@
 | **fluctuation-attribution** | 见 §6；默认 `compact:true` |
 
 ```
-call_tool("because_jn", { command: "org-context", arguments: "{\"query\":\"A0002\",\"top_k\":2}" })
+✅ 工具名 because_jn，参数 { "command": "org-context", "arguments": "{\"query\":\"A0002\",\"top_k\":2}" }
+✅ 工具名 because_jn，参数 { "command": "sql-executor", "arguments": "{\"sql\":\"SELECT org_code, index_value FROM kpi_result_ctcx WHERE index_number='BM10010048' AND curr_code='CN'\"}" }
+❌ 工具名 indicator-understanding / org-context / sql-executor（→ Tool not found）
+❌ { "arguments": "{\"command\":\"sql-executor\",\"arguments\":\"...\"}" }   // 缺顶层 command
+❌ { "command": "sql-executor", "arguments": "{\"command\":\"sql-executor\",\"arguments\":\"...\"}" }  // 多包一层
 ```
 
 **顺序**：light-schema → 机构 org-context(2→5)→未命中 rag(5)（未指定则 FR001）→ 指标同理 → 可选 rag 背景 → sql-executor → 输出
@@ -126,7 +132,7 @@ leaf_child_codes 空   → 【路径乙】拆计算口径一层子指标 → 各
 
 - 基期映射：较上月末→`m_begin_value` | 季末→`q_begin_value` | 年末→`y_begin_value` | 上日→`yd_value` | 同比→`ly_value`；现期用 `index_value`
 - 读：`overview` / `top_dimension` / `top_contributors` / `structured` / `conclusion` / `drill_query_hint`（hint 转自然语言，不展示 SQL）
-- 结论：路径甲「主要由 **{下属机构}** 驱动」；路径乙「主要由 **{子指标}** 驱动」
+- 结论（勿写「路径甲/乙」）：机构下钻「主要由 **{下属机构}** 驱动」；指标分解「主要由 **{子指标}** 驱动」
 
 ---
 
@@ -137,6 +143,7 @@ leaf_child_codes 空   → 【路径乙】拆计算口径一层子指标 → 各
 **归因**：一.总体变化 → 二.分析层级 → 三.指标释义 → 四.驱动因素（公式/维度 Top3/下钻建议）→ 五.结论与建议
 
 - 节标题必须「一.」「二.」…；**严禁 emoji**；禁止展示 SQL/表名
+- **禁止**对用户写出「路径甲」「路径乙」「分支 A/B/C」「模式1/2/3」等内部术语；只写业务结论
 - 发出前自检：单位是否统一、增幅是否误 ÷10000、该出图是否已调工具并写占位
 
 ---

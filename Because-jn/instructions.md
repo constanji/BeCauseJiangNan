@@ -6,7 +6,7 @@
 
 ## 核心原则
 
-1. **先检索再写 SQL**：表结构用 `light-schema`；指标用 `indicator-understanding`；机构用 `org-context`；术语/规则用 `rag-retrieval`。
+1. **先检索再写 SQL**（均走 `because_jn` 的对应 `command`）：表结构用 `light-schema`；指标用 `indicator-understanding`；机构用 `org-context`；术语/规则用 `rag-retrieval`。
 2. **生成 SQL 前**必须有 schema（`semantic_models`）+ 业务上下文（专用检索或 RAG）。
 3. **WHERE 字面量**：优先使用 `light-schema` 返回的 `value_hints`；勿猜测枚举值。
 4. **查数链**：schema/知识 → **直接** `sql-executor`（执行器侧只读约束仍在）；**无** `sql-validation` 子命令。
@@ -19,6 +19,23 @@
 
 通过 **function calling** 调用，勿在对话里粘贴 JSON。
 
+**问数唯一合法工具名是 `because_jn`。** 下表名称只是 `command` 参数值，**禁止**把 `indicator-understanding` / `org-context` / `sql-executor` 等（或 UI 中文名「指标理解」「机构背景」）当作独立工具名（会报 `Tool not found`）。
+
+function calling 时：
+- **工具名（name）**：固定为 `because_jn`
+- **参数**：顶层**必须同时有**平级字段 `command` 与 `arguments`（二者不可嵌套）
+
+```
+✅ 工具名 because_jn，参数 { "command": "org-context", "arguments": "{\"query\":\"A0002\",\"top_k\":2}" }
+✅ 工具名 because_jn，参数 { "command": "sql-executor", "arguments": "{\"sql\":\"SELECT * FROM dim_region LIMIT 10\"}" }
+❌ 工具名 indicator-understanding / org-context / sql-executor（→ Tool not found）
+❌ { "arguments": "{\"command\":\"sql-executor\",\"arguments\":\"...\"}" }  // 缺顶层 command
+❌ { "command": "sql-executor", "arguments": "{\"command\":\"sql-executor\",\"arguments\":\"...\"}" }  // 多包一层
+```
+
+- `command`：下表子命令名，**只能出现在 because_jn 的参数顶层**，禁止当作工具名
+- `arguments`：**一层** JSON 字符串，内容是该子命令自己的参数（如 `{"sql":"..."}`），不要再包 `{command, arguments}`
+
 | command | 何时用 | 要点 |
 |---------|--------|------|
 | **light-schema** | 生成 SQL 前拿表结构（**首选**） | `query`+`top_k:8`；已知表名用 `tables:[]`；含 Cell 值对齐 → `value_hints` |
@@ -26,10 +43,10 @@
 | **indicator-understanding** | BM 编码 / 标准名称 / 口径 | 固定检索「指标定义信息」；勿传 filename |
 | **org-context** | 机构号 / 机构名 / 下级 | 固定检索「机构信息」；勿传 filename |
 | **rag-retrieval** | 术语、规则、非表格知识兜底 | 默认 `top_k:10`；结构化未命中时再用 |
-| **sql-executor** | 写好 SQL 后直接执行 | 仅 SELECT/WITH |
+| **sql-executor** | 写好 SQL 后直接执行 | 仅 SELECT/WITH；`arguments`=`{"sql":"..."}` |
 | **fluctuation-attribution** | 为什么变化、机构/公式归因 | 默认读瘦身字段；下钻只走机构模式2或指标构成 |
 
-**不存在/勿调用**：`knowledge-discovery`、`result-analysis`、`intent-classification`、`sql-validation`、`chart-generation`、`reranker`。
+**不存在/勿调用**：`knowledge-discovery`、`result-analysis`、`intent-classification`、`sql-validation`、`chart-generation`、`reranker`；也勿把上表 command 注册成独立工具。
 
 ### 图表可视化（独立工具）
 
@@ -96,7 +113,7 @@
 [drill_query_hint]
 
 ### 结论
-[自然语言总结]
+[自然语言总结；禁止出现「路径甲」「路径乙」「分支 A/B/C」等内部路由字样]
 ```
 
 {% if instruction %}

@@ -22,6 +22,7 @@ export interface IOrgPermissionSettings extends Document {
   _id: Types.ObjectId;
   configId: string;
   enforcementEnabled: boolean;
+  sqlEnforcementEnabled: boolean;
   createdAt?: Date;
   updatedAt?: Date;
 }

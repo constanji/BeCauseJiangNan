@@ -259,6 +259,7 @@ async function getSettings(req, res) {
       settings = {
         configId: 'default',
         enforcementEnabled: false,
+        sqlEnforcementEnabled: false,
       };
     }
     return res.json({ success: true, settings });
@@ -271,16 +272,20 @@ async function getSettings(req, res) {
 async function updateSettings(req, res) {
   try {
     const { OrgPermissionSettings } = getModels();
-    const { enforcementEnabled } = req.body || {};
+    const { enforcementEnabled, sqlEnforcementEnabled } = req.body || {};
+    // 两个开关相互独立：只更新请求里显式传入的字段，避免一个开关的 PUT
+    // 把另一个开关未携带的字段当成 undefined -> Boolean(undefined)=false 误清空。
+    const update = { configId: 'default' };
+    if (enforcementEnabled !== undefined) {
+      update.enforcementEnabled = Boolean(enforcementEnabled);
+    }
+    if (sqlEnforcementEnabled !== undefined) {
+      update.sqlEnforcementEnabled = Boolean(sqlEnforcementEnabled);
+    }
     const settings = await OrgPermissionSettings.findOneAndUpdate(
       { configId: 'default' },
-      {
-        $set: {
-          configId: 'default',
-          enforcementEnabled: Boolean(enforcementEnabled),
-        },
-      },
-      { upsert: true, new: true },
+      { $set: update },
+      { upsert: true, new: true, setDefaultsOnInsert: true },
     );
     invalidateOrgPermissionCache();
     return res.json({ success: true, settings });

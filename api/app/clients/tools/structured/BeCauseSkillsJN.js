@@ -16,10 +16,13 @@ class BeCauseSkillsJN extends Tool {
   name = 'because_jn';
 
   description =
-    'BeCause江南问数工具。优先使用 indicator-understanding（指标编码/标准名称/口径，固定检索「指标定义信息」）' +
-    '与 org-context（机构号/机构名/下级，固定检索「机构信息」）；' +
-    '术语、规则、非表格知识用 rag-retrieval 兜底。' +
-    '其余问数命令：light-schema、database-schema、sql-executor、fluctuation-attribution。' +
+    'BeCause江南问数工具。**唯一合法工具名是 because_jn**；' +
+    'indicator-understanding / org-context / light-schema / rag-retrieval / database-schema / sql-executor / fluctuation-attribution ' +
+    '只是本工具的 command 参数值，禁止把它们（或中文名「指标理解」「机构背景」）当作独立工具调用。' +
+    '优先使用 command=indicator-understanding（指标编码/标准名称/口径，固定检索「指标定义信息」）' +
+    '与 command=org-context（机构号/机构名/下级，固定检索「机构信息」）；' +
+    '术语、规则、非表格知识用 command=rag-retrieval 兜底。' +
+    '其余 command：light-schema、database-schema、sql-executor、fluctuation-attribution。' +
     '注意：无 knowledge-discovery / sql-validation / result-analysis；下钻走归因路径甲/乙；图表请用独立 echarts_generator_app。';
 
   schema = z.object({
@@ -35,7 +38,10 @@ class BeCauseSkillsJN extends Tool {
     arguments: z
       .string()
       .optional()
-      .describe('命令参数，JSON字符串格式，包含各命令所需的参数'),
+      .describe(
+        '子命令参数的一层 JSON 字符串（如 {"sql":"SELECT..."} 或 {"query":"..."}）。' +
+          '禁止再包 {"command":"...","arguments":"..."}；command 只能出现在外层顶层字段。',
+      ),
   });
 
   constructor(fields = {}) {
@@ -45,12 +51,21 @@ class BeCauseSkillsJN extends Tool {
     this.projectRoot = fields.projectRoot || process.cwd();
     this.conversation = fields.conversation;
     this.dataSourceId = fields.dataSourceId || null;
+    // 当前用户机构编码：handleTools 已统一解析好并放入 fields.orgCode，
+    // 这里兜底直接从 req 上再取一次，供 sql-executor 机构权限强制校验/改写使用。
+    this.orgCode = fields.orgCode || fields.req?.body?.orgCode || fields.req?.user?.orgCode || null;
 
     const allowed = fields.req?.body?._benchmarkAllowedCommands;
     if (Array.isArray(allowed) && allowed.length > 0) {
       this.schema = z.object({
         command: z.enum(allowed),
-        arguments: z.string().optional().describe('命令参数，JSON字符串格式，包含各命令所需的参数'),
+        arguments: z
+          .string()
+          .optional()
+          .describe(
+            '子命令参数的一层 JSON 字符串（如 {"sql":"SELECT..."} 或 {"query":"..."}）。' +
+              '禁止再包 {"command":"...","arguments":"..."}；command 只能出现在外层顶层字段。',
+          ),
       });
     }
 
@@ -87,6 +102,7 @@ class BeCauseSkillsJN extends Tool {
         userId: this.userId,
         req: this.req,
         conversation: this.conversation,
+        orgCode: this.orgCode,
       }),
       'fluctuation-attribution': new BeCauseJN.FluctuationAttributionTool({
         userId: this.userId,
@@ -179,10 +195,31 @@ class BeCauseSkillsJN extends Tool {
         return JSON.stringify({ success: false, error: `未知命令: ${command}` });
       }
 
-      const { args, error: parseError } = this.parseArguments(argsString);
+      let { args, error: parseError } = this.parseArguments(argsString);
       if (parseError) {
         logger.warn(`[BeCauseSkillsJN] arguments 解析失败: ${parseError}`);
         return JSON.stringify({ success: false, error: parseError });
+      }
+
+      // 防御性纠错：模型偶尔会把子命令自己的参数又包一层跟外层同构的
+      // {command, arguments} 信封(比如把 sql-executor 该传的 {sql:"..."} 误写成
+      // {"command":"sql-executor","arguments":"{\"sql\":\"...\"}"})，多见于 SQL
+      // 语句本身带很多单引号/子查询、模型转义层数搞混的场景。8 个子命令没有一个
+      // 用 command/arguments 作为自己的参数名，命中这个特征基本可以确定是误包了一层，
+      // 直接再拆一层，而不是把整个信封原样丢给子工具导致"缺少 SQL 语句"之类的假错误。
+      if (
+        args &&
+        typeof args === 'object' &&
+        typeof args.command === 'string' &&
+        typeof args.arguments === 'string'
+      ) {
+        logger.warn(
+          `[BeCauseSkillsJN] 检测到 arguments 被多包了一层 {command, arguments} 信封(command=${command})，自动再拆一层`,
+        );
+        const unwrapped = this.parseArguments(args.arguments);
+        if (!unwrapped.error) {
+          args = unwrapped.args;
+        }
       }
 
       if (command === 'fluctuation-attribution') {

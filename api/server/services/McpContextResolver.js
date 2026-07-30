@@ -84,15 +84,29 @@ function getContextInjectionConfig(serverName, mcpConfig, toolName) {
   }
 
   const defaults = DEFAULT_CONTEXT_INJECTION[serverName];
-  if (!defaults) {
-    return null;
+  if (defaults) {
+    if (toolName && defaults[toolName]?.inject && defaults[toolName]?.resolve) {
+      return defaults[toolName];
+    }
+    if (defaults.inject && defaults.resolve) {
+      return defaults;
+    }
   }
-  if (toolName && defaults[toolName]?.inject && defaults[toolName]?.resolve) {
-    return defaults[toolName];
+
+  // 兜底：Because.yaml 里 MCP server 的 key 是管理员自定义的显示名字（比如把
+  // becauseai-server 改叫 dat），跟这里硬编码的 key 对不上时，DEFAULT_CONTEXT_INJECTION[serverName]
+  // 会直接查空，导致 projectId/datasourceId 注入被整体静默跳过（现网真实出现过：改名后
+  // ask_data 一直只带 arg5，DAT 引擎报 "requires projectId"）。
+  // ask_data/agents 是具体、不易与其它 MCP 工具重名的命令，按 toolName 在所有预置配置里
+  // 兜底查找一次，不强依赖 server 名字必须完全一致，避免改名字就整体失效。
+  if (toolName) {
+    for (const serverDefaults of Object.values(DEFAULT_CONTEXT_INJECTION)) {
+      if (serverDefaults?.[toolName]?.inject && serverDefaults?.[toolName]?.resolve) {
+        return serverDefaults[toolName];
+      }
+    }
   }
-  if (defaults.inject && defaults.resolve) {
-    return defaults;
-  }
+
   return null;
 }
 
@@ -363,24 +377,45 @@ function injectNeedsDatasourceContext(injectMap) {
   );
 }
 
-async function isEnforcementEnabled() {
+/**
+ * 读取机构权限设置文档（带缓存）。`enforcementEnabled`（MCP 门禁）与
+ * `sqlEnforcementEnabled`（Because-jn sql-executor 强制校验/改写）共用同一份
+ * 缓存文档，避免两个开关各自查一次库。
+ * @returns {Promise<{ enforcementEnabled: boolean, sqlEnforcementEnabled: boolean }>}
+ */
+async function getOrgPermissionSettings() {
   const cached = getSettingsCache();
   if (cached.value != null && cached.expiresAt > Date.now()) {
-    return Boolean(cached.value.enforcementEnabled);
+    return cached.value;
   }
+  const fallback = { enforcementEnabled: false, sqlEnforcementEnabled: false };
   try {
     const { OrgPermissionSettings } = require("~/db/models");
     if (!OrgPermissionSettings) {
-      return false;
+      return fallback;
     }
     const settings = await OrgPermissionSettings.findOne({ configId: "default" }).lean();
-    const value = settings || { enforcementEnabled: false };
+    const value = settings || fallback;
     setSettingsCache(value);
-    return Boolean(value.enforcementEnabled);
+    return value;
   } catch (error) {
     logger.warn("[OrgPermission] Failed to load settings, treat as disabled:", error);
-    return false;
+    return fallback;
   }
+}
+
+async function isEnforcementEnabled() {
+  const settings = await getOrgPermissionSettings();
+  return Boolean(settings.enforcementEnabled);
+}
+
+/**
+ * 独立于 `isEnforcementEnabled`（MCP 门禁）：控制 Because-jn 的
+ * sql-executor 是否按机构权限强制校验/改写 SQL。默认关闭。
+ */
+async function isSqlEnforcementEnabled() {
+  const settings = await getOrgPermissionSettings();
+  return Boolean(settings.sqlEnforcementEnabled);
 }
 
 async function getOrgUnits() {
@@ -536,6 +571,8 @@ module.exports = {
   injectNeedsDatasourceContext,
   assertOrgCodeAllowed,
   isEnforcementEnabled,
+  isSqlEnforcementEnabled,
+  getOrgUnits,
   applyContextInjection,
   lookupDatasource,
 };

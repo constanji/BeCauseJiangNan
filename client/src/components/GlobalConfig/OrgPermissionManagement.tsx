@@ -1,5 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Button, Switch, useToastContext } from '@because/client';
+import {
+  Button,
+  Switch,
+  useToastContext,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@because/client';
 import { dataService } from '@because/data-provider';
 import {
   ChevronDown,
@@ -8,6 +17,7 @@ import {
   Loader2,
   Plus,
   RefreshCw,
+  Search,
   Trash2,
   Upload,
   Database,
@@ -85,59 +95,152 @@ function qualifiedTable(schema: string | null, table: string) {
   return `${schema}.${table}`;
 }
 
+function filterOrgTreeByQueryAndLevel(
+  roots: OrgUnit[],
+  opts: { q?: string; brchLv?: '' | string },
+): { tree: OrgUnit[]; expandKeys: Set<string>; matchCount: number } {
+  const q = String(opts.q || '')
+    .trim()
+    .toLowerCase();
+  const lvFilter = opts.brchLv ? Number(opts.brchLv) : null;
+  const expandKeys = new Set<string>();
+  let matchCount = 0;
+
+  const walk = (nodes: OrgUnit[]): OrgUnit[] => {
+    const out: OrgUnit[] = [];
+    for (const node of nodes) {
+      const filteredChildren = walk(node.children || []);
+      const textHit =
+        !q ||
+        `${node.orgCode} ${node.orgName || ''}`.toLowerCase().includes(q);
+      const lvHit = lvFilter == null || Number(node.brchLv) === lvFilter;
+      const selfMatch = textHit && lvHit;
+      if (selfMatch) matchCount += 1;
+      if (selfMatch || filteredChildren.length > 0) {
+        if (filteredChildren.length > 0) expandKeys.add(node.orgCode);
+        out.push({ ...node, children: filteredChildren });
+      }
+    }
+    return out;
+  };
+
+  if (!q && lvFilter == null) {
+    return { tree: roots, expandKeys, matchCount: 0 };
+  }
+  return { tree: walk(roots), expandKeys, matchCount };
+}
+
+function defaultExpandKeys(roots: OrgUnit[]): Set<string> {
+  const keys = new Set<string>();
+  for (const root of roots) {
+    keys.add(root.orgCode);
+    for (const child of root.children || []) {
+      keys.add(child.orgCode);
+    }
+  }
+  return keys;
+}
+
+/** 对齐 DAT「机构信息」树行：深度缩进 + 操作贴内容 + 行内 brchLv */
 function OrgTreeNodeView({
   node,
   depth,
+  expanded,
+  onToggle,
+  highlightQuery,
+  onUpdateBrchLv,
   onAddChild,
   onEdit,
   onDelete,
 }: {
   node: OrgUnit;
   depth: number;
+  expanded: Set<string>;
+  onToggle: (code: string) => void;
+  highlightQuery: string;
+  onUpdateBrchLv: (node: OrgUnit, newLv: number) => void;
   onAddChild: (node: OrgUnit) => void;
   onEdit: (node: OrgUnit) => void;
   onDelete: (node: OrgUnit) => void;
 }) {
-  const [expanded, setExpanded] = useState(depth < 2);
   const hasChildren = Boolean(node.children?.length);
-  const lvLabel = BRCH_LV_OPTIONS.find((o) => o.value === node.brchLv)?.label || '未设置';
+  const isOpen = expanded.has(node.orgCode);
+  const q = highlightQuery.trim().toLowerCase();
+  const selfHit =
+    !!q && `${node.orgCode} ${node.orgName || ''}`.toLowerCase().includes(q);
 
   return (
-    <li>
+    <li className="flex flex-col">
       <div
         className={cn(
-          'flex items-center gap-2 py-1 px-1 rounded hover:bg-surface-hover/50 cursor-pointer select-none',
+          'group flex items-center gap-1.5 rounded py-1 pr-1.5 transition-colors cursor-pointer select-none',
+          'hover:bg-sky-500/15 hover:ring-1 hover:ring-inset hover:ring-sky-500/30',
+          selfHit && 'bg-sky-500/10',
           depth === 0 && 'font-medium',
         )}
-        onClick={() => hasChildren && setExpanded(!expanded)}
+        style={{ paddingLeft: 6 + depth * 18 }}
+        onClick={() => hasChildren && onToggle(node.orgCode)}
       >
         {hasChildren ? (
-          expanded ? (
-            <ChevronDown className="h-3.5 w-3.5 text-text-tertiary shrink-0" />
-          ) : (
-            <ChevronRight className="h-3.5 w-3.5 text-text-tertiary shrink-0" />
-          )
-        ) : (
-          <span className="w-3.5 shrink-0" />
-        )}
-        <span className="text-sm text-text-primary min-w-0 truncate">
-          {node.orgCode} {node.orgName || ''}
-        </span>
-        <span className="text-xs text-text-tertiary shrink-0">{lvLabel}</span>
-        {node.dataScope && (
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-tertiary text-text-secondary shrink-0">
-            {node.dataScope}
-          </span>
-        )}
-        {node.enabled === false && (
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/10 text-red-500 shrink-0">
-            已禁用
-          </span>
-        )}
-        <span className="flex items-center gap-1 ml-auto" onClick={(e) => e.stopPropagation()}>
           <button
             type="button"
-            className="rounded p-1 text-text-tertiary hover:text-blue-500"
+            className="shrink-0 rounded p-0 text-text-tertiary hover:text-text-primary"
+            aria-label={isOpen ? '折叠' : '展开'}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggle(node.orgCode);
+            }}
+          >
+            {isOpen ? (
+              <ChevronDown className="h-3.5 w-3.5" />
+            ) : (
+              <ChevronRight className="h-3.5 w-3.5" />
+            )}
+          </button>
+        ) : (
+          <span className="inline-block w-3.5 shrink-0" />
+        )}
+        <span className="shrink-0 font-mono text-[13px] text-text-secondary group-hover:text-text-primary">
+          {node.orgCode}
+        </span>
+        <span className="min-w-0 truncate text-[13px] text-text-primary">
+          {node.orgName || ''}
+        </span>
+        {hasChildren ? (
+          <span className="shrink-0 text-[11px] text-text-tertiary">
+            {node.children!.length}
+          </span>
+        ) : null}
+        <span className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+          <Select
+            value={node.brchLv != null ? String(node.brchLv) : undefined}
+            onValueChange={(v) => onUpdateBrchLv(node, Number(v))}
+          >
+            <SelectTrigger
+              className={cn(
+                'h-6 w-[158px] text-xs',
+                'border border-gray-300 bg-white text-gray-900',
+                'dark:border-gray-600 dark:bg-gray-700 dark:text-white',
+              )}
+            >
+              <SelectValue placeholder="未设置级别" />
+            </SelectTrigger>
+            <SelectContent className="border border-gray-300 bg-white text-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-white">
+              {BRCH_LV_OPTIONS.map((opt) => (
+                <SelectItem key={opt.value} value={String(opt.value)}>
+                  {opt.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {node.enabled === false ? (
+            <span className="rounded bg-red-500/10 px-1.5 text-[11px] leading-5 text-red-500">
+              已禁用
+            </span>
+          ) : null}
+          <button
+            type="button"
+            className="rounded p-1 text-text-tertiary hover:bg-surface-hover hover:text-blue-500"
             title="添加子机构"
             onClick={() => onAddChild(node)}
           >
@@ -145,7 +248,7 @@ function OrgTreeNodeView({
           </button>
           <button
             type="button"
-            className="rounded p-1 text-text-tertiary hover:text-blue-500"
+            className="rounded p-1 text-text-tertiary hover:bg-surface-hover hover:text-blue-500"
             title="编辑"
             onClick={() => onEdit(node)}
           >
@@ -153,7 +256,7 @@ function OrgTreeNodeView({
           </button>
           <button
             type="button"
-            className="rounded p-1 text-text-tertiary hover:text-red-500"
+            className="rounded p-1 text-text-tertiary hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-900/20"
             title="删除"
             onClick={() => onDelete(node)}
           >
@@ -161,20 +264,24 @@ function OrgTreeNodeView({
           </button>
         </span>
       </div>
-      {hasChildren && expanded && (
-        <ul className="ml-4 border-l border-border-light pl-2">
+      {hasChildren && isOpen ? (
+        <ul className="flex flex-col gap-px">
           {node.children!.map((child) => (
             <OrgTreeNodeView
               key={child.orgCode}
               node={child}
               depth={depth + 1}
+              expanded={expanded}
+              onToggle={onToggle}
+              highlightQuery={highlightQuery}
+              onUpdateBrchLv={onUpdateBrchLv}
               onAddChild={onAddChild}
               onEdit={onEdit}
               onDelete={onDelete}
             />
           ))}
         </ul>
-      )}
+      ) : null}
     </li>
   );
 }
@@ -188,9 +295,15 @@ export default function OrgPermissionManagement() {
   const [loading, setLoading] = useState(true);
   const [savingSettings, setSavingSettings] = useState(false);
   const [enforcementEnabled, setEnforcementEnabled] = useState(false);
+  const [savingSqlEnforcement, setSavingSqlEnforcement] = useState(false);
+  const [sqlEnforcementEnabled, setSqlEnforcementEnabled] = useState(false);
   const [tree, setTree] = useState<OrgUnit[]>([]);
   const [unitCount, setUnitCount] = useState(0);
   const [dataSources, setDataSources] = useState<DataSourceOption[]>([]);
+  const [searchInput, setSearchInput] = useState('');
+  const [activeSearch, setActiveSearch] = useState('');
+  const [levelFilter, setLevelFilter] = useState<'' | string>('');
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
 
   const [editOpen, setEditOpen] = useState(false);
   const [editing, setEditing] = useState<OrgUnit | null>(null);
@@ -226,10 +339,84 @@ export default function OrgPermissionManagement() {
     return headers;
   }, [token]);
 
-  const derivedScope = useMemo(() => {
+  const derivedScopeLabel = useMemo(() => {
     const lv = form.brchLv ? Number(form.brchLv) : null;
-    return BRCH_LV_OPTIONS.find((o) => o.value === lv)?.scope || '-';
+    return BRCH_LV_OPTIONS.find((o) => o.value === lv)?.label || '-';
   }, [form.brchLv]);
+
+  const { tree: filteredTree, expandKeys: filterExpandKeys, matchCount } = useMemo(
+    () => filterOrgTreeByQueryAndLevel(tree, { q: activeSearch, brchLv: levelFilter }),
+    [tree, activeSearch, levelFilter],
+  );
+
+  const hasActiveFilter = Boolean(activeSearch.trim() || levelFilter);
+
+  useEffect(() => {
+    setExpanded(defaultExpandKeys(tree));
+  }, [tree]);
+
+  useEffect(() => {
+    if (filterExpandKeys.size === 0) return;
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      for (const k of filterExpandKeys) next.add(k);
+      return next;
+    });
+  }, [filterExpandKeys]);
+
+  const onToggle = useCallback((code: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(code)) next.delete(code);
+      else next.add(code);
+      return next;
+    });
+  }, []);
+
+  const applySearch = () => {
+    setActiveSearch(searchInput.trim());
+  };
+
+  const updateBrchLvInTree = (nodes: OrgUnit[], orgCode: string, newLv: number): OrgUnit[] => {
+    const scope = BRCH_LV_OPTIONS.find((o) => o.value === newLv)?.scope || null;
+    return nodes.map((n) => {
+      if (n.orgCode === orgCode) {
+        return { ...n, brchLv: newLv, dataScope: scope };
+      }
+      if (n.children?.length) {
+        return { ...n, children: updateBrchLvInTree(n.children, orgCode, newLv) };
+      }
+      return n;
+    });
+  };
+
+  const handleUpdateBrchLv = async (node: OrgUnit, newLv: number) => {
+    const prevTree = tree;
+    setTree((t) => updateBrchLvInTree(t, node.orgCode, newLv));
+    try {
+      const apiBase = getApiBase();
+      const res = await fetch(
+        `${apiBase}/api/org-permission/units/${encodeURIComponent(node.orgCode)}`,
+        {
+          method: 'PUT',
+          headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ brchLv: newLv }),
+        },
+      );
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json.success === false) {
+        throw new Error(json.error || `HTTP ${res.status}`);
+      }
+      showToast({
+        message: `${node.orgCode} 级别已更新为 ${BRCH_LV_OPTIONS.find((o) => o.value === newLv)?.label || newLv}`,
+        status: 'success',
+      });
+    } catch (error: any) {
+      setTree(prevTree);
+      showToast({ message: `更新级别失败: ${error.message}`, status: 'error' });
+    }
+  };
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -248,6 +435,7 @@ export default function OrgPermissionManagement() {
       const settingsJson = await settingsRes.json();
       const unitsJson = await unitsRes.json();
       setEnforcementEnabled(Boolean(settingsJson?.settings?.enforcementEnabled));
+      setSqlEnforcementEnabled(Boolean(settingsJson?.settings?.sqlEnforcementEnabled));
       setTree(unitsJson?.tree || []);
       setUnitCount(Array.isArray(unitsJson?.units) ? unitsJson.units.length : 0);
 
@@ -289,6 +477,38 @@ export default function OrgPermissionManagement() {
       showToast({ message: `保存失败: ${error.message}`, status: 'error' });
     } finally {
       setSavingSettings(false);
+    }
+  };
+
+  /**
+   * 独立开关：控制 Because-jn 的 sql-executor 是否按机构权限强制校验/改写 SQL
+   * （越权的 org_code 字面量直接拒绝执行；IN(...) 列表按可访问范围收窄）。
+   * 与「机构权限拦截」（MCP 门禁）互相独立，可分别开关。
+   */
+  const saveSqlEnforcement = async (checked: boolean) => {
+    setSavingSqlEnforcement(true);
+    const prev = sqlEnforcementEnabled;
+    setSqlEnforcementEnabled(checked);
+    try {
+      const apiBase = getApiBase();
+      const res = await fetch(`${apiBase}/api/org-permission/settings`, {
+        method: 'PUT',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ sqlEnforcementEnabled: checked }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      showToast({
+        message: checked
+          ? '已开启 SQL 强制校验/改写（sql-executor 将按机构权限拦截越权 SQL）'
+          : '已关闭 SQL 强制校验/改写',
+        status: 'success',
+      });
+    } catch (error: any) {
+      setSqlEnforcementEnabled(prev);
+      showToast({ message: `保存失败: ${error.message}`, status: 'error' });
+    } finally {
+      setSavingSqlEnforcement(false);
     }
   };
 
@@ -647,8 +867,8 @@ export default function OrgPermissionManagement() {
           <div>
             <h3 className="text-sm font-semibold text-text-primary">机构权限拦截</h3>
             <p className="mt-1 text-xs text-text-secondary">
-              开启后，声明了 orgCode 注入的 MCP 工具在调用前会校验机构编码是否在册，并按 brchLv
-              派生的 dataScope（ALL / SELF_AND_DESCENDANTS / SELF）确认可访问范围非空。关闭时等同当前软透传，不拦截。
+              开启后，声明了 orgCode 注入的 MCP 工具在调用前会校验机构编码是否在册，并按权限级别
+              （全行 / 本级+下级 / 仅本级）确认可访问范围非空。关闭时等同当前软透传，不拦截。
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
@@ -663,7 +883,79 @@ export default function OrgPermissionManagement() {
         </div>
       </div>
 
+      <div className="rounded-lg border border-border-light bg-surface-primary p-4">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h3 className="text-sm font-semibold text-text-primary">SQL 强制校验/改写</h3>
+            <p className="mt-1 text-xs text-text-secondary">
+              开启后，Because-jn 的 sql-executor 会按当前用户机构权限（全行 / 本级+下级 / 仅本级）
+              校验 SQL 中的 org_code：越权的字面量直接拒绝执行，IN(...) 列表按可访问范围收窄，
+              未显式过滤但引用了 org_code 列的查询会自动补上范围限制。关闭时 SQL 原样执行，不做拦截。
+            </p>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <span className="text-xs text-text-tertiary">{sqlEnforcementEnabled ? '已开启' : '已关闭'}</span>
+            <Switch
+              checked={sqlEnforcementEnabled}
+              disabled={savingSqlEnforcement || loading}
+              onCheckedChange={saveSqlEnforcement}
+              aria-label="SQL 强制校验/改写开关"
+            />
+          </div>
+        </div>
+      </div>
+
       <div className="flex flex-wrap items-center gap-2">
+        <div className="relative">
+          <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-tertiary" />
+          <input
+            type="text"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && applySearch()}
+            placeholder="按机构编码 / 名称过滤..."
+            className="w-56 rounded-md border border-gray-300 bg-white py-1.5 pl-8 pr-3 text-sm text-gray-900 placeholder:text-gray-400 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:placeholder:text-gray-400"
+          />
+        </div>
+        <Button size="sm" variant="outline" onClick={applySearch} disabled={loading}>
+          检索
+        </Button>
+        <Select
+          value={levelFilter || 'all'}
+          onValueChange={(v) => setLevelFilter(v === 'all' ? '' : v)}
+        >
+          <SelectTrigger
+            className={cn(
+              'h-8 w-[170px] text-xs',
+              'border border-gray-300 bg-white text-gray-900',
+              'dark:border-gray-600 dark:bg-gray-700 dark:text-white',
+            )}
+          >
+            <SelectValue placeholder="全部层级" />
+          </SelectTrigger>
+          <SelectContent className="border border-gray-300 bg-white text-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-white">
+            <SelectItem value="all">全部层级</SelectItem>
+            {BRCH_LV_OPTIONS.map((opt) => (
+              <SelectItem key={opt.value} value={String(opt.value)}>
+                {opt.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {hasActiveFilter && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              setSearchInput('');
+              setActiveSearch('');
+              setLevelFilter('');
+            }}
+          >
+            清除筛选
+          </Button>
+        )}
+        <span className="mx-1 hidden h-4 w-px bg-border-light sm:inline-block" />
         <Button size="sm" variant="outline" onClick={() => openCreate()} disabled={loading}>
           <Plus className="h-3.5 w-3.5 mr-1" />
           新增机构
@@ -701,26 +993,35 @@ export default function OrgPermissionManagement() {
         <Button size="sm" variant="destructive" onClick={clearAll} disabled={loading || unitCount === 0}>
           清空
         </Button>
-        <span className="text-xs text-text-tertiary ml-auto">共 {unitCount} 个机构</span>
+        <span className="text-xs text-text-tertiary ml-auto">
+          共 {unitCount} 个机构
+          {hasActiveFilter ? ` · 命中 ${matchCount} 个` : ''}
+        </span>
       </div>
 
       <div className="text-[11px] text-text-tertiary">
         从表导入：先选 JN 数据源并「连接数据库」加载 schema（优先 cmdata）与表（优先 c_par_brch_level），再按 DAT
-        规范校验必填列后覆盖导入。Excel 为兜底。
+        规范校验必填列后覆盖导入。Excel 为兜底。行内可直接改权限级别；增删改按钮紧跟机构名称。
       </div>
 
-      <div className="flex-1 overflow-auto rounded-lg border border-border-light bg-surface-primary p-3">
+      <div className="flex-1 overflow-auto rounded-lg border border-border-light bg-surface-primary p-2">
         {loading ? (
-          <div className="text-sm text-text-secondary">加载中…</div>
+          <div className="text-sm text-text-secondary p-2">加载中…</div>
+        ) : filteredTree.length === 0 && tree.length > 0 && hasActiveFilter ? (
+          <div className="text-sm text-text-secondary p-2">无匹配机构</div>
         ) : tree.length === 0 ? (
-          <div className="text-sm text-text-secondary">暂无机构，请手动新增或导入。</div>
+          <div className="text-sm text-text-secondary p-2">暂无机构，请手动新增或导入。</div>
         ) : (
-          <ul>
-            {tree.map((node) => (
+          <ul className="flex flex-col gap-px">
+            {filteredTree.map((node) => (
               <OrgTreeNodeView
                 key={node.orgCode}
                 node={node}
                 depth={0}
+                expanded={expanded}
+                onToggle={onToggle}
+                highlightQuery={activeSearch}
+                onUpdateBrchLv={handleUpdateBrchLv}
                 onAddChild={openCreate}
                 onEdit={openEdit}
                 onDelete={deleteUnit}
@@ -777,7 +1078,7 @@ export default function OrgPermissionManagement() {
                     </option>
                   ))}
                 </select>
-                <div className="mt-1 text-[11px] text-text-tertiary">派生 dataScope：{derivedScope}</div>
+                <div className="mt-1 text-[11px] text-text-tertiary">权限含义：{derivedScopeLabel}</div>
               </div>
               <label className="flex items-center gap-2 text-sm text-text-primary">
                 <input

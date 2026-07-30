@@ -13,6 +13,11 @@ const {
   stringifySqlExecutorError,
   formatSqlExecutorError,
 } = require(path.join(__dirname, '../../../api/server/utils/formatSqlExecutorError'));
+const {
+  OrgScopeViolationError,
+  evaluateOrgSqlEnforcement,
+  enforceOrgScopeOnSql,
+} = require(path.join(__dirname, '../../utils/sqlOrgEnforcement'));
 // 延迟加载模型函数，避免路径别名问题
 let getDataSourceById = null;
 let getProjectById = null;
@@ -148,6 +153,7 @@ class SqlExecutorTool extends Tool {
     super();
     this.req = fields.req; // 请求对象（用于获取用户信息）
     this.conversation = fields.conversation; // Conversation对象，包含project_id
+    this.orgCode = fields.orgCode || null; // 当前用户机构编码，供机构权限强制校验/改写使用
   }
 
   /**
@@ -509,6 +515,46 @@ class SqlExecutorTool extends Tool {
       }
     }
 
+    // 机构权限强制校验/改写（独立开关 sqlEnforcementEnabled，机构权限管理页可开关）
+    let finalSql = trimmedSql;
+    let orgScopeMeta = null;
+    try {
+      const enforcement = await evaluateOrgSqlEnforcement(this.orgCode);
+      if (enforcement.enabled) {
+        if (enforcement.blocked) {
+          return stringifySqlExecutorError({
+            error: enforcement.reason,
+            code: 'ORG_SCOPE_BLOCKED',
+            category: CATEGORY.SQL_POLICY,
+            hint: '联系管理员在「机构权限管理」中为该机构配置正确的权限级别，或关闭 SQL 强制校验开关。',
+            sql: trimmedSql,
+          });
+        }
+        const { sql: rewrittenSql, narrowed } = enforceOrgScopeOnSql(trimmedSql, {
+          scope: enforcement.scope,
+          accessibleOrgCodes: enforcement.accessibleOrgCodes,
+        });
+        finalSql = rewrittenSql;
+        orgScopeMeta = {
+          orgCode: enforcement.orgCode,
+          scope: enforcement.scope,
+          narrowed,
+        };
+      }
+    } catch (error) {
+      if (error instanceof OrgScopeViolationError) {
+        return stringifySqlExecutorError({
+          error: error.message,
+          code: error.meta?.code || 'ORG_SCOPE_VIOLATION',
+          category: CATEGORY.SQL_POLICY,
+          hint: '请将 org_code 过滤条件限定在当前用户的机构权限范围内后重试。',
+          sql: trimmedSql,
+        });
+      }
+      // 强制校验本身出错（如设置读取失败）不应阻塞正常查询：记录日志，按未启用处理
+      logger.warn('[SqlExecutorTool] 机构权限强制校验异常，跳过本次校验:', error.message);
+    }
+
     let activeDataSource = null;
     try {
       // 获取数据源ID
@@ -529,8 +575,8 @@ class SqlExecutorTool extends Tool {
       const { pool, dataSource } = await this.getConnectionPool(dataSourceId);
       activeDataSource = dataSource;
 
-      // 执行查询
-      let rows = await this.executeQuery(trimmedSql, pool, dataSource);
+      // 执行查询（机构权限强制校验/改写后的最终 SQL）
+      let rows = await this.executeQuery(finalSql, pool, dataSource);
 
       // 限制返回行数：取「模型传入值」与「服务端上限」中的较小值
       const effectiveMax =
@@ -549,8 +595,9 @@ class SqlExecutorTool extends Tool {
 
       const result = {
         success: true,
-        sql: trimmedSql,
+        sql: finalSql,
         rowCount: rows.length,
+        ...(orgScopeMeta ? { orgScope: orgScopeMeta } : {}),
         ...(truncated
           ? {
               truncated: true,
@@ -578,13 +625,13 @@ class SqlExecutorTool extends Tool {
       return JSON.stringify(result, null, 2);
     } catch (error) {
       logger.error('[SqlExecutorTool] SQL执行失败:', {
-        sql: trimmedSql.substring(0, 100),
+        sql: finalSql.substring(0, 100),
         error: error.message,
         stack: error.stack,
       });
 
       return JSON.stringify(
-        formatSqlExecutorError(error, { sql: trimmedSql, dataSource: activeDataSource }),
+        formatSqlExecutorError(error, { sql: finalSql, dataSource: activeDataSource }),
         null,
         2,
       );
