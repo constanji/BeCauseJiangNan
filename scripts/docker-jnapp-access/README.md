@@ -246,6 +246,19 @@ sudo bash root-all.sh [--diagnose-only] [--no-restart] [--user jnapp]
 - 不从外网下载 compose
 - **不覆盖**已存在的 `/usr/local/bin/docker-compose` 大文件
 
+## 临时兜底：compose 修不好时用 docker run 启动业务
+
+若 `docker ps` 正常、只是 `docker-compose` / `docker compose` 不可用，各服务目录已提供等价脚本（不依赖 compose）：
+
+| 服务目录 | 启动 | 停止 |
+|----------|------|------|
+| `Bc服务器用文件/` | `./start-docker.sh` | `./stop-docker.sh [--rm]` |
+| `DAT引擎服务器用文件/` | `./start-docker.sh` | `./stop-docker.sh [--rm]` |
+| `esb-adapter服务器用文件/` | `./start-docker.sh` | `./stop-docker.sh [--rm]` |
+
+原 `start.sh` / `deploy.sh` / `stop.sh` 在检测不到 compose 时也会自动转调上述脚本。  
+优先仍建议用本目录脚本把 compose 修好；docker run 仅作运维兜底。
+
 ## root 跑 jnapp 上传的脚本仍报 Permission denied？
 
 ```bash
