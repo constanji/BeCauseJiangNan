@@ -22,6 +22,22 @@ const MOCK_DS_NAME = '【Mock】知识库抽取验收';
 const KPI_REQUIRED = ['index_number'];
 const ORG_REQUIRED = ['data_dt', 'brchno', 'brchna', 'brchup', 'brchlv'];
 
+/**
+ * 抽取时的“近 N 个 data_dt”窗口：kpi_result_ctcx / c_par_brch_level 等事实表可能是几百万行，
+ * 不带 WHERE 的 DISTINCT ON 全表扫描风险很高（I/O、内存、超时）。
+ * 默认只在最近 N 个去重日期范围内取「按键最新一行」，其余历史日期不再纳入扫描范围。
+ * 语义上等价于「取近 N 期快照内出现过的指标/机构」，与业务上「早已停用的指标/机构不应再作为当前定义」是一致的；
+ * 如确需覆盖更久历史，可通过 options.recentDtCount 调大窗口。
+ */
+const DEFAULT_RECENT_DT_WINDOW = 3;
+const MAX_RECENT_DT_WINDOW = 30;
+
+function sanitizeRecentDtCount(value, fallback = DEFAULT_RECENT_DT_WINDOW) {
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.min(n, MAX_RECENT_DT_WINDOW);
+}
+
 function stableFileId(kind, entityId) {
   return kind === 'org' ? `org_info:${entityId}` : `kpi_def:${entityId}`;
 }
@@ -223,6 +239,87 @@ async function runQuery(dataSource, password, sql, params = []) {
   return gaussdbJdbcQuery(sql, params, dsCfg(dataSource), password);
 }
 
+/**
+ * 只拉 data_dt 一列，取最近 N 个去重日期（DESC 排序取前 N）。
+ * 相比对全表做多列 DISTINCT ON，这个查询窄、轻量得多；其结果 (windowDts 中最早一个) 用作后续
+ * 主查询的 WHERE data_dt >= cutoff 下界，从而让主查询命中日期分区/索引裁剪，而不是扫全表。
+ */
+async function getRecentDataDts(dataSource, password, qt, windowSize) {
+  const n = sanitizeRecentDtCount(windowSize);
+  const rows = await runQuery(
+    dataSource,
+    password,
+    `SELECT DISTINCT ${quoteIdent('data_dt')} AS dt
+     FROM ${qt}
+     ORDER BY ${quoteIdent('data_dt')} DESC
+     LIMIT ${n}`,
+  );
+  return (rows || [])
+    .map((r) => rowGet(r, 'dt', 'data_dt'))
+    .filter((v) => v != null)
+    .map((v) => String(v));
+}
+
+/**
+ * 检查表上是否已有覆盖 (codeCol, data_dt) 的索引；仅用于告警提示，不阻断抽取流程。
+ * 检查本身失败（权限不足 / 非 pg 系）时静默降级，返回 ok=null。
+ *
+ * 已知会造成误报「未检测到」的情况（因此对视图做特判、比较时忽略大小写、且措辞留有余地）：
+ * - schema/table 实际是视图/物化视图：索引建在底层基表上，pg_indexes 查该视图查不到任何索引；
+ * - 标识符大小写不一致（如库内实际是大写/带引号标识符）；
+ * - 部分 GaussDB 分区表的本地索引在 pg_indexes 里可能不完整反映。
+ */
+async function checkRecommendedIndex(dataSource, password, schema, table, codeCol) {
+  try {
+    const type = String(dataSource.type || '').toLowerCase();
+    if (!['gaussdb', 'postgresql', 'postgres'].includes(type)) {
+      return { ok: null, message: null };
+    }
+
+    // 视图/物化视图上没有自己的索引（索引建在底层基表），不应报「未检测到索引」
+    const relRows = await runQuery(
+      dataSource,
+      password,
+      `SELECT c.relkind
+       FROM pg_catalog.pg_class c
+       JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+       WHERE lower(n.nspname) = lower(?) AND lower(c.relname) = lower(?)`,
+      [schema, table],
+    );
+    const relkind = String(rowGet(relRows?.[0], 'relkind') || '').trim();
+    if (relkind === 'v' || relkind === 'm') {
+      return { ok: null, message: null };
+    }
+
+    const rows = await runQuery(
+      dataSource,
+      password,
+      `SELECT indexdef FROM pg_indexes WHERE lower(schemaname) = lower(?) AND lower(tablename) = lower(?)`,
+      [schema, table],
+    );
+    const defs = (rows || [])
+      .map((r) => String(rowGet(r, 'indexdef') || '').toLowerCase())
+      .filter(Boolean);
+    const codeColLower = String(codeCol).toLowerCase();
+    const hasComposite = defs.some((d) => d.includes(codeColLower) && d.includes('data_dt'));
+    const hasDataDtIndex = defs.some((d) => d.includes('data_dt'));
+    if (hasComposite) return { ok: true, message: null };
+    if (hasDataDtIndex) {
+      return {
+        ok: false,
+        message: `建议为 ${schema}.${table} 增加复合索引 (${codeCol}, data_dt DESC)：当前仅检测到 data_dt 相关索引，未覆盖 ${codeCol}，按键取最新快照的查询效率仍有优化空间。`,
+      };
+    }
+    return {
+      ok: false,
+      message: `未在 pg_indexes 中查到 ${schema}.${table} 上覆盖 data_dt 的索引；若该表实际已建索引但仍看到此提示，常见原因是该表是分区表（本地索引未必完整反映在 pg_indexes 里）或索引建在了不同的底层对象上，可忽略此提示。若确实缺失，建议增加索引 (${codeCol}, data_dt DESC)，否则窗口过滤与按键去重查询在大表上可能仍然较慢，甚至超时。`,
+    };
+  } catch (error) {
+    logger.warn(`[TableExtract] Index check skipped for ${schema}.${table}: ${error.message}`);
+    return { ok: null, message: null };
+  }
+}
+
 function preferSortTables(tables, prefer) {
   const list = [...(tables || [])];
   const preferNames =
@@ -410,23 +507,28 @@ async function extractKpiDefinition({ dataSource, password, schema, table, entit
 
   let dataDt = null;
   let rowsRaw = [];
+  let windowDataDts = null;
+  const recentDtCount = sanitizeRecentDtCount(options.recentDtCount);
 
   if (hasDataDt) {
-    // 元数据：表内最大日期（展示用）；行选择见下方「按键各自最新」
-    const maxRows = await runQuery(
-      dataSource,
-      password,
-      `SELECT MAX(${quoteIdent('data_dt')}) AS max_dt FROM ${qt}`,
-    );
-    dataDt = maxRows?.[0]?.max_dt != null ? String(maxRows[0].max_dt) : null;
-    // 禁止 SELECT *；按 index_number/kpi_code 各自取 data_dt 最新一行（旧日期独有指标也会抽到）
-    rowsRaw = await runQuery(
-      dataSource,
-      password,
-      `SELECT DISTINCT ON (${quoteIdent(codeCol)}) ${selectSql}
+    // kpi_result_ctcx 等事实表可能有几百万行，不能对全表做 DISTINCT ON。
+    // 先只查窄列取「最近 N 个去重日期」，再用其中最早一个日期作下界过滤主查询，
+    // 使主查询命中日期分区/索引裁剪，避免全表扫描。
+    windowDataDts = await getRecentDataDts(dataSource, password, qt, recentDtCount);
+    dataDt = windowDataDts[0] || null;
+    const cutoffDt = windowDataDts[windowDataDts.length - 1] ?? null;
+    // 禁止 SELECT *；按 index_number/kpi_code 各自取窗口内 data_dt 最新一行
+    rowsRaw = cutoffDt
+      ? await runQuery(
+          dataSource,
+          password,
+          `SELECT DISTINCT ON (${quoteIdent(codeCol)}) ${selectSql}
        FROM ${qt}
+       WHERE ${quoteIdent('data_dt')} >= ?
        ORDER BY ${quoteIdent(codeCol)}, ${quoteIdent('data_dt')} DESC, ${quoteIdent(orderExtra)}`,
-    );
+          [cutoffDt],
+        )
+      : [];
   } else {
     rowsRaw = await runQuery(
       dataSource,
@@ -451,6 +553,8 @@ async function extractKpiDefinition({ dataSource, password, schema, table, entit
     return o;
   });
 
+  const indexInfo = await checkRecommendedIndex(dataSource, password, schema, table, codeCol);
+
   const payload = {
     kind: 'kpi',
     filename: KPI_FILENAME,
@@ -460,11 +564,17 @@ async function extractKpiDefinition({ dataSource, password, schema, table, entit
     headers,
     rows: normalized,
     rowCount: normalized.length,
+    windowDataDts,
+    recentDtCount: hasDataDt ? recentDtCount : null,
+    indexWarning: indexInfo.message,
   };
   if (entityId) setExtractCache(entityId, 'kpi', payload);
   logger.info(
-    `[TableExtract] KPI extracted entity=${entityId} table=${schema}.${table} dataDt=${dataDt} rows=${payload.rowCount} cols=${selectCols.length}`,
+    `[TableExtract] KPI extracted entity=${entityId} table=${schema}.${table} dataDt=${dataDt} window=${JSON.stringify(windowDataDts)} rows=${payload.rowCount} cols=${selectCols.length}`,
   );
+  if (indexInfo.message) {
+    logger.warn(`[TableExtract] ${indexInfo.message}`);
+  }
   return payload;
 }
 
@@ -515,27 +625,32 @@ async function extractOrgInfo({ dataSource, password, schema, table, entityId, o
   }
 
   const qt = qualifiedTable(schema, table);
-  // 元数据：表内最大日期（展示用）；行选择按 brchno 各自取最新 data_dt
-  const maxRows = await runQuery(
-    dataSource,
-    password,
-    `SELECT MAX(${quoteIdent('data_dt')}) AS max_dt FROM ${qt}`,
-  );
-  const dataDt = maxRows?.[0]?.max_dt != null ? String(maxRows[0].max_dt) : null;
+  const recentDtCount = sanitizeRecentDtCount(options.recentDtCount);
+  // c_par_brch_level 同样可能是几百万行的历史快照表，不能对全表做 DISTINCT ON。
+  // 先取「最近 N 个去重日期」，再以最早一个日期作下界过滤主查询。
+  // 活跃机构通常每期快照都会出现，窗口内即可覆盖完整当前机构树；
+  // 若确需追溯更早历史（如已撤并机构），可通过 options.recentDtCount 调大窗口。
+  const windowDataDts = await getRecentDataDts(dataSource, password, qt, recentDtCount);
+  const dataDt = windowDataDts[0] || null;
+  const cutoffDt = windowDataDts[windowDataDts.length - 1] ?? null;
 
   // 窄列拉取：必填树字段 + 表内存在的补充列（用于 parent_org_name / scope_note 等）
-  // 按 brchno 各自取 data_dt 最新一行（最新日期缺席、旧日期有记录的机构也会抽到）
+  // 按 brchno 各自取窗口内 data_dt 最新一行
   const selectCols = [
     ...ORG_SOURCE_REQUIRED_SELECT,
     ...ORG_SOURCE_OPTIONAL_COLS.filter((c) => colNames.includes(c)),
   ];
-  const rowsRaw = await runQuery(
-    dataSource,
-    password,
-    `SELECT DISTINCT ON (${quoteIdent('brchno')}) ${selectListSql(selectCols)}
+  const rowsRaw = cutoffDt
+    ? await runQuery(
+        dataSource,
+        password,
+        `SELECT DISTINCT ON (${quoteIdent('brchno')}) ${selectListSql(selectCols)}
      FROM ${qt}
+     WHERE ${quoteIdent('data_dt')} >= ?
      ORDER BY ${quoteIdent('brchno')}, ${quoteIdent('data_dt')} DESC, ${quoteIdent('brchna')}`,
-  );
+        [cutoffDt],
+      )
+    : [];
 
   const dedup = new Map();
   for (const raw of rowsRaw || []) {
@@ -556,6 +671,7 @@ async function extractOrgInfo({ dataSource, password, schema, table, entityId, o
 
   // 输出完整 org_master 结构（含 leaf_child_* / kpi_query_*），不是源表四列
   const built = buildOrgMasterFromBrchRows([...dedup.values()]);
+  const indexInfo = await checkRecommendedIndex(dataSource, password, schema, table, 'brchno');
   const payload = {
     kind: 'org',
     filename: ORG_FILENAME,
@@ -565,11 +681,17 @@ async function extractOrgInfo({ dataSource, password, schema, table, entityId, o
     headers: built.headers,
     rows: built.rows,
     rowCount: built.rowCount,
+    windowDataDts,
+    recentDtCount,
+    indexWarning: indexInfo.message,
   };
   if (entityId) setExtractCache(entityId, 'org', payload);
   logger.info(
-    `[TableExtract] Org extracted entity=${entityId} table=${schema}.${table} dataDt=${dataDt} rows=${payload.rowCount} (org_master cols=${built.headers.length})`,
+    `[TableExtract] Org extracted entity=${entityId} table=${schema}.${table} dataDt=${dataDt} window=${JSON.stringify(windowDataDts)} rows=${payload.rowCount} (org_master cols=${built.headers.length})`,
   );
+  if (indexInfo.message) {
+    logger.warn(`[TableExtract] ${indexInfo.message}`);
+  }
   return payload;
 }
 
@@ -594,4 +716,7 @@ module.exports = {
   getMockTablesForSchema,
   stableFileId,
   toPreviewPayload,
+  DEFAULT_RECENT_DT_WINDOW,
+  MAX_RECENT_DT_WINDOW,
+  sanitizeRecentDtCount,
 };

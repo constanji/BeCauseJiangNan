@@ -376,6 +376,8 @@ export default function KnowledgeBaseManagement() {
   const [extractTables, setExtractTables] = useState<string[]>([]);
   const [extractSchema, setExtractSchema] = useState('');
   const [extractTable, setExtractTable] = useState('');
+  /** 抽取窗口：只在最近 N 个去重 data_dt 内取「按键最新一行」，避免大表全量扫描 */
+  const [extractRecentDtCount, setExtractRecentDtCount] = useState(3);
   const [loadingExtractSchemas, setLoadingExtractSchemas] = useState(false);
   const [loadingExtractTables, setLoadingExtractTables] = useState(false);
   /** 指标/机构抽取：需手动点「连接数据库」后才拉 schema/表，避免每次切 Tab 都连库 */
@@ -388,6 +390,9 @@ export default function KnowledgeBaseManagement() {
     schema?: string;
     table?: string;
     dataDt?: string | null;
+    windowDataDts?: string[] | null;
+    recentDtCount?: number | null;
+    indexWarning?: string | null;
     headers: string[];
     rows: Record<string, string>[];
     rowCount: number;
@@ -629,6 +634,7 @@ export default function KnowledgeBaseManagement() {
       const body = {
         schema: extractSchema || undefined,
         table: extractTable || undefined,
+        recentDtCount: extractRecentDtCount || undefined,
       };
       const res =
         activeTab === 'kpi_definition'
@@ -644,6 +650,9 @@ export default function KnowledgeBaseManagement() {
         schema: res.schema,
         table: res.table,
         dataDt: res.dataDt,
+        windowDataDts: res.windowDataDts,
+        recentDtCount: res.recentDtCount,
+        indexWarning: res.indexWarning,
         headers: res.headers || [],
         rows: res.rows || [],
         rowCount: res.totalRowCount ?? res.rowCount ?? (res.rows || []).length,
@@ -655,6 +664,9 @@ export default function KnowledgeBaseManagement() {
         message: `抽取成功：${res.totalRowCount ?? res.rowCount ?? 0} 行${res.dataDt ? `（data_dt=${res.dataDt}）` : ''}${res.mock ? ' [Mock 数据源]' : ''}`,
         status: 'success',
       });
+      if (res.indexWarning) {
+        showToast({ message: res.indexWarning, status: 'warning' });
+      }
     } catch (err: any) {
       showToast({ message: `抽取失败: ${formatRequestError(err, '未知错误')}`, status: 'error' });
     } finally {
@@ -1527,6 +1539,23 @@ export default function KnowledgeBaseManagement() {
                     emptyText="无匹配表"
                   />
                 </div>
+                <div className="w-28">
+                  <label className="mb-1 block text-xs text-text-secondary" title="只在最近 N 个去重 data_dt 内取「按键最新一行」，避免大表全量扫描">
+                    近 N 期
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={30}
+                    value={extractRecentDtCount}
+                    onChange={(e) => {
+                      const v = Math.floor(Number(e.target.value));
+                      setExtractRecentDtCount(Number.isFinite(v) && v > 0 ? Math.min(v, 30) : 3);
+                    }}
+                    disabled={!extractDbConnected}
+                    className="w-full rounded-lg border border-border-light bg-surface-primary px-2 py-2 text-sm"
+                  />
+                </div>
                 <Button
                   type="button"
                   onClick={handleExtractFromTable}
@@ -1544,8 +1573,8 @@ export default function KnowledgeBaseManagement() {
               </div>
               <p className="text-xs text-text-tertiary">
                 {activeTab === 'kpi_definition'
-                  ? '先点「连接数据库」加载 schema/表，再抽取。指标：从 kpi.kpi_result_ctcx 按 index_number 各自取最新 data_dt 去重，映射为「指标定义信息」。'
-                  : '先点「连接数据库」加载 schema/表，再抽取。机构：从 cmdata.c_par_brch_level 按 brchno 各自取最新 data_dt 去重后派生完整 org_master。'}
+                  ? '先点「连接数据库」加载 schema/表，再抽取。指标：只在最近 N 个去重 data_dt 窗口内，从 kpi.kpi_result_ctcx 按 index_number 各自取最新一行去重，映射为「指标定义信息」，避免全表扫描超时。'
+                  : '先点「连接数据库」加载 schema/表，再抽取。机构：只在最近 N 个去重 data_dt 窗口内，从 cmdata.c_par_brch_level 按 brchno 各自取最新一行去重后派生完整 org_master，避免全表扫描超时。'}
               </p>
             </div>
 
@@ -1558,6 +1587,9 @@ export default function KnowledgeBaseManagement() {
                       {extractResult.kind === 'org' ? `${extractPreviewHeaders.length} 列 org_master · ` : ''}
                       共 {extractResult.rowCount} 行
                       {extractResult.dataDt ? ` · data_dt=${extractResult.dataDt}` : ''}
+                      {extractResult.windowDataDts?.length
+                        ? ` · 窗口(近${extractResult.recentDtCount ?? extractResult.windowDataDts.length}期)=[${extractResult.windowDataDts.join(', ')}]`
+                        : ''}
                       {extractResult.schema && extractResult.table
                         ? ` · ${extractResult.schema}.${extractResult.table}`
                         : ''}
@@ -1565,6 +1597,9 @@ export default function KnowledgeBaseManagement() {
                       {extractResult.previewTruncated ? ' · 服务端预览已截断' : ''}
                     </span>
                   </div>
+                  {extractResult.indexWarning && (
+                    <p className="w-full text-xs text-amber-600">⚠ {extractResult.indexWarning}</p>
+                  )}
                   <Button
                     type="button"
                     onClick={openExtractVectorizeConfig}

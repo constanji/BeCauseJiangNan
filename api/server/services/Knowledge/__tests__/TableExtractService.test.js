@@ -5,6 +5,9 @@ const {
   stableFileId,
   toPreviewPayload,
   clearExtractCache,
+  sanitizeRecentDtCount,
+  DEFAULT_RECENT_DT_WINDOW,
+  MAX_RECENT_DT_WINDOW,
 } = require('../TableExtractService');
 
 describe('TableExtractService', () => {
@@ -71,5 +74,29 @@ describe('TableExtractService', () => {
     expect(result.headers).toContain('leaf_child_codes');
     const mgr = result.rows.find((r) => r.org_code === 'A0001');
     expect(mgr?.leaf_child_codes).toContain('01001');
+  });
+
+  describe('sanitizeRecentDtCount：抽取窗口大小校验（避免全表扫描的核心开关）', () => {
+    it('未传值时回退默认窗口', () => {
+      expect(sanitizeRecentDtCount(undefined)).toBe(DEFAULT_RECENT_DT_WINDOW);
+      expect(sanitizeRecentDtCount(null)).toBe(DEFAULT_RECENT_DT_WINDOW);
+    });
+
+    it('非法值（非数字/负数/0）回退默认窗口', () => {
+      expect(sanitizeRecentDtCount('abc')).toBe(DEFAULT_RECENT_DT_WINDOW);
+      expect(sanitizeRecentDtCount(-5)).toBe(DEFAULT_RECENT_DT_WINDOW);
+      expect(sanitizeRecentDtCount(0)).toBe(DEFAULT_RECENT_DT_WINDOW);
+      expect(sanitizeRecentDtCount(NaN)).toBe(DEFAULT_RECENT_DT_WINDOW);
+    });
+
+    it('合法正整数按向下取整生效', () => {
+      expect(sanitizeRecentDtCount(5)).toBe(5);
+      expect(sanitizeRecentDtCount('7')).toBe(7);
+      expect(sanitizeRecentDtCount(2.9)).toBe(2);
+    });
+
+    it('超过上限值会被截断，防止误传超大窗口退化为全表扫描', () => {
+      expect(sanitizeRecentDtCount(9999)).toBe(MAX_RECENT_DT_WINDOW);
+    });
   });
 });

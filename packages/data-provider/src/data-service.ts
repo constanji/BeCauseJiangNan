@@ -944,6 +944,12 @@ export type KnowledgeExtractResult = {
   schema?: string;
   table?: string;
   dataDt?: string | null;
+  /** 本次抽取实际覆盖的「近 N 个去重 data_dt」窗口，从新到旧排列 */
+  windowDataDts?: string[] | null;
+  /** 实际生效的窗口大小（近 N 个 data_dt） */
+  recentDtCount?: number | null;
+  /** 索引健康度提示（如缺少 (code, data_dt DESC) 复合索引），不影响抽取结果 */
+  indexWarning?: string | null;
   headers?: string[];
   rows?: Record<string, string>[];
   rowCount?: number;
@@ -955,14 +961,14 @@ export type KnowledgeExtractResult = {
 
 export const extractKpiDefinition = (
   id: string,
-  body: { schema?: string; table?: string; source?: string },
+  body: { schema?: string; table?: string; source?: string; recentDtCount?: number },
 ): Promise<KnowledgeExtractResult> => {
   return request.post(endpoints.dataSources.extractKpiDefinition(id), body);
 };
 
 export const extractOrgInfo = (
   id: string,
-  body: { schema?: string; table?: string; source?: string },
+  body: { schema?: string; table?: string; source?: string; recentDtCount?: number },
 ): Promise<KnowledgeExtractResult> => {
   return request.post(endpoints.dataSources.extractOrgInfo(id), body);
 };
