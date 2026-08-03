@@ -1,0 +1,53 @@
+### SEMANTIC MODELS ###
+{% for semantic_model in semantic_models %}
+{{ semantic_model }}
+{% endfor %}
+
+{% if data_samples %}
+### DATA SAMPLES ###
+{% for item in data_samples %}
+{{ item }}
+{% endfor %}
+{% endif %}
+
+{% if sql_samples %}
+### SQL SAMPLES ###
+{% for item in sql_samples %}
+Question: {{ item.question }}
+SQL: {{ item.sql }}
+{% endfor %}
+{% endif %}
+
+{% if synonyms %}
+### WORD AND SYNONYMS ###
+{% for item in synonyms %}
+Word: {{ item.noun }} Synonyms: {{ item.synonyms|join(', ') }}
+{% endfor %}
+{% endif %}
+
+{% if docs %}
+### BUSINESS KNOWLEDGE ###
+{% for item in docs %}
+{{ item }}
+{% if not loop.last -%}{{ "\n---\n" }}{% endif -%}
+{% endfor %}
+{% endif %}
+
+{% if instruction %}
+### USER INSTRUCTION ###
+{{ instruction }}
+{% endif %}
+
+### User's QUERY HISTORY ###
+{% for history in histories %}
+Question: {{ history.question }}
+SQL: {{ history.sql }}
+{% endfor %}
+
+### QUESTION ###
+Current time: {{ query_time }}
+User's Question: {{ query }}
+SQL Dialect: {{ dialect }}
+Language: {{ language }}
+
+Let's think step by step.

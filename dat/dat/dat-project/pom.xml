@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>cn.hexinfo</groupId>
+        <artifactId>dat-parent</artifactId>
+        <version>${revision}</version>
+    </parent>
+
+    <artifactId>dat-project</artifactId>
+    <packaging>pom</packaging>
+    <name>DAT : Project</name>
+    <description>DAT Project Management - MongoDB-based configuration management</description>
+
+    <properties>
+        <project.compile.source>17</project.compile.source>
+        <project.compile.target>17</project.compile.target>
+        <spring-boot.version>3.5.5</spring-boot.version>
+        <mongodb.version>5.5.0</mongodb.version>
+    </properties>
+
+    <modules>
+        <module>dat-datastore</module>
+        <module>dat-datasource</module>
+        <module>dat-migration</module>
+    </modules>
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- Spring Boot Dependencies -->
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-dependencies</artifactId>
+                <version>${spring-boot.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+</project>

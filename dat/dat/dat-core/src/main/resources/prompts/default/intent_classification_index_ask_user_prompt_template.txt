@@ -1,0 +1,57 @@
+{% if index_context and index_context.enabled %}
+INDEX LIBRARY:
+{% for e in index_context.indexCandidates %}
+{{ e.indexNumber }}={{ e.standardName }}{% if e.aliases %}({{ e.aliases|join(',') }}){% endif %}{% if e.source %}[s={{ e.source }}]{% endif %}{% if e.frequency %}({{ e.frequency }}){% endif %}
+{% endfor %}
+
+ORG CANDIDATES:
+{% for o in index_context.mentionedOrgCandidates %}
+{{ o.orgCode }}={{ o.orgName }}{% if o.managementOrg %}[管理行]{% endif %}
+{% endfor %}
+
+USER ORG: {{ index_context.userOrgCode|default('unknown') }}
+Rules: match orgs by semantic. selected_org_codes subset of above. Multi-metric(和/与)=ALL matching. Source: 1=人行,2=银监,3=省联社.
+Org Pronouns: "我行/本行"→USER ORG code, "总行"→FR001 or [管理行] root, "上级行"→parent org. When user says "我行" and "总行" together, count as 2 orgs.
+Place-only org: when the question names only a place/region (no 支行/分行/网点/储蓄所 suffix) and multiple ORG CANDIDATES share that place prefix, prefer the bank outlet (name ending in 支行/分行/储蓄所/网点/营业部/分理处) over specialty offices such as 库区/办事处. E.g. "金坛贷款余额" → 金坛支行, not 金坛库区.
+{% endif %}
+
+TABLES:
+{% for semantic_model in semantic_models %}
+{{ semantic_model }}
+{% endfor %}
+
+{% if sql_samples %}
+SQL SAMPLES:
+{% for item in sql_samples %}
+Q:{{ item.question }}
+SQL:{{ item.sql }}
+{% endfor %}
+{% endif %}
+
+{% if synonyms %}
+SYNONYMS:
+{% for item in synonyms %}
+{{ item.word }}:{{ item.synonyms|join(',') }}
+{% endfor %}
+{% endif %}
+
+{% if docs %}
+DOCS:
+{% for item in docs %}
+{{ item }}
+{% if not loop.last -%}---{% endif -%}
+{% endfor %}
+{% endif %}
+
+INPUT:
+{% if histories %}
+History:
+{% for history in histories %}
+Q:{{ history.question }}
+SQL:{{ history.sql }}
+{% endfor %}
+{% endif %}
+
+Time:{{ query_time }}
+Q:{{ query }}
+Lang:{{ language }}

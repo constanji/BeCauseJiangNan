@@ -1,0 +1,31 @@
+- ONLY USE SELECT statements, NO DELETE, UPDATE OR INSERT etc. statements that might change the data in the database.
+- ONLY USE the tables and columns mentioned in the database schema.
+- ONLY USE "*" if the user query asks for all the columns of a table.
+- ONLY CHOOSE columns belong to the tables mentioned in the database schema.
+- Keep SQL readable. Line breaks inside CTEs, window functions and long SELECT lists are encouraged — single-line SQL hides syntax mistakes (especially missing OVER(...) in window functions).
+- DON'T USE SQL reserved keywords as aliases for tables or columns.
+- ALWAYS QUALIFY column names with their table name or table alias to avoid ambiguity (e.g., orders.OrderId, o.OrderId).
+- Window functions MUST be written as FUNC() OVER (...) — never write DENSE_RANK()/ROW_NUMBER()/RANK() without OVER(...). Missing OVER is a hard parse error.
+- YOU MUST USE "lower(<table_name>.<column_name>) like lower(<value>)" function or "lower(<table_name>.<column_name>) = lower(<value>)" function for case-insensitive comparison!
+    - Use "lower(<table_name>.<column_name>) LIKE lower(<value>)" when:
+        - The user requests a pattern or partial match.
+        - The value is not specific enough to be a single, exact value.
+        - Wildcards (%) are needed to capture the pattern.
+    - Use "lower(<table_name>.<column_name>) = lower(<value>)" when:
+        - The user requests an exact, specific value.
+        - There is no ambiguity or pattern in the value.
+- If the column is date/time related field, and it is a INT/BIGINT/DOUBLE/FLOAT type, please use the appropriate function mentioned in the SQL FUNCTIONS section to cast the column to "TIMESTAMP" type first before using it in the query
+    - example: TO_TIMESTAMP_MILLIS("<timestamp_column>")  # if the timestamp_column is in milliseconds
+    - example: TO_TIMESTAMP_SECONDS("<timestamp_column>")  # if the timestamp_column is in seconds
+    - example: TO_TIMESTAMP_MICROS("<timestamp_column>")  # if the timestamp_column is in microseconds
+- If the user asks for a specific date, please give the date range in SQL query
+    - example: "What is the total revenue for the month of 2025-07-01?"
+    - answer: "SELECT SUM(r.PriceSum) FROM Revenue r WHERE r.PurchaseTimestamp >= '2025-07-01 00:00:00' AND r.PurchaseTimestamp < '2025-07-02 00:00:00'"
+- USE THE VIEW TO SIMPLIFY THE QUERY.
+- DON'T USE '.' in column/table alias, replace '.' with '_' in column/table alias.
+- DON'T USE "FILTER(WHERE <expression>)" clause in the generated SQL query.
+- DON'T USE "EXTRACT(EPOCH FROM <expression>)" clause in the generated SQL query.
+- DON'T USE INTERVAL or generate INTERVAL-like expression in the generated SQL query.
+- DON'T USE "!=" for not-equal comparison. Use "<>" instead (e.g., column <> 'value' instead of column != 'value').
+- Aggregate functions are not allowed in the WHERE clause. Instead, they belong in the HAVING clause, which is used to filter after aggregation.
+- Avoid stacking redundant CTEs. If two CTEs would share the same FROM/WHERE and only differ in projection, merge them. Each extra CTE layer multiplies the chance of a syntax slip.

@@ -1,0 +1,14 @@
+# Database Schema
+{{ schema }}
+
+# Question
+{{ question }}
+
+# Original SQL
+{{ original_sql }}
+
+# Execution Result
+{{ execution_result }}
+
+Begin! Take a deep breath and think logically.
+[no prose][output result Only]

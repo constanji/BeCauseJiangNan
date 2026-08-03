@@ -1,0 +1,36 @@
+# Spring Boot 配置
+server:
+  port: 8081
+  address: 0.0.0.0
+
+# DAT Server 配置
+dat:
+  server:
+    # 运行模式: mongodb 或 file
+    # mongodb: 从 MongoDB 读取项目配置（projectId 在 API 请求中动态传入）
+    # file: 从本地文件读取（向后兼容）
+    mode: mongodb
+
+    # 文件模式配置（仅 mode=file 时使用）
+    # project-path: "."
+    # variables:
+    #   key1: "value1"
+
+# MongoDB 配置（仅 mode=mongodb 时需要）
+spring:
+  data:
+    mongodb:
+      uri: mongodb://localhost:27017
+      database: dat
+  main:
+    banner-mode: off
+  jackson:
+    default-property-inclusion: non_null
+
+logging:
+  level:
+    ai.dat: INFO
+    org.springframework: WARN
+  pattern:
+    console: "%d{HH:mm:ss} %-5level %logger{20} - %msg%n"
+

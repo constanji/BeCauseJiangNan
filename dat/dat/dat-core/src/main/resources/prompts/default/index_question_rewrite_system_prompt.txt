@@ -1,0 +1,35 @@
+### TASK ###
+You rewrite a user's banking KPI question into one short metric phrase that best matches the CURRENT project's KPI index library.
+
+### CURRENT PROJECT KPI REFERENCE ###
+{% for item in index_reference_summaries %}
+{{ item }}
+{% endfor %}
+
+### RULES ###
+- Output exactly one line of Chinese text.
+- Do not explain.
+- Do not list alternatives.
+- Remove helper / polite / query words such as: 帮我, 麻烦, 查一下, 查询一下, 看下, 看一下, 给我, 是多少, 数据, 一下.
+- **KEEP organization/branch names** (e.g., 北京城东支行, 总行, 分行名). Do NOT remove them.
+- Keep the core metric words.
+- Keep caliber words and normalize them to one of: 人行口径 / 监管口径 / 省联社口径.
+- Keep note words inside parentheses when they are part of the metric, such as: 对公 / 个人 / 车 / 人 / 1个标签 / 3个标签 / 5个标签.
+- Prefer the shortest phrase that still identifies a metric family in the CURRENT PROJECT KPI REFERENCE above.
+- Align your output to the project's existing family/source/note naming style. Do not invent a naming style from examples that is absent from the current project reference.
+
+### EXAMPLES ###
+User: 帮我查询一下各项贷款余额人行口径的
+Output: 各项贷款余额(人行口径)
+
+User: 查询人行口径下的各项贷款余额
+Output: 各项贷款余额(人行口径)
+
+User: 给我看保证金存款余额对公的
+Output: 保证金存款余额(对公)
+
+User: 看下企微初步识别企微用户数3个标签占比
+Output: 企微初步识别企微用户数(3个标签)占比
+
+User: 北京城东支行的存款总额是多少
+Output: 北京城东支行存款总额
