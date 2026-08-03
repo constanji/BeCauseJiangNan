@@ -38,6 +38,15 @@ function sanitizeRecentDtCount(value, fallback = DEFAULT_RECENT_DT_WINDOW) {
   return Math.min(n, MAX_RECENT_DT_WINDOW);
 }
 
+/**
+ * 「近 N 期」窗口开关，默认开启（安全默认，避免全表硬扫）。
+ * 显式传 options.recentDtWindow === false 才关闭，退回旧逻辑：
+ * 按编码在全部历史 data_dt 里取最新一行（可能触发全表扫描，大表上有超时风险）。
+ */
+function shouldUseRecentDtWindow(options = {}) {
+  return options.recentDtWindow !== false;
+}
+
 function stableFileId(kind, entityId) {
   return kind === 'org' ? `org_info:${entityId}` : `kpi_def:${entityId}`;
 }
@@ -509,26 +518,45 @@ async function extractKpiDefinition({ dataSource, password, schema, table, entit
   let rowsRaw = [];
   let windowDataDts = null;
   const recentDtCount = sanitizeRecentDtCount(options.recentDtCount);
+  const recentDtWindowEnabled = shouldUseRecentDtWindow(options);
 
   if (hasDataDt) {
-    // kpi_result_ctcx 等事实表可能有几百万行，不能对全表做 DISTINCT ON。
-    // 先只查窄列取「最近 N 个去重日期」，再用其中最早一个日期作下界过滤主查询，
-    // 使主查询命中日期分区/索引裁剪，避免全表扫描。
-    windowDataDts = await getRecentDataDts(dataSource, password, qt, recentDtCount);
-    dataDt = windowDataDts[0] || null;
-    const cutoffDt = windowDataDts[windowDataDts.length - 1] ?? null;
-    // 禁止 SELECT *；按 index_number/kpi_code 各自取窗口内 data_dt 最新一行
-    rowsRaw = cutoffDt
-      ? await runQuery(
-          dataSource,
-          password,
-          `SELECT DISTINCT ON (${quoteIdent(codeCol)}) ${selectSql}
+    if (recentDtWindowEnabled) {
+      // kpi_result_ctcx 等事实表可能有几百万行，不能对全表做 DISTINCT ON。
+      // 先只查窄列取「最近 N 个去重日期」，再用其中最早一个日期作下界过滤主查询，
+      // 使主查询命中日期分区/索引裁剪，避免全表扫描。
+      windowDataDts = await getRecentDataDts(dataSource, password, qt, recentDtCount);
+      dataDt = windowDataDts[0] || null;
+      const cutoffDt = windowDataDts[windowDataDts.length - 1] ?? null;
+      // 禁止 SELECT *；按 index_number/kpi_code 各自取窗口内 data_dt 最新一行
+      rowsRaw = cutoffDt
+        ? await runQuery(
+            dataSource,
+            password,
+            `SELECT DISTINCT ON (${quoteIdent(codeCol)}) ${selectSql}
        FROM ${qt}
        WHERE ${quoteIdent('data_dt')} >= ?
        ORDER BY ${quoteIdent(codeCol)}, ${quoteIdent('data_dt')} DESC, ${quoteIdent(orderExtra)}`,
-          [cutoffDt],
-        )
-      : [];
+            [cutoffDt],
+          )
+        : [];
+    } else {
+      // 关闭窗口：退回旧逻辑——按编码在全部历史 data_dt 里取最新一行。
+      // 无 WHERE 限制，事实表几百万行时可能全表扫描、有超时风险，需用户主动关闭窗口才会走这条路径。
+      const maxRows = await runQuery(
+        dataSource,
+        password,
+        `SELECT MAX(${quoteIdent('data_dt')}) AS max_dt FROM ${qt}`,
+      );
+      dataDt = maxRows?.[0]?.max_dt != null ? String(maxRows[0].max_dt) : null;
+      rowsRaw = await runQuery(
+        dataSource,
+        password,
+        `SELECT DISTINCT ON (${quoteIdent(codeCol)}) ${selectSql}
+       FROM ${qt}
+       ORDER BY ${quoteIdent(codeCol)}, ${quoteIdent('data_dt')} DESC, ${quoteIdent(orderExtra)}`,
+      );
+    }
   } else {
     rowsRaw = await runQuery(
       dataSource,
@@ -565,12 +593,13 @@ async function extractKpiDefinition({ dataSource, password, schema, table, entit
     rows: normalized,
     rowCount: normalized.length,
     windowDataDts,
-    recentDtCount: hasDataDt ? recentDtCount : null,
+    recentDtCount: hasDataDt && recentDtWindowEnabled ? recentDtCount : null,
+    recentDtWindowEnabled: hasDataDt ? recentDtWindowEnabled : null,
     indexWarning: indexInfo.message,
   };
   if (entityId) setExtractCache(entityId, 'kpi', payload);
   logger.info(
-    `[TableExtract] KPI extracted entity=${entityId} table=${schema}.${table} dataDt=${dataDt} window=${JSON.stringify(windowDataDts)} rows=${payload.rowCount} cols=${selectCols.length}`,
+    `[TableExtract] KPI extracted entity=${entityId} table=${schema}.${table} dataDt=${dataDt} window=${recentDtWindowEnabled ? JSON.stringify(windowDataDts) : 'disabled(full-history)'} rows=${payload.rowCount} cols=${selectCols.length}`,
   );
   if (indexInfo.message) {
     logger.warn(`[TableExtract] ${indexInfo.message}`);
@@ -626,31 +655,54 @@ async function extractOrgInfo({ dataSource, password, schema, table, entityId, o
 
   const qt = qualifiedTable(schema, table);
   const recentDtCount = sanitizeRecentDtCount(options.recentDtCount);
-  // c_par_brch_level 同样可能是几百万行的历史快照表，不能对全表做 DISTINCT ON。
-  // 先取「最近 N 个去重日期」，再以最早一个日期作下界过滤主查询。
-  // 活跃机构通常每期快照都会出现，窗口内即可覆盖完整当前机构树；
-  // 若确需追溯更早历史（如已撤并机构），可通过 options.recentDtCount 调大窗口。
-  const windowDataDts = await getRecentDataDts(dataSource, password, qt, recentDtCount);
-  const dataDt = windowDataDts[0] || null;
-  const cutoffDt = windowDataDts[windowDataDts.length - 1] ?? null;
+  const recentDtWindowEnabled = shouldUseRecentDtWindow(options);
 
   // 窄列拉取：必填树字段 + 表内存在的补充列（用于 parent_org_name / scope_note 等）
-  // 按 brchno 各自取窗口内 data_dt 最新一行
   const selectCols = [
     ...ORG_SOURCE_REQUIRED_SELECT,
     ...ORG_SOURCE_OPTIONAL_COLS.filter((c) => colNames.includes(c)),
   ];
-  const rowsRaw = cutoffDt
-    ? await runQuery(
-        dataSource,
-        password,
-        `SELECT DISTINCT ON (${quoteIdent('brchno')}) ${selectListSql(selectCols)}
+
+  let windowDataDts = null;
+  let dataDt = null;
+  let rowsRaw = [];
+
+  if (recentDtWindowEnabled) {
+    // c_par_brch_level 同样可能是几百万行的历史快照表，不能对全表做 DISTINCT ON。
+    // 先取「最近 N 个去重日期」，再以最早一个日期作下界过滤主查询。
+    // 活跃机构通常每期快照都会出现，窗口内即可覆盖完整当前机构树；
+    // 若确需追溯更早历史（如已撤并机构），可通过 options.recentDtCount 调大窗口。
+    windowDataDts = await getRecentDataDts(dataSource, password, qt, recentDtCount);
+    dataDt = windowDataDts[0] || null;
+    const cutoffDt = windowDataDts[windowDataDts.length - 1] ?? null;
+    // 按 brchno 各自取窗口内 data_dt 最新一行
+    rowsRaw = cutoffDt
+      ? await runQuery(
+          dataSource,
+          password,
+          `SELECT DISTINCT ON (${quoteIdent('brchno')}) ${selectListSql(selectCols)}
      FROM ${qt}
      WHERE ${quoteIdent('data_dt')} >= ?
      ORDER BY ${quoteIdent('brchno')}, ${quoteIdent('data_dt')} DESC, ${quoteIdent('brchna')}`,
-        [cutoffDt],
-      )
-    : [];
+          [cutoffDt],
+        )
+      : [];
+  } else {
+    // 关闭窗口：退回旧逻辑——按 brchno 在全部历史 data_dt 里取最新一行，无 WHERE 限制。
+    const maxRows = await runQuery(
+      dataSource,
+      password,
+      `SELECT MAX(${quoteIdent('data_dt')}) AS max_dt FROM ${qt}`,
+    );
+    dataDt = maxRows?.[0]?.max_dt != null ? String(maxRows[0].max_dt) : null;
+    rowsRaw = await runQuery(
+      dataSource,
+      password,
+      `SELECT DISTINCT ON (${quoteIdent('brchno')}) ${selectListSql(selectCols)}
+     FROM ${qt}
+     ORDER BY ${quoteIdent('brchno')}, ${quoteIdent('data_dt')} DESC, ${quoteIdent('brchna')}`,
+    );
+  }
 
   const dedup = new Map();
   for (const raw of rowsRaw || []) {
@@ -682,12 +734,13 @@ async function extractOrgInfo({ dataSource, password, schema, table, entityId, o
     rows: built.rows,
     rowCount: built.rowCount,
     windowDataDts,
-    recentDtCount,
+    recentDtCount: recentDtWindowEnabled ? recentDtCount : null,
+    recentDtWindowEnabled,
     indexWarning: indexInfo.message,
   };
   if (entityId) setExtractCache(entityId, 'org', payload);
   logger.info(
-    `[TableExtract] Org extracted entity=${entityId} table=${schema}.${table} dataDt=${dataDt} window=${JSON.stringify(windowDataDts)} rows=${payload.rowCount} (org_master cols=${built.headers.length})`,
+    `[TableExtract] Org extracted entity=${entityId} table=${schema}.${table} dataDt=${dataDt} window=${recentDtWindowEnabled ? JSON.stringify(windowDataDts) : 'disabled(full-history)'} rows=${payload.rowCount} (org_master cols=${built.headers.length})`,
   );
   if (indexInfo.message) {
     logger.warn(`[TableExtract] ${indexInfo.message}`);
@@ -719,4 +772,5 @@ module.exports = {
   DEFAULT_RECENT_DT_WINDOW,
   MAX_RECENT_DT_WINDOW,
   sanitizeRecentDtCount,
+  shouldUseRecentDtWindow,
 };

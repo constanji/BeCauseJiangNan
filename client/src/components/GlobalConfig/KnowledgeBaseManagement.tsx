@@ -378,6 +378,8 @@ export default function KnowledgeBaseManagement() {
   const [extractTable, setExtractTable] = useState('');
   /** 抽取窗口：只在最近 N 个去重 data_dt 内取「按键最新一行」，避免大表全量扫描 */
   const [extractRecentDtCount, setExtractRecentDtCount] = useState(3);
+  /** 关闭后退回旧逻辑：按编码在全部历史 data_dt 里取最新一行（大表上有全表扫描/超时风险） */
+  const [extractRecentDtWindowEnabled, setExtractRecentDtWindowEnabled] = useState(true);
   const [loadingExtractSchemas, setLoadingExtractSchemas] = useState(false);
   const [loadingExtractTables, setLoadingExtractTables] = useState(false);
   /** 指标/机构抽取：需手动点「连接数据库」后才拉 schema/表，避免每次切 Tab 都连库 */
@@ -392,6 +394,7 @@ export default function KnowledgeBaseManagement() {
     dataDt?: string | null;
     windowDataDts?: string[] | null;
     recentDtCount?: number | null;
+    recentDtWindowEnabled?: boolean | null;
     indexWarning?: string | null;
     headers: string[];
     rows: Record<string, string>[];
@@ -634,7 +637,8 @@ export default function KnowledgeBaseManagement() {
       const body = {
         schema: extractSchema || undefined,
         table: extractTable || undefined,
-        recentDtCount: extractRecentDtCount || undefined,
+        recentDtWindow: extractRecentDtWindowEnabled,
+        ...(extractRecentDtWindowEnabled ? { recentDtCount: extractRecentDtCount || undefined } : {}),
       };
       const res =
         activeTab === 'kpi_definition'
@@ -652,6 +656,7 @@ export default function KnowledgeBaseManagement() {
         dataDt: res.dataDt,
         windowDataDts: res.windowDataDts,
         recentDtCount: res.recentDtCount,
+        recentDtWindowEnabled: res.recentDtWindowEnabled,
         indexWarning: res.indexWarning,
         headers: res.headers || [],
         rows: res.rows || [],
@@ -1539,22 +1544,36 @@ export default function KnowledgeBaseManagement() {
                     emptyText="无匹配表"
                   />
                 </div>
-                <div className="w-28">
-                  <label className="mb-1 block text-xs text-text-secondary" title="只在最近 N 个去重 data_dt 内取「按键最新一行」，避免大表全量扫描">
-                    近 N 期
+                <div className="flex items-end gap-2">
+                  <label
+                    className="flex items-center gap-1.5 whitespace-nowrap pb-2 text-xs text-text-secondary"
+                    title="关闭后退回旧逻辑：按编码/机构在全部历史 data_dt 里取最新一行，大表上可能全表扫描、有超时风险"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={extractRecentDtWindowEnabled}
+                      onChange={(e) => setExtractRecentDtWindowEnabled(e.target.checked)}
+                      disabled={!extractDbConnected}
+                    />
+                    近 N 期窗口
                   </label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={30}
-                    value={extractRecentDtCount}
-                    onChange={(e) => {
-                      const v = Math.floor(Number(e.target.value));
-                      setExtractRecentDtCount(Number.isFinite(v) && v > 0 ? Math.min(v, 30) : 3);
-                    }}
-                    disabled={!extractDbConnected}
-                    className="w-full rounded-lg border border-border-light bg-surface-primary px-2 py-2 text-sm"
-                  />
+                  <div className="w-24">
+                    <label className="mb-1 block text-xs text-text-secondary" title="只在最近 N 个去重 data_dt 内取「按键最新一行」，避免大表全量扫描">
+                      近 N 期
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={30}
+                      value={extractRecentDtCount}
+                      onChange={(e) => {
+                        const v = Math.floor(Number(e.target.value));
+                        setExtractRecentDtCount(Number.isFinite(v) && v > 0 ? Math.min(v, 30) : 3);
+                      }}
+                      disabled={!extractDbConnected || !extractRecentDtWindowEnabled}
+                      className="w-full rounded-lg border border-border-light bg-surface-primary px-2 py-2 text-sm disabled:opacity-50"
+                    />
+                  </div>
                 </div>
                 <Button
                   type="button"
@@ -1573,8 +1592,8 @@ export default function KnowledgeBaseManagement() {
               </div>
               <p className="text-xs text-text-tertiary">
                 {activeTab === 'kpi_definition'
-                  ? '先点「连接数据库」加载 schema/表，再抽取。指标：只在最近 N 个去重 data_dt 窗口内，从 kpi.kpi_result_ctcx 按 index_number 各自取最新一行去重，映射为「指标定义信息」，避免全表扫描超时。'
-                  : '先点「连接数据库」加载 schema/表，再抽取。机构：只在最近 N 个去重 data_dt 窗口内，从 cmdata.c_par_brch_level 按 brchno 各自取最新一行去重后派生完整 org_master，避免全表扫描超时。'}
+                  ? '先点「连接数据库」加载 schema/表，再抽取。指标：默认只在最近 N 个去重 data_dt 窗口内，从 kpi.kpi_result_ctcx 按 index_number 各自取最新一行去重，避免全表扫描超时；关闭「近 N 期窗口」则退回旧逻辑——按编码在全部历史里取最新一行。'
+                  : '先点「连接数据库」加载 schema/表，再抽取。机构：默认只在最近 N 个去重 data_dt 窗口内，从 cmdata.c_par_brch_level 按 brchno 各自取最新一行去重后派生完整 org_master；关闭「近 N 期窗口」则退回旧逻辑——按 brchno 在全部历史里取最新一行。'}
               </p>
             </div>
 
@@ -1589,7 +1608,9 @@ export default function KnowledgeBaseManagement() {
                       {extractResult.dataDt ? ` · data_dt=${extractResult.dataDt}` : ''}
                       {extractResult.windowDataDts?.length
                         ? ` · 窗口(近${extractResult.recentDtCount ?? extractResult.windowDataDts.length}期)=[${extractResult.windowDataDts.join(', ')}]`
-                        : ''}
+                        : extractResult.recentDtWindowEnabled === false
+                          ? ' · 窗口已关闭(按编码取全历史最新一行)'
+                          : ''}
                       {extractResult.schema && extractResult.table
                         ? ` · ${extractResult.schema}.${extractResult.table}`
                         : ''}

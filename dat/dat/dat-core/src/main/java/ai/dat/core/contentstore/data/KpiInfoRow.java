@@ -110,16 +110,14 @@ public class KpiInfoRow {
 
     /**
      * 从 kpi_name 推导别名（去掉口径后缀，提取核心关键词作为别名）。
+     * <p>注意：不使用 kpi_category 作为别名来源——kpi_category 是分类字段，不是别名，
+     * 源表本身也不存在"别名"这个概念的字段。别名应留空，由用户导入后在指标库里手动补充。
      */
     private List<String> deriveAliases() {
         List<String> aliases = new ArrayList<>();
         String base = baseName();
         if (!base.equals(kpiName)) {
             aliases.add(base);
-        }
-        // 用 kpi_category 作为别名补充
-        if (kpiCategory != null && !kpiCategory.isBlank()) {
-            aliases.add(kpiCategory);
         }
         return aliases;
     }

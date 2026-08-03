@@ -6,6 +6,7 @@ const {
   toPreviewPayload,
   clearExtractCache,
   sanitizeRecentDtCount,
+  shouldUseRecentDtWindow,
   DEFAULT_RECENT_DT_WINDOW,
   MAX_RECENT_DT_WINDOW,
 } = require('../TableExtractService');
@@ -98,5 +99,35 @@ describe('TableExtractService', () => {
     it('超过上限值会被截断，防止误传超大窗口退化为全表扫描', () => {
       expect(sanitizeRecentDtCount(9999)).toBe(MAX_RECENT_DT_WINDOW);
     });
+  });
+
+  describe('shouldUseRecentDtWindow：近 N 期窗口开关（默认开，显式 false 才关闭退回旧逻辑）', () => {
+    it('未传 options 时默认开启', () => {
+      expect(shouldUseRecentDtWindow()).toBe(true);
+      expect(shouldUseRecentDtWindow({})).toBe(true);
+    });
+
+    it('显式 recentDtWindow=false 才关闭', () => {
+      expect(shouldUseRecentDtWindow({ recentDtWindow: false })).toBe(false);
+    });
+
+    it('recentDtWindow=true 或其他真值不受影响，仍视为开启', () => {
+      expect(shouldUseRecentDtWindow({ recentDtWindow: true })).toBe(true);
+      expect(shouldUseRecentDtWindow({ recentDtWindow: undefined })).toBe(true);
+      expect(shouldUseRecentDtWindow({ recentDtWindow: null })).toBe(true);
+    });
+  });
+
+  it('mock 抽取指标定义：关闭近 N 期窗口不影响 mock 分支（mock 走 fixture，不受开关影响）', async () => {
+    const result = await extractKpiDefinition({
+      dataSource: { type: 'gaussdb', host: 'knowledge-extract.mock' },
+      password: '',
+      schema: 'kpi',
+      table: 'kpi_result_ctcx',
+      entityId: 'entity-mock',
+      options: { recentDtWindow: false },
+    });
+    expect(result.mock).toBe(true);
+    expect(result.rowCount).toBeGreaterThan(0);
   });
 });

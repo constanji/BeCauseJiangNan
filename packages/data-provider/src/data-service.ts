@@ -944,10 +944,12 @@ export type KnowledgeExtractResult = {
   schema?: string;
   table?: string;
   dataDt?: string | null;
-  /** 本次抽取实际覆盖的「近 N 个去重 data_dt」窗口，从新到旧排列 */
+  /** 本次抽取实际覆盖的「近 N 个去重 data_dt」窗口，从新到旧排列；关闭窗口时为 null */
   windowDataDts?: string[] | null;
-  /** 实际生效的窗口大小（近 N 个 data_dt） */
+  /** 实际生效的窗口大小（近 N 个 data_dt）；关闭窗口时为 null */
   recentDtCount?: number | null;
+  /** 本次抽取是否启用了「近 N 期」窗口；false 表示走旧逻辑（按编码取全历史最新一行） */
+  recentDtWindowEnabled?: boolean | null;
   /** 索引健康度提示（如缺少 (code, data_dt DESC) 复合索引），不影响抽取结果 */
   indexWarning?: string | null;
   headers?: string[];
@@ -961,14 +963,14 @@ export type KnowledgeExtractResult = {
 
 export const extractKpiDefinition = (
   id: string,
-  body: { schema?: string; table?: string; source?: string; recentDtCount?: number },
+  body: { schema?: string; table?: string; source?: string; recentDtCount?: number; recentDtWindow?: boolean },
 ): Promise<KnowledgeExtractResult> => {
   return request.post(endpoints.dataSources.extractKpiDefinition(id), body);
 };
 
 export const extractOrgInfo = (
   id: string,
-  body: { schema?: string; table?: string; source?: string; recentDtCount?: number },
+  body: { schema?: string; table?: string; source?: string; recentDtCount?: number; recentDtWindow?: boolean },
 ): Promise<KnowledgeExtractResult> => {
   return request.post(endpoints.dataSources.extractOrgInfo(id), body);
 };

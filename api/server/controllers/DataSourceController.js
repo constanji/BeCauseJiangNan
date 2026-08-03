@@ -2237,7 +2237,7 @@ async function resolveDataSourceForKnowledgeExtract(req, id, logPrefix, options 
  */
 async function extractKpiDefinitionHandler(req, res) {
   const { id } = req.params;
-  const { schema, table, source, recentDtCount } = req.body || {};
+  const { schema, table, source, recentDtCount, recentDtWindow } = req.body || {};
   try {
     const { dataSource, password } = await resolveDataSourceForKnowledgeExtract(
       req,
@@ -2252,7 +2252,7 @@ async function extractKpiDefinitionHandler(req, res) {
       schema,
       table,
       entityId: String(dataSource._id),
-      options: { source, recentDtCount },
+      options: { source, recentDtCount, recentDtWindow },
     });
     return res.json({
       success: true,
@@ -2272,7 +2272,7 @@ async function extractKpiDefinitionHandler(req, res) {
  */
 async function extractOrgInfoHandler(req, res) {
   const { id } = req.params;
-  const { schema, table, source, recentDtCount } = req.body || {};
+  const { schema, table, source, recentDtCount, recentDtWindow } = req.body || {};
   try {
     const { dataSource, password } = await resolveDataSourceForKnowledgeExtract(
       req,
@@ -2287,7 +2287,7 @@ async function extractOrgInfoHandler(req, res) {
       schema,
       table,
       entityId: String(dataSource._id),
-      options: { source, recentDtCount },
+      options: { source, recentDtCount, recentDtWindow },
     });
     return res.json({
       success: true,
