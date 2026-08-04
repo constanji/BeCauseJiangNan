@@ -181,6 +181,25 @@ const startServer = async () => {
     await initializeMCPs();
     await initializeOAuthReconnectManager();
     await checkMigrations();
+
+    // 启动时预热本地 ONNX 重排模型（而不是等第一次问数请求时才懒加载）。
+    // 目的：把模型加载期间那个短暂的全局 fetch 拦截窗口（RAG 重排用于强制离线模式）
+    // 提前到服务刚启动、尚无真实用户请求并发的时刻，避免它与真实请求中调用大模型
+    // 网关的 fetch 撞在一起（表现为前端“Connection error”）。失败不影响服务启动，
+    // 只是退回默认排序，并把错误记录到日志里方便排查底层 onnxruntime 环境问题。
+    if (process.env.USE_ONNX_RERANKER !== 'false') {
+      try {
+        const ONNXRerankingService = require('./services/RAG/ONNXRerankingService');
+        ONNXRerankingService.getSharedInstance()
+          .initialize()
+          .then(() => logger.info('[ONNXRerankingService] 启动预热完成'))
+          .catch((error) =>
+            logger.warn(`[ONNXRerankingService] 启动预热失败，问数时将退回默认排序: ${error.message}`),
+          );
+      } catch (error) {
+        logger.warn(`[ONNXRerankingService] 启动预热初始化异常: ${error.message}`);
+      }
+    }
   });
 };
 

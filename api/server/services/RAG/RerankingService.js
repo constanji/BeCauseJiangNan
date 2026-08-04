@@ -10,7 +10,9 @@ class RerankingService {
   constructor() {
     this.rerankerType = process.env.RERANKER_TYPE || 'onnx'; // 默认使用 ONNX
     this.useONNX = process.env.USE_ONNX_RERANKER !== 'false'; // 默认启用 ONNX
-    this.onnxRerankingService = new ONNXRerankingService();
+    // 使用进程级共享单例，避免每次请求（每个 RAGService 实例）都重新加载一次模型、
+    // 重新打开一次全局 fetch 拦截窗口（详见 ONNXRerankingService 内的说明）。
+    this.onnxRerankingService = ONNXRerankingService.getSharedInstance();
     this.reranker = this.createReranker();
   }
 

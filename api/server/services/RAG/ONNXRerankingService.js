@@ -2,6 +2,11 @@ const path = require('path');
 const fs = require('fs');
 const { logger } = require('@because/data-schemas');
 
+// 初始化失败后的冷却时间：避免每次请求都重新触发模型加载 + 全局 fetch 拦截窗口，
+// 一旦某次加载失败（例如底层 onnxruntime-node 原生绑定不可用），在冷却期内直接短路，
+// 优雅退回默认排序，而不是对每一次问数请求都重复尝试并反复打开拦截窗口。
+const INIT_RETRY_COOLDOWN_MS = 10 * 60 * 1000; // 10 分钟
+
 /**
  * ONNX 重排服务
  * 使用本地 ONNX 模型进行文档重排序
@@ -17,16 +22,49 @@ class ONNXRerankingService {
     this.pipelineType = null; // 'feature-extraction' 或 'text-classification'
     this.initialized = false;
     this.hasLoggedFlatScoreWarning = false;
+    // 进程内单例地初始化：并发请求共享同一个 Promise，避免重复加载 90MB 模型、
+    // 反复打开下面的全局 fetch 拦截窗口（该窗口在打开期间会连带拦截同一进程里
+    // 其他并发请求发出的正常 HTTPS 请求，例如调用大模型网关的请求）。
+    this._initPromise = null;
+    this._initFailedAt = null;
   }
 
   /**
-   * 初始化 ONNX 模型和 tokenizer
+   * 初始化 ONNX 模型和 tokenizer（对外入口，做单例化 + 熔断）
    */
   async initialize() {
     if (this.initialized) {
       return;
     }
 
+    // 熔断：最近初始化失败过，冷却期内直接短路，不再重复加载/重复打开 fetch 拦截窗口
+    if (this._initFailedAt && Date.now() - this._initFailedAt < INIT_RETRY_COOLDOWN_MS) {
+      throw new Error('ONNX reranker 初始化最近失败，处于冷却期，暂不重试（避免频繁触发风险窗口）');
+    }
+
+    // 并发请求（同一进程内）共享同一次初始化，不要各自触发一次加载
+    if (!this._initPromise) {
+      this._initPromise = this._doInitialize()
+        .then(() => {
+          this.initialized = true;
+          this._initFailedAt = null;
+        })
+        .catch((error) => {
+          this._initFailedAt = Date.now();
+          throw error;
+        })
+        .finally(() => {
+          this._initPromise = null;
+        });
+    }
+
+    return this._initPromise;
+  }
+
+  /**
+   * 实际执行模型加载（内部方法，由 initialize() 做单例化/熔断包装）
+   */
+  async _doInitialize() {
     try {
       // 检查模型文件是否存在（使用新的目录结构）
       const modelFile = path.join(this.modelPath, 'onnx', 'model_quantized.onnx');
@@ -78,12 +116,24 @@ class ONNXRerankingService {
         logger.warn('[ONNXRerankingService] SSL verification disabled (development mode or ALLOW_INSECURE_SSL=true)');
       }
       
-      // 拦截全局 fetch，阻止所有网络请求（仅在模型加载期间）
+      // 拦截全局 fetch（仅在模型加载期间，且只针对模型/运行时相关的远程地址）。
+      // 注意：global.fetch 是整个 Node 进程共享的，如果这里无差别拦截"所有" http(s)
+      // 请求，会连带拦截同一进程里其它并发请求发出的正常调用（例如调用大模型网关），
+      // 表现为前端"Connection error"。因此只针对已知的模型托管/运行时 CDN 域名做拦截，
+      // env.allowRemoteModels=false 已经从 transformers.js 层面阻止了 HF Hub 请求，
+      // 这里主要防的是 onnxruntime-web 在 wasm 后端下默认从 CDN 拉取 .wasm 文件的情况。
       const originalFetch = global.fetch;
       let fetchIntercepted = false;
       const resourcesPathResolved = path.resolve(this.resourcesPath);
-      
-      // 创建一个只允许本地文件访问的 fetch 拦截器
+      const remoteModelHostPatterns = [
+        'huggingface.co',
+        'hf.co',
+        'cdn-lfs',
+        'cdn.jsdelivr.net',
+        'unpkg.com',
+      ];
+
+      // 创建一个只拦截"模型/运行时相关远程地址"的 fetch 拦截器，其它地址原样放行
       global.fetch = function(...args) {
         const url = args[0];
         const urlString = typeof url === 'string' ? url : url?.toString() || '';
@@ -95,8 +145,9 @@ class ONNXRerankingService {
           return originalFetch.apply(this, args);
         }
         
-        // 阻止所有 HTTP/HTTPS 网络请求
-        if (urlString.startsWith('http://') || urlString.startsWith('https://')) {
+        // 仅阻止指向已知模型托管/运行时 CDN 域名的 HTTP/HTTPS 请求
+        const isRemoteModelHost = remoteModelHostPatterns.some((host) => urlString.includes(host));
+        if (isRemoteModelHost && (urlString.startsWith('http://') || urlString.startsWith('https://'))) {
           logger.warn(`[ONNXRerankingService] Blocked network request: ${urlString}`);
           return Promise.reject(new Error(`Network requests are disabled in offline mode. Attempted to fetch: ${urlString}`));
         }
@@ -176,7 +227,6 @@ class ONNXRerankingService {
         }
       }
 
-      this.initialized = true;
       logger.info('[ONNXRerankingService] ONNX reranker model initialized successfully');
     } catch (error) {
       logger.error('[ONNXRerankingService] Failed to initialize ONNX model:', error);
@@ -370,5 +420,19 @@ class ONNXRerankingService {
   }
 }
 
+// 进程级单例：RAGService/RerankingService 目前是"每次请求 new 一个"的用法，
+// 如果每个实例各自持有一个 ONNXRerankingService，模型（90MB）会在每次触发 RAG
+// 检索时都重新加载一次，且每次都会重新打开上面的全局 fetch 拦截窗口，
+// 大幅增加与同进程内其它并发请求（例如调用大模型网关）发生冲突的概率。
+// 改为跨请求共享同一个实例后，加载只会发生一次（或按熔断策略稀疏地重试）。
+let sharedInstance = null;
+function getSharedInstance() {
+  if (!sharedInstance) {
+    sharedInstance = new ONNXRerankingService();
+  }
+  return sharedInstance;
+}
+
 module.exports = ONNXRerankingService;
+module.exports.getSharedInstance = getSharedInstance;
 
