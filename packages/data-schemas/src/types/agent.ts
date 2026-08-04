@@ -28,6 +28,8 @@ export interface IAgent extends Omit<Document, 'model'> {
   authorName?: string;
   hide_sequential_outputs?: boolean;
   end_after_tools?: boolean;
+  /** Server-side auto chart after data-query tools succeed */
+  auto_chart?: boolean;
   /** @deprecated Use edges instead */
   agent_ids?: string[];
   edges?: GraphEdge[];

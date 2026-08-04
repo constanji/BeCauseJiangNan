@@ -54,7 +54,8 @@ export default {
     },
   ],
   plugins: [
-    cleandir('dist'),
+    // Only wipe JS outputs; keep dist/types so a failed/OOM tsc does not leave the package typeless
+    cleandir(['dist/cjs', 'dist/esm']),
     {
       name: 'filter-prod-files',
       resolveId(source, importer) {

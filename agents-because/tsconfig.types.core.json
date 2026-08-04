@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.types.base.json",
+  "include": [
+    "src/run.ts",
+    "src/stream.ts",
+    "src/splitStream.ts",
+    "src/events.ts",
+    "src/mockStream.ts",
+    "src/instrumentation.ts"
+  ]
+}

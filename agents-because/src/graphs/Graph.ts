@@ -511,6 +511,8 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
         maxToolResultChars: agentContext?.maxToolResultChars,
         errorHandler: (data, metadata) =>
           StandardGraph.handleToolCallErrorStatic(this, data, metadata),
+        dispatchSyntheticToolCall: (toolCall, config) =>
+          this.dispatchSyntheticToolCall(toolCall, config),
       });
     }
 
@@ -540,7 +542,35 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
       sessions: this.sessions,
       maxContextTokens: agentContext?.maxContextTokens,
       maxToolResultChars: agentContext?.maxToolResultChars,
+      dispatchSyntheticToolCall: (toolCall, config) =>
+        this.dispatchSyntheticToolCall(toolCall, config),
     });
+  }
+
+  /**
+   * Register a synthetic tool call as a TOOL_CALLS run step so the UI stream
+   * and toolCallStepIds map stay consistent with real LLM-initiated calls.
+   */
+  async dispatchSyntheticToolCall(
+    toolCall: ToolCall,
+    config: RunnableConfig
+  ): Promise<string | undefined> {
+    const metadata = (config.metadata ?? {}) as Record<string, unknown>;
+    try {
+      // Prefer live node config so custom events propagate correctly
+      if (!this.config && config) {
+        this.config = config;
+      }
+      const stepKey = this.getStepKey(metadata);
+      return await this.dispatchRunStep(
+        stepKey,
+        { type: StepTypes.TOOL_CALLS, tool_calls: [toolCall] },
+        metadata
+      );
+    } catch (err) {
+      console.warn('[auto_chart] dispatchSyntheticToolCall failed:', err);
+      return undefined;
+    }
   }
 
   overrideTestModel(

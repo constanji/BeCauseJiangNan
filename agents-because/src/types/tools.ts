@@ -1,6 +1,6 @@
 // src/types/tools.ts
 import type { StructuredToolInterface } from '@langchain/core/tools';
-import type { RunnableToolLike } from '@langchain/core/runnables';
+import type { RunnableConfig, RunnableToolLike } from '@langchain/core/runnables';
 import type { ToolCall } from '@langchain/core/messages/tool';
 import type { ToolErrorData } from './stream';
 import { EnvVar } from '@/common';
@@ -83,6 +83,14 @@ export type ToolNodeOptions = {
   directToolNames?: Set<string>;
   maxContextTokens?: number;
   maxToolResultChars?: number;
+  /**
+   * Dispatch a synthetic TOOL_CALLS run step (registers toolCallStepIds + ON_RUN_STEP).
+   * Used by the auto-chart pipeline to surface shadow tool calls in the UI stream.
+   */
+  dispatchSyntheticToolCall?: (
+    toolCall: ToolCall,
+    config: RunnableConfig
+  ) => Promise<string | undefined>;
 };
 
 export type ToolNodeConstructorParams = ToolRefs & ToolNodeOptions;

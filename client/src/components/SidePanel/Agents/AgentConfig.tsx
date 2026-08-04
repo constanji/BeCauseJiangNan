@@ -26,6 +26,7 @@ import FileContext from './FileContext';
 import SearchForm from './Search/Form';
 import FileSearch from './FileSearch';
 import Artifacts from './Artifacts';
+import AutoChart from './AutoChart';
 import AgentTool from './AgentTool';
 import CodeForm from './Code/Form';
 import MCPTools from './MCPTools';
@@ -302,6 +303,20 @@ export default function AgentConfig() {
             {artifactsEnabled && <Artifacts />}
             {/* File Search */}
             {fileSearchEnabled && <FileSearch agent_id={agent_id} files={knowledge_files} />}
+            {/* Auto Chart (server-side pipeline after data-query tools) */}
+            <AutoChart />
+          </div>
+        )}
+        {/* Auto Chart when capabilities section is otherwise empty */}
+        {!(
+          codeEnabled ||
+          fileSearchEnabled ||
+          artifactsEnabled ||
+          contextEnabled ||
+          webSearchEnabled
+        ) && (
+          <div className="mb-4 flex w-full flex-col items-start gap-3">
+            <AutoChart />
           </div>
         )}
         {/* MCP Section */}

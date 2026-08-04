@@ -1,0 +1,4 @@
+{
+  "extends": "./tsconfig.types.base.json",
+  "include": ["src/tools/search/index.ts", "src/tools/search/tool.ts", "src/tools/example.ts"]
+}

@@ -1,0 +1,144 @@
+import type * as z from 'zod';
+import type { BaseMessage } from '@langchain/core/messages';
+import type { StructuredTool } from '@langchain/core/tools';
+import type { RunnableConfig } from '@langchain/core/runnables';
+import type { BaseCallbackHandler, CallbackHandlerMethods } from '@langchain/core/callbacks/base';
+import type * as s from '@/types/stream';
+import type * as e from '@/common/enum';
+import type * as g from '@/types/graph';
+import type * as l from '@/types/llm';
+export type ZodObjectAny = z.ZodObject<any, any, any, any>;
+export type BaseGraphConfig = {
+    llmConfig: l.LLMConfig;
+    provider?: e.Providers;
+    clientOptions?: l.ClientOptions;
+    /** Optional compile options for workflow.compile() */
+    compileOptions?: g.CompileOptions;
+};
+export type LegacyGraphConfig = BaseGraphConfig & {
+    type?: 'standard';
+} & Omit<g.StandardGraphInput, 'provider' | 'clientOptions' | 'agents'> & Omit<g.AgentInputs, 'provider' | 'clientOptions' | 'agentId'>;
+export type SupervisedGraphConfig = BaseGraphConfig & {
+    type: 'supervised';
+    /** Enable supervised router; when false, fall back to standard loop */
+    routerEnabled?: boolean;
+    /** Table-driven routing policy per stage */
+    routingPolicies?: Array<{
+        stage: string;
+        agents?: string[];
+        model?: e.Providers;
+        parallel?: boolean;
+        /** Optional simple condition on content/tools */
+        when?: 'always' | 'has_tools' | 'no_tools' | {
+            includes?: string[];
+            excludes?: string[];
+        };
+    }>;
+    /** Opt-in feature flags */
+    featureFlags?: {
+        multi_model_routing?: boolean;
+        fan_out?: boolean;
+        fan_out_retries?: number;
+        fan_out_backoff_ms?: number;
+        fan_out_concurrency?: number;
+    };
+    /** Optional per-stage model configs */
+    models?: Record<string, l.LLMConfig>;
+} & Omit<g.StandardGraphInput, 'provider' | 'clientOptions'>;
+export type RunTitleOptions = {
+    inputText: string;
+    provider: e.Providers;
+    contentParts: (s.MessageContentComplex | undefined)[];
+    titlePrompt?: string;
+    skipLanguage?: boolean;
+    clientOptions?: l.ClientOptions;
+    chainOptions?: Partial<RunnableConfig> | undefined;
+    omitOptions?: Set<string>;
+    titleMethod?: e.TitleMethod;
+    titlePromptTemplate?: string;
+};
+export interface AgentStateChannels {
+    messages: BaseMessage[];
+    next: string;
+    [key: string]: unknown;
+    instructions?: string;
+    additional_instructions?: string;
+}
+export interface Member {
+    name: string;
+    systemPrompt: string;
+    tools: StructuredTool[];
+    llmConfig: l.LLMConfig;
+}
+export type CollaborativeGraphConfig = {
+    type: 'collaborative';
+    members: Member[];
+    supervisorConfig: {
+        systemPrompt?: string;
+        llmConfig: l.LLMConfig;
+    };
+};
+export type TaskManagerGraphConfig = {
+    type: 'taskmanager';
+    members: Member[];
+    supervisorConfig: {
+        systemPrompt?: string;
+        llmConfig: l.LLMConfig;
+    };
+};
+export type MultiAgentGraphConfig = {
+    type: 'multi-agent';
+    compileOptions?: g.CompileOptions;
+    agents: g.AgentInputs[];
+    edges: g.GraphEdge[];
+};
+export type StandardGraphConfig = Omit<MultiAgentGraphConfig, 'edges' | 'type'> & {
+    type?: 'standard';
+    signal?: AbortSignal;
+};
+export type RunConfig = {
+    runId: string;
+    graphConfig: LegacyGraphConfig | StandardGraphConfig | MultiAgentGraphConfig;
+    customHandlers?: Record<string, g.EventHandler>;
+    returnContent?: boolean;
+    tokenCounter?: TokenCounter;
+    indexTokenCountMap?: Record<string, number>;
+    /**
+     * Calibration ratio from a previous run's contextMeta.
+     * Seeds the pruner's EMA so new messages are scaled immediately.
+     *
+     * Hosts should persist the value returned by `Run.getCalibrationRatio()`
+     * after each run and pass it back here on subsequent runs for the same
+     * conversation. Without this, the EMA resets to 1 on every new Run instance.
+     */
+    calibrationRatio?: number;
+    /** Skip post-stream cleanup (clearHeavyState) — useful for tests that inspect graph state after processStream */
+    skipCleanup?: boolean;
+};
+export type ProvidedCallbacks = (BaseCallbackHandler | CallbackHandlerMethods)[] | undefined;
+export type TokenCounter = (message: BaseMessage) => number;
+/** Structured breakdown of how context token budget is consumed. */
+export type TokenBudgetBreakdown = {
+    /** Total context window budget (maxContextTokens). */
+    maxContextTokens: number;
+    /** Total instruction tokens (system + tools + summary). */
+    instructionTokens: number;
+    /** Tokens from the system message text alone. */
+    systemMessageTokens: number;
+    /** Tokens from tool schema definitions. */
+    toolSchemaTokens: number;
+    /** Tokens from the conversation summary. */
+    summaryTokens: number;
+    /** Number of registered tools. */
+    toolCount: number;
+    /** Number of messages in the conversation. */
+    messageCount: number;
+    /** Total tokens consumed by messages (excluding system). */
+    messageTokens: number;
+    /** Tokens available for messages after instructions. */
+    availableForMessages: number;
+};
+export type EventStreamOptions = {
+    callbacks?: g.ClientCallbacks;
+    keepContent?: boolean;
+};

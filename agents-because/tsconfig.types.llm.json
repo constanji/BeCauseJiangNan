@@ -1,0 +1,4 @@
+{
+  "extends": "./tsconfig.types.base.json",
+  "include": ["src/llm/**/*"]
+}

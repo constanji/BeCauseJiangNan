@@ -34,7 +34,10 @@
   "scripts": {
     "prepare": "node husky-setup.js",
     "prepublishOnly": "npm run build",
-    "build": "NODE_ENV=production rollup -c && tsc -p tsconfig.build.json",
+    "build": "NODE_ENV=production rollup -c && npm run build:types",
+    "build:runtime": "NODE_ENV=production rollup -c",
+    "build:types": "node ./config/build-types.js",
+    "build:types:legacy": "tsc -p tsconfig.build.json",
     "build:dev": "rollup -c",
     "start": "node dist/esm/main.js",
     "clean": "node ./config/clean.js",

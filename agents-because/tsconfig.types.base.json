@@ -1,0 +1,25 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "esModuleInterop": true,
+    "moduleResolution": "node",
+    "outDir": "./dist/types",
+    "rootDir": "./src",
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "noEmit": false,
+    "composite": false,
+    "incremental": false
+  },
+  "exclude": [
+    "**/*.test.ts",
+    "**/*.spec.ts",
+    "**/__tests__/**/*",
+    "node_modules",
+    "dist",
+    "src/proto/**/*",
+    "src/scripts/**/*",
+    "src/specs/**/*",
+    "src/test/**/*"
+  ]
+}

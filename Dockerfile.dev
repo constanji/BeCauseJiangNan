@@ -49,8 +49,8 @@ RUN \
 COPY --chown=node:node agents-because/src ./agents-because/src
 RUN mkdir -p ./agents-because/dist
 
-# 尝试构建 agents-because
-RUN cd agents-because && npm run build || echo "Note: agents-because build optional in dev mode, source will be mounted via volume"
+# 尝试构建 agents-because（dev 模式只需要运行时 bundle，类型声明生成较慢且非必需）
+RUN cd agents-because && npm run build:runtime || echo "Note: agents-because build optional in dev mode, source will be mounted via volume"
 
 # Copy dist if it exists (will be overridden by volume mount)
 COPY --chown=node:node agents-because/dist ./agents-because/dist

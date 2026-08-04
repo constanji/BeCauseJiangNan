@@ -22,6 +22,7 @@ export type TAgentCapabilities = {
   [AgentCapabilities.execute_code]: boolean;
   [AgentCapabilities.end_after_tools]?: boolean;
   [AgentCapabilities.hide_sequential_outputs]?: boolean;
+  [AgentCapabilities.auto_chart]?: boolean;
 };
 
 export type AgentForm = {

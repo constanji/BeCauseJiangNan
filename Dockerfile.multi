@@ -99,17 +99,21 @@ COPY agents-because/package.json ./agents-because/package.json
 COPY agents-because/tsconfig*.json ./agents-because/
 COPY agents-because/rollup.config.js ./agents-because/
 COPY agents-because/husky-setup.js ./agents-because/
+COPY agents-because/config ./agents-because/config
 COPY agents-because/src ./agents-because/src
-# Copy dist if it exists locally (will be used to skip build)
+# dist/types/**/*.d.ts is committed to git; dist/cjs and dist/esm are
+# gitignored runtime bundles that may or may not already exist locally.
 COPY agents-because/dist ./agents-because/dist
 ENV DISABLE_SOURCEMAP=true
 ENV NODE_OPTIONS="--max-old-space-size=8192"
-# Build only if dist doesn't exist or is empty
-RUN     if [ ! -d "agents-because/dist" ] || [ -z "$(ls -A agents-because/dist 2>/dev/null)" ]; then \
-      echo "Building agents-because (dist not found)..."; \
-      cd agents-because && npm install --no-audit --legacy-peer-deps && DISABLE_SOURCEMAP=true npm run build; \
+# Only dist/cjs/main.cjs matters for `node` to load @because/agents at
+# runtime — checking "dist non-empty" would wrongly skip the rebuild when
+# only the committed dist/types is on disk but the runtime bundle isn't.
+RUN     if [ ! -f "agents-because/dist/cjs/main.cjs" ]; then \
+      echo "Building agents-because runtime bundle (dist/cjs/main.cjs not found)..."; \
+      cd agents-because && npm install --no-audit --legacy-peer-deps && DISABLE_SOURCEMAP=true npm run build:runtime; \
     else \
-      echo "Using existing dist directory, skipping build"; \
+      echo "Using existing dist/cjs, skipping runtime build"; \
     fi
 
 # Install all dependencies for every build

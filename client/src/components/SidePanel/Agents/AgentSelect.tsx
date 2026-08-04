@@ -60,6 +60,7 @@ export default function AgentSelect({
         [AgentCapabilities.execute_code]: false,
         [AgentCapabilities.end_after_tools]: false,
         [AgentCapabilities.hide_sequential_outputs]: false,
+        [AgentCapabilities.auto_chart]: false,
       };
 
       const agentTools: string[] = [];
@@ -84,11 +85,18 @@ export default function AgentSelect({
         avatar_file: null,
         avatar_preview: fullAgent.avatar?.filepath ?? '',
         avatar_action: null,
+        // Strict boolean: never inherit undefined/truthy junk into the switch
+        [AgentCapabilities.auto_chart]: fullAgent.auto_chart === true,
       };
 
       Object.entries(fullAgent).forEach(([name, value]) => {
         if (name === 'model_parameters') {
           formValues[name] = value;
+          return;
+        }
+
+        if (name === AgentCapabilities.auto_chart || name === 'auto_chart') {
+          formValues[AgentCapabilities.auto_chart] = value === true;
           return;
         }
 

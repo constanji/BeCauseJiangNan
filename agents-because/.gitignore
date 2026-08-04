@@ -1,6 +1,13 @@
 .git
 node_modules/
-dist/
+# Runtime bundles are rebuilt by `npm run build` on every install/Docker
+# build (fast, not OOM-prone) — keep them out of git.
+dist/cjs/
+dist/esm/
+# dist/types/*.d.ts IS tracked (see below): generating it via tsc can OOM on
+# machines with limited memory (see config/build-types.js), so the last
+# known-good declaration output is committed and only needs to be
+# regenerated + recommitted when the public API surface actually changes.
 .env
 *.log
 *outputs.json

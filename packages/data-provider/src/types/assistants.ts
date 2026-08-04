@@ -234,6 +234,8 @@ export type Agent = {
   edges?: GraphEdge[];
   end_after_tools?: boolean;
   hide_sequential_outputs?: boolean;
+  /** Server-side auto chart after data-query tools succeed */
+  auto_chart?: boolean;
   artifacts?: ArtifactModes;
   recursion_limit?: number;
   isPublic?: boolean;
@@ -261,6 +263,7 @@ export type AgentCreateParams = {
   | 'edges'
   | 'end_after_tools'
   | 'hide_sequential_outputs'
+  | 'auto_chart'
   | 'artifacts'
   | 'recursion_limit'
   | 'category'
@@ -288,6 +291,7 @@ export type AgentUpdateParams = {
   | 'edges'
   | 'end_after_tools'
   | 'hide_sequential_outputs'
+  | 'auto_chart'
   | 'artifacts'
   | 'recursion_limit'
   | 'category'

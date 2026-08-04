@@ -68,6 +68,10 @@ const agentSchema = new Schema<IAgent>(
     end_after_tools: {
       type: Boolean,
     },
+    /** 查数工具返回后由服务端自动出图（治本管道），默认关闭 */
+    auto_chart: {
+      type: Boolean,
+    },
     /** @deprecated Use edges instead */
     agent_ids: {
       type: [String],

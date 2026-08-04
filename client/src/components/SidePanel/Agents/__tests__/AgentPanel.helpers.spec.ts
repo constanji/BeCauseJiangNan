@@ -25,6 +25,7 @@ const createForm = (): AgentForm => ({
   edges: [],
   end_after_tools: false,
   hide_sequential_outputs: false,
+  auto_chart: false,
   recursion_limit: undefined,
   category: 'general',
   support_contact: undefined,

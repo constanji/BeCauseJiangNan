@@ -1178,6 +1178,8 @@ class AgentClient extends BaseClient {
           last_agent_index: this.agentConfigs?.size ?? 0,
           user_id: this.user ?? this.options.req.user?.id,
           hide_sequential_outputs: this.options.agent.hide_sequential_outputs,
+          /** Per-agent switch for server-side auto chart after data-query tools */
+          auto_chart: this.options.agent.auto_chart === true,
           requestBody: {
             messageId: this.responseMessageId,
             conversationId: this.conversationId,

@@ -37,6 +37,12 @@ client/src/localization/languages/*_missing_keys.json
 # Compiled Dirs (http://nodejs.org/api/addons.html)
 build/
 dist/
+# agents-because declaration output is committed (tsc declaration builds can
+# OOM on memory-constrained machines — see agents-because/config/build-types.js);
+# only the compiled runtime bundles stay gitignored and get rebuilt on install.
+!agents-because/dist/
+agents-because/dist/*
+!agents-because/dist/types/
 public/main.js
 public/main.js.map
 public/main.js.LICENSE.txt
@@ -59,6 +65,7 @@ client/node_modules/
 bower_components/
 *.d.ts
 !vite-env.d.ts
+!agents-because/dist/types/**/*.d.ts
 
 # AI
 .clineignore

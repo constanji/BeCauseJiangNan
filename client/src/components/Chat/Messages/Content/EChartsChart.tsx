@@ -101,6 +101,70 @@ type EChartsChartProps = {
   echartsOption: Record<string, unknown>;
 };
 
+const numberFormatter = new Intl.NumberFormat('en-US');
+
+function formatTooltipValue(value: unknown): string {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return numberFormatter.format(value);
+  }
+  if (Array.isArray(value)) {
+    const numeric = value.find((v) => typeof v === 'number' && Number.isFinite(v));
+    if (typeof numeric === 'number') {
+      return numberFormatter.format(numeric);
+    }
+  }
+  if (value == null) {
+    return '--';
+  }
+  return String(value);
+}
+
+/**
+ * Align with echarts.html financial style: inject a thousand-separator tooltip
+ * formatter when the backend stripped functions via sanitizeOption.
+ */
+export function withDefaultTooltipFormatter(
+  option: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!option || typeof option !== 'object') {
+    return option;
+  }
+
+  const tooltip = option.tooltip;
+  if (!tooltip || typeof tooltip !== 'object' || Array.isArray(tooltip)) {
+    return option;
+  }
+
+  const tooltipObj = tooltip as Record<string, unknown>;
+  if (tooltipObj.formatter != null && tooltipObj.formatter !== '') {
+    return option;
+  }
+
+  return {
+    ...option,
+    tooltip: {
+      ...tooltipObj,
+      formatter: (params: unknown) => {
+        const list = Array.isArray(params) ? params : [params];
+        return list
+          .map((item) => {
+            const row = item as {
+              seriesName?: string;
+              name?: string;
+              marker?: string;
+              value?: unknown;
+            };
+            const label = row.seriesName || row.name || '';
+            const marker = typeof row.marker === 'string' ? row.marker : '';
+            const formatted = formatTooltipValue(row.value);
+            return label ? `${marker}${label}: ${formatted}` : `${marker}${formatted}`;
+          })
+          .join('<br/>');
+      },
+    },
+  };
+}
+
 const EChartsChart = memo(({ title, echartsOption }: EChartsChartProps) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
@@ -127,12 +191,13 @@ const EChartsChart = memo(({ title, echartsOption }: EChartsChartProps) => {
 
     const container = containerRef.current;
     const isDark = document.documentElement.classList.contains('dark');
+    const optionWithFormatter = withDefaultTooltipFormatter(echartsOption);
 
     const chart = echarts.init(container, isDark ? 'dark' : undefined, {
       renderer: 'canvas',
     });
 
-    chart.setOption(echartsOption);
+    chart.setOption(optionWithFormatter);
     chartRef.current = chart;
 
     resizeObserverRef.current = new ResizeObserver(() => {
@@ -161,6 +226,7 @@ const EChartsChart = memo(({ title, echartsOption }: EChartsChartProps) => {
       if (chartRef.current && containerRef.current) {
         const isDark = document.documentElement.classList.contains('dark');
         const container = containerRef.current;
+        const optionWithFormatter = withDefaultTooltipFormatter(echartsOption);
 
         try {
           chartRef.current.dispose();
@@ -171,7 +237,7 @@ const EChartsChart = memo(({ title, echartsOption }: EChartsChartProps) => {
         const chart = echarts.init(container, isDark ? 'dark' : undefined, {
           renderer: 'canvas',
         });
-        chart.setOption(echartsOption);
+        chart.setOption(optionWithFormatter);
         chartRef.current = chart;
       }
     });
