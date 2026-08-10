@@ -4,13 +4,19 @@
  * echarts_generator_app description / echarts.html financial style.
  */
 
-export const TIME_COMPARE_FIELDS = [
-  'yd_value',
-  'm_begin_value',
-  'q_begin_value',
-  'y_begin_value',
-  'ly_value',
-] as const;
+import {
+  TIME_COMPARE_FIELDS,
+  BASELINE_GROUPS,
+  INDEX_VALUE_FIELD,
+  isBlacklistedNumericField,
+  isBaselineField,
+  isIndexValueField,
+} from './kpiFieldDictionary';
+import type { RowRecord } from './kpiFieldDictionary';
+import { resolveChartMatchRules, type ChartMatchRules } from './autoChartRules/types';
+
+export { TIME_COMPARE_FIELDS } from './kpiFieldDictionary';
+export type { RowRecord } from './kpiFieldDictionary';
 
 const TIME_COMPARE_LABELS: Record<string, string> = {
   ly_value: '上年同期',
@@ -18,6 +24,7 @@ const TIME_COMPARE_LABELS: Record<string, string> = {
   q_begin_value: '上季末',
   m_begin_value: '上月末',
   yd_value: '上一日',
+  [INDEX_VALUE_FIELD]: '当前值',
   value: '当前值',
 };
 
@@ -34,6 +41,53 @@ const DATE_FIELD_CANDIDATES = new Set([
   '时间维度',
 ]);
 
+const DIMENSION_FIELD_PRIORITY = [
+  'brchna',
+  'brch_name',
+  'branch_name',
+  'org_name',
+  'org_nm',
+  'org_short_name',
+  '机构名称',
+  '机构',
+  'standard_name',
+  'index_name',
+  'kpi_name',
+  '指标名称',
+  'index_number',
+  '指标编码',
+  '指标号',
+  'dim_name',
+  'name',
+  'org_code',
+  'brchno',
+  '机构号',
+];
+
+const INSTITUTION_DIMENSION_FIELDS = new Set([
+  'brchna',
+  'brch_name',
+  'branch_name',
+  'org_name',
+  'org_nm',
+  'org_short_name',
+  '机构名称',
+  '机构',
+  'org_code',
+  'brchno',
+  '机构号',
+]);
+
+const METRIC_DIMENSION_FIELDS = new Set([
+  'index_number',
+  'standard_name',
+  'index_name',
+  'kpi_name',
+  '指标名称',
+  '指标编码',
+  '指标号',
+]);
+
 const BAR_PALETTE = [
   '#5470c6',
   '#91cc75',
@@ -44,14 +98,21 @@ const BAR_PALETTE = [
   '#fc8452',
 ];
 
-export type ChartType = 'bar' | 'line';
+export type ChartType = 'bar' | 'line' | 'pie';
 
 export type Chartability =
   | {
       type: 'bar';
-      analysisType: 'dimension_compare';
+      analysisType: 'dimension_compare' | 'trend_analysis';
       dimCol: string;
       measureCols: string[];
+      titleHint?: string;
+    }
+  | {
+      type: 'pie';
+      analysisType: 'dimension_compare';
+      dimCol: string;
+      measureCol: string;
       titleHint?: string;
     }
   | {
@@ -64,7 +125,36 @@ export type Chartability =
       titleHint?: string;
     };
 
-export type RowRecord = Record<string, unknown>;
+export type ChartMatchRuleName =
+  | 'time_series'
+  | 'dimension_compare'
+  | 'baseline_compare';
+
+export type AutoChartMatchResult =
+  | {
+      status: 'matched';
+      rule: ChartMatchRuleName;
+      chartability: Chartability;
+      rows: RowRecord[];
+      columns: string[];
+      rowCount: number;
+      categoryCount: number;
+    }
+  | {
+      status: 'disabled';
+      rule: ChartMatchRuleName;
+      rows: RowRecord[];
+      columns: string[];
+      rowCount: number;
+      categoryCount: number;
+    }
+  | {
+      status: 'no_match';
+      rows: RowRecord[];
+      columns: string[];
+      rowCount: number;
+      categoryCount: number;
+    };
 
 export type ExtractedTable = {
   rows: RowRecord[];
@@ -121,14 +211,29 @@ function classifyColumns(rows: RowRecord[], columns: string[]) {
   const measures: string[] = [];
   const dateCols: string[] = [];
   const timeCompareCols: string[] = [];
+  let indexValueCol: string | undefined;
 
   for (const col of columns) {
     const lower = col.toLowerCase();
-    if ((TIME_COMPARE_FIELDS as readonly string[]).includes(lower) ||
-      (TIME_COMPARE_FIELDS as readonly string[]).includes(col)) {
-      timeCompareCols.push(col);
+
+    if (isBlacklistedNumericField(col)) {
       continue;
     }
+
+    if (isIndexValueField(col)) {
+      indexValueCol = col;
+      measures.push(col);
+      continue;
+    }
+
+    if (isBaselineField(col)) {
+      // Only baseline *value* columns participate in time-compare sparklines
+      if ((TIME_COMPARE_FIELDS as readonly string[]).includes(lower)) {
+        timeCompareCols.push(col);
+      }
+      continue;
+    }
+
     if (DATE_FIELD_CANDIDATES.has(lower) || DATE_FIELD_CANDIDATES.has(col)) {
       dateCols.push(col);
       continue;
@@ -149,17 +254,41 @@ function classifyColumns(rows: RowRecord[], columns: string[]) {
     } else if (numericCount >= Math.ceil(sample.length * 0.7)) {
       measures.push(col);
     } else {
-      dimensions.push(col);
+      const isKnownDimension =
+        INSTITUTION_DIMENSION_FIELDS.has(lower) ||
+        INSTITUTION_DIMENSION_FIELDS.has(col) ||
+        METRIC_DIMENSION_FIELDS.has(lower) ||
+        METRIC_DIMENSION_FIELDS.has(col);
+      if (isKnownDimension) {
+        dimensions.push(col);
+      }
     }
   }
 
-  return { dimensions, measures, dateCols, timeCompareCols };
+  return { dimensions, measures, dateCols, timeCompareCols, indexValueCol };
 }
 
 function pickTitleHint(rows: RowRecord[], columns: string[]): string | undefined {
-  const nameCols = columns.filter((c) =>
-    /name|指标|名称|index|kpi|title/i.test(c),
-  );
+  const preferred = [
+    'standard_name',
+    'index_name',
+    'kpi_name',
+    '指标名称',
+    '名称',
+    'title',
+  ];
+  const nameCols = [
+    ...preferred.flatMap((candidate) =>
+      columns.filter(
+        (column) => column === candidate || column.toLowerCase() === candidate,
+      ),
+    ),
+    ...columns.filter(
+      (column) =>
+        /name|指标|名称|kpi|title/i.test(column) &&
+        !/code|number|编号|编码/i.test(column),
+    ),
+  ];
   for (const col of nameCols) {
     const v = rows[0]?.[col];
     if (v != null && String(v).trim()) {
@@ -169,6 +298,17 @@ function pickTitleHint(rows: RowRecord[], columns: string[]): string | undefined
   return undefined;
 }
 
+function orderedDimensionFields(dimensions: string[]): string[] {
+  const priority = new Map(
+    DIMENSION_FIELD_PRIORITY.map((field, index) => [field.toLowerCase(), index]),
+  );
+  return [...dimensions].sort((a, b) => {
+    const aRank = priority.get(a.toLowerCase()) ?? Number.MAX_SAFE_INTEGER;
+    const bRank = priority.get(b.toLowerCase()) ?? Number.MAX_SAFE_INTEGER;
+    return aRank - bRank;
+  });
+}
+
 /**
  * Decide whether rows should produce a chart and of which type.
  * Returns null when no chart should be generated.
@@ -176,9 +316,72 @@ function pickTitleHint(rows: RowRecord[], columns: string[]): string | undefined
 export function detectChartability(
   rows: RowRecord[],
   columns?: string[],
+  userQuestion?: string,
+  matchRules?: ChartMatchRules,
 ): Chartability | null {
+  const result = matchAutoChartData(rows, columns, userQuestion, matchRules);
+  return result.status === 'matched' ? result.chartability : null;
+}
+
+function sortRows(
+  rows: RowRecord[],
+  field: string,
+  mode: 'value_desc' | 'value_asc' | 'dimension_asc' | 'source',
+): RowRecord[] {
+  if (mode === 'source') {
+    return [...rows];
+  }
+  return [...rows].sort((a, b) => {
+    if (mode === 'dimension_asc') {
+      return String(a[field] ?? '').localeCompare(String(b[field] ?? ''));
+    }
+    const av = toNumber(a[field]) ?? 0;
+    const bv = toNumber(b[field]) ?? 0;
+    return mode === 'value_asc' ? av - bv : bv - av;
+  });
+}
+
+function sortableDateValue(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value
+      .slice(0, 6)
+      .map((part) => String(part ?? '').padStart(2, '0'))
+      .join('-');
+  }
+  return String(value ?? '');
+}
+
+function preparePieRows(
+  rows: RowRecord[],
+  dimCol: string,
+  measureCol: string,
+  topN: number,
+  sort: 'value_desc' | 'value_asc' | 'dimension_asc' | 'source',
+): RowRecord[] {
+  const sorted = sortRows(
+    rows,
+    sort === 'dimension_asc' ? dimCol : measureCol,
+    sort,
+  );
+  if (sorted.length <= topN) {
+    return sorted;
+  }
+  const head = sorted.slice(0, topN);
+  const otherValue = sorted
+    .slice(topN)
+    .reduce((sum, row) => sum + (toNumber(row[measureCol]) ?? 0), 0);
+  return [...head, { [dimCol]: '其他', [measureCol]: otherValue }];
+}
+
+/** Shared classifier and row preprocessor used by Simple and Legacy Auto. */
+export function matchAutoChartData(
+  rows: RowRecord[],
+  columns?: string[],
+  userQuestion?: string,
+  matchRules?: ChartMatchRules,
+): AutoChartMatchResult {
   if (!Array.isArray(rows) || rows.length === 0) {
-    return null;
+    return { status: 'no_match', rows: [], columns: [], rowCount: 0, categoryCount: 0 };
   }
 
   const cols =
@@ -186,64 +389,153 @@ export function detectChartability(
       ? columns
       : Object.keys(rows[0] ?? {});
   if (cols.length === 0) {
-    return null;
+    return { status: 'no_match', rows, columns: [], rowCount: rows.length, categoryCount: 0 };
   }
 
   const classified = classifyColumns(rows, cols);
   const titleHint = pickTitleHint(rows, cols);
+  const rules = resolveChartMatchRules(matchRules);
 
-  // ≥2 rows + multi-period date → line
+  // Prefer explicit index_value as the sole measure when present (all Agents).
+  const preferredMeasures = classified.indexValueCol
+    ? [classified.indexValueCol]
+    : classified.measures.filter((c) => !isBaselineField(c));
+
+  // Priority 1: multi-period date trend.
   if (rows.length >= 2 && classified.dateCols.length > 0) {
     const dateCol = classified.dateCols[0];
     const distinctDates = new Set(
       rows.map((r) => String(r[dateCol] ?? '')).filter(Boolean),
     );
-    if (distinctDates.size >= 2 && classified.measures.length >= 1) {
+    if (
+      distinctDates.size >= rules.time_series.min_periods &&
+      preferredMeasures.length >= 1
+    ) {
+      if (!rules.time_series.enabled) {
+        return {
+          status: 'disabled', rule: 'time_series', rows, columns: cols,
+          rowCount: rows.length, categoryCount: distinctDates.size,
+        };
+      }
+      let prepared = [...rows].sort((a, b) =>
+        sortableDateValue(a[dateCol]).localeCompare(sortableDateValue(b[dateCol])),
+      );
+      if (rules.time_series.sort === 'time_desc') prepared.reverse();
+      if (rules.time_series.max_points) prepared = prepared.slice(0, rules.time_series.max_points);
+      const type = rules.time_series.chart_type;
       return {
-        type: 'line',
-        analysisType: 'trend_analysis',
-        dateCol,
-        measureCols: classified.measures.slice(0, 3),
-        titleHint,
+        status: 'matched', rule: 'time_series', rows: prepared, columns: cols,
+        rowCount: rows.length, categoryCount: distinctDates.size,
+        chartability: type === 'bar'
+          ? { type: 'bar', analysisType: 'trend_analysis', dimCol: dateCol, measureCols: preferredMeasures.slice(0, 3), titleHint }
+          : { type: 'line', analysisType: 'trend_analysis', dateCol, measureCols: preferredMeasures.slice(0, 3), titleHint },
       };
     }
   }
 
-  // ≥2 rows + dimension with ≥2 distinct values → bar
-  if (rows.length >= 2) {
-    for (const dim of classified.dimensions) {
-      const distinct = new Set(
-        rows.map((r) => String(r[dim] ?? '')).filter((v) => v !== ''),
-      );
-      if (distinct.size >= 2 && classified.measures.length >= 1) {
-        return {
-          type: 'bar',
-          analysisType: 'dimension_compare',
-          dimCol: dim,
-          measureCols: classified.measures.slice(0, 6),
-          titleHint,
-        };
-      }
+  // Only institution and metric dimensions are valid for KPI comparisons.
+  let dimension: string | undefined;
+  let categoryCount = 0;
+  for (const dim of orderedDimensionFields(classified.dimensions)) {
+    const distinct = new Set(rows.map((r) => String(r[dim] ?? '')).filter(Boolean));
+    if (distinct.size > categoryCount) {
+      dimension = dim;
+      categoryCount = distinct.size;
     }
+    if (distinct.size >= 2) break;
   }
 
-  // 1 row + time-compare fields → line
-  if (rows.length === 1 && classified.timeCompareCols.length >= 1) {
-    const currentValueCol =
-      classified.measures.find((c) => /^(value|dqz|当前值|指标值)$/i.test(c)) ??
-      classified.measures[0];
+  // Priority 2: multi-institution or multi-metric comparison (pie by default).
+  if (
+    rows.length >= 2 && preferredMeasures.length >= 1 && dimension &&
+    categoryCount >= rules.dimension_compare.min_categories
+  ) {
+    if (!rules.dimension_compare.enabled) {
+      return { status: 'disabled', rule: 'dimension_compare', rows, columns: cols, rowCount: rows.length, categoryCount };
+    }
+    const measure = preferredMeasures[0];
+    const type = rules.dimension_compare.chart_type;
+    let prepared = type === 'pie'
+      ? preparePieRows(rows, dimension, measure, rules.dimension_compare.pie_top_n, rules.dimension_compare.sort)
+      : sortRows(rows, rules.dimension_compare.sort === 'dimension_asc' ? dimension : measure, rules.dimension_compare.sort);
+    if (type === 'bar' && rules.dimension_compare.bar_max_items) {
+      prepared = prepared.slice(0, rules.dimension_compare.bar_max_items);
+    }
     return {
-      type: 'line',
-      analysisType: 'trend_analysis',
-      timeCompareCols: classified.timeCompareCols,
-      currentValueCol,
-      measureCols: currentValueCol ? [currentValueCol] : [],
-      titleHint,
+      status: 'matched', rule: 'dimension_compare', rows: prepared, columns: cols,
+      rowCount: rows.length, categoryCount,
+      chartability: type === 'bar'
+        ? { type: 'bar', analysisType: 'dimension_compare', dimCol: dimension, measureCols: preferredMeasures.slice(0, 6), titleHint }
+        : { type: 'pie', analysisType: 'dimension_compare', dimCol: dimension, measureCol: measure, titleHint },
     };
   }
 
-  // 1 row without time-compare → no chart
-  return null;
+  // Priority 4: one row with baseline fields.
+  if (rows.length === 1 && classified.timeCompareCols.length >= 1) {
+    const currentValueCol = classified.indexValueCol;
+    if (!currentValueCol) {
+      return { status: 'no_match', rows, columns: cols, rowCount: 1, categoryCount: 0 };
+    }
+    const baselinePoints = BASELINE_GROUPS
+      .map((group) => classified.timeCompareCols.find((c) => c === group.baseline || c.toLowerCase() === group.baseline))
+      .filter((c): c is string => Boolean(c));
+    const pointCount = baselinePoints.length + 1;
+    if (pointCount < rules.baseline_compare.min_points) {
+      return { status: 'no_match', rows, columns: cols, rowCount: 1, categoryCount: pointCount };
+    }
+    if (!rules.baseline_compare.enabled) {
+      return { status: 'disabled', rule: 'baseline_compare', rows, columns: cols, rowCount: 1, categoryCount: pointCount };
+    }
+    let pointRows: RowRecord[] = baselinePoints.map((c) => ({
+      label: TIME_COMPARE_LABELS[c.toLowerCase()] ?? c,
+      value: toNumber(rows[0][c]),
+    }));
+    pointRows.push({ label: '当前值', value: toNumber(rows[0][currentValueCol]) });
+    if (rules.baseline_compare.order === 'current_to_history') pointRows = pointRows.reverse();
+    const type = rules.baseline_compare.chart_type;
+    return {
+      status: 'matched', rule: 'baseline_compare', rows: pointRows, columns: ['label', 'value'],
+      rowCount: 1, categoryCount: pointCount,
+      chartability: type === 'bar'
+        ? { type: 'bar', analysisType: 'trend_analysis', dimCol: 'label', measureCols: ['value'], titleHint }
+        : {
+            type: 'line',
+            analysisType: 'trend_analysis',
+            dateCol: 'label',
+            measureCols: ['value'],
+            timeCompareCols: baselinePoints,
+            currentValueCol,
+            titleHint,
+          },
+    };
+  }
+
+  return { status: 'no_match', rows, columns: cols, rowCount: rows.length, categoryCount };
+}
+
+function buildPieOption(
+  rows: RowRecord[],
+  chartability: Extract<Chartability, { type: 'pie' }>,
+  title: string,
+): Record<string, unknown> {
+  const { dimCol, measureCol } = chartability;
+  return {
+    title: { left: 'center', text: title },
+    tooltip: { trigger: 'item', confine: true },
+    legend: { orient: 'vertical', left: 'left', top: '15%' },
+    series: [
+      {
+        name: title,
+        type: 'pie',
+        radius: '55%',
+        center: ['50%', '55%'],
+        data: rows.map((row) => ({
+          name: String(row[dimCol] ?? ''),
+          value: toNumber(row[measureCol]),
+        })),
+      },
+    ],
+  };
 }
 
 function buildBarOption(
@@ -310,24 +602,22 @@ function buildLineOption(
   title: string,
 ): Record<string, unknown> {
   // Single-row time-compare sparkline
-  if (chartability.timeCompareCols && chartability.timeCompareCols.length > 0) {
+  if (
+    chartability.timeCompareCols &&
+    chartability.timeCompareCols.length > 0 &&
+    rows[0]?.[chartability.timeCompareCols[0]] != null
+  ) {
     const row = rows[0] ?? {};
-    const ordered = [
-      ...TIME_COMPARE_FIELDS.filter((f) =>
-        chartability.timeCompareCols!.some(
-          (c) => c === f || c.toLowerCase() === f,
-        ),
-      ),
-    ];
-    // Map actual column names
-    const colsInOrder = ordered
+    // Display order: 上年同期 → 上年末 → 上季末 → 上月末 → 上一日
+    const orderedCanonical = BASELINE_GROUPS.map((g) => g.baseline);
+    const colsInOrder = orderedCanonical
       .map(
         (canonical) =>
           chartability.timeCompareCols!.find(
             (c) => c === canonical || c.toLowerCase() === canonical,
-          )!,
+          ),
       )
-      .filter(Boolean);
+      .filter((c): c is string => Boolean(c));
 
     const xData = colsInOrder.map(
       (c) => TIME_COMPARE_LABELS[c.toLowerCase()] ?? TIME_COMPARE_LABELS[c] ?? c,
@@ -405,6 +695,9 @@ export function buildAutoChartOption(
   if (chartability.type === 'bar') {
     return buildBarOption(rows, chartability, title);
   }
+  if (chartability.type === 'pie') {
+    return buildPieOption(rows, chartability, title);
+  }
   return buildLineOption(rows, chartability, title);
 }
 
@@ -412,15 +705,22 @@ export function buildAutoCharts(
   rows: RowRecord[],
   columns: string[] | undefined,
   chartId: string,
+  userQuestion?: string,
+  matchRules?: ChartMatchRules,
 ): AutoChartItem[] | null {
-  const chartability = detectChartability(rows, columns);
-  if (!chartability) {
+  const match = matchAutoChartData(rows, columns, userQuestion, matchRules);
+  if (match.status !== 'matched') {
     return null;
   }
+  const chartability = match.chartability;
 
   const baseTitle =
     chartability.titleHint ||
-    (chartability.type === 'line' ? '指标趋势图' : '指标对比图');
+    (chartability.type === 'line'
+      ? '指标趋势图'
+      : chartability.type === 'pie'
+        ? '指标机构占比'
+        : '指标对比图');
   const title =
     chartability.type === 'line' && !/趋势/.test(baseTitle)
       ? `${baseTitle}趋势图`
@@ -431,14 +731,13 @@ export function buildAutoCharts(
       id: chartId,
       title,
       analysisType: chartability.analysisType,
-      echartsOption: buildAutoChartOption(rows, chartability, title),
+      echartsOption: buildAutoChartOption(match.rows, chartability, title),
     },
   ];
 }
 
 /** Bracket-matching JSON array parse from a text prefix starting with '['. */
-export function parseJsonArrayPrefix(text: string): unknown[] | null {
-  const trimmed = text.trim();
+function parseJsonArrayPrefixOnce(trimmed: string): unknown[] | null {
   if (!trimmed.startsWith('[')) {
     return null;
   }
@@ -481,6 +780,43 @@ export function parseJsonArrayPrefix(text: string): unknown[] | null {
     }
   }
   return null;
+}
+
+export function parseJsonArrayPrefix(text: string): unknown[] | null {
+  const trimmed = text.trim();
+  const direct = parseJsonArrayPrefixOnce(trimmed);
+  if (direct) {
+    return direct;
+  }
+
+  // Some DAT MCP transports remove the outer JSON-string quotes but leave
+  // object field quotes escaped: [{\"field\":\"value\"}]. Only apply this
+  // fallback to that recognizable shape so valid JSON string escapes remain
+  // untouched on the normal path.
+  if (/^\[\s*\{\s*\\"/.test(trimmed)) {
+    return parseJsonArrayPrefixOnce(trimmed.replace(/\\"/g, '"'));
+  }
+  return null;
+}
+
+/** Unwrap tool output that was JSON-stringified one or more times by MCP. */
+export function unwrapJsonEncodedText(text: string): string {
+  let current = String(text ?? '').trim();
+  for (let depth = 0; depth < 2; depth++) {
+    if (!current.startsWith('"')) {
+      break;
+    }
+    try {
+      const parsed = JSON.parse(current);
+      if (typeof parsed !== 'string') {
+        break;
+      }
+      current = parsed.trim();
+    } catch {
+      break;
+    }
+  }
+  return current;
 }
 
 /**
@@ -531,16 +867,21 @@ export function extractFromAskData(
   if (!/^ask_data(_mcp_.+)?$/i.test(toolName)) {
     return null;
   }
-  if (typeof content !== 'string' || !content.includes('Query Results:')) {
+  if (typeof content !== 'string') {
+    return null;
+  }
+
+  const normalizedContent = unwrapJsonEncodedText(content);
+  if (!normalizedContent.includes('Query Results:')) {
     return null;
   }
 
   const marker = 'Query Results:';
-  const idx = content.lastIndexOf(marker);
+  const idx = normalizedContent.lastIndexOf(marker);
   if (idx < 0) {
     return null;
   }
-  const after = content.slice(idx + marker.length);
+  const after = normalizedContent.slice(idx + marker.length);
   const rows = parseJsonArrayPrefix(after) as RowRecord[] | null;
   if (!rows || rows.length === 0) {
     return null;

@@ -404,11 +404,21 @@ export class Run<_T extends t.BaseGraphState> {
         config.callbacks = undefined;
       }
 
+      // Flush semantic chart placement buffers before reading contentParts /
+      // clearing the registry (covers normal end + abort/error via finally).
+      if (this.Graph?.flushChartPlacementBuffers) {
+        await this.Graph.flushChartPlacementBuffers();
+      }
+
       const result = this.returnContent
         ? this.Graph.getContentParts()
         : undefined;
 
       this.calibrationRatio = this.Graph.getCalibrationRatio();
+
+      if (this.Graph?.chartRunRegistry) {
+        this.Graph.chartRunRegistry.clear();
+      }
 
       if (!this.skipCleanup) {
         this.Graph.clearHeavyState();

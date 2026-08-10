@@ -70,6 +70,8 @@ export declare class AgentContext {
     lastStreamCall?: number;
     /** Tools available to this agent */
     tools?: t.GraphTools;
+    /** Tools executable by the graph but hidden from model-facing schemas. */
+    private modelHiddenToolNames;
     /** Graph-managed tools (e.g., handoff tools created by MultiAgentGraph) that bypass event-driven dispatch */
     graphTools?: t.GraphTools;
     /** Tool map for this agent */
@@ -151,7 +153,7 @@ export declare class AgentContext {
         /** Names of sibling agents executing in parallel (empty if sequential) */
         parallelSiblings: string[];
     };
-    constructor({ agentId, name, provider, clientOptions, maxContextTokens, streamBuffer, tokenCounter, tools, toolMap, toolRegistry, toolDefinitions, instructions, additionalInstructions, reasoningKey, toolEnd, instructionTokens, useLegacyContent, discoveredTools, summarizationEnabled, summarizationConfig, contextPruningConfig, maxToolResultChars, }: {
+    constructor({ agentId, name, provider, clientOptions, maxContextTokens, streamBuffer, tokenCounter, tools, modelHiddenTools, toolMap, toolRegistry, toolDefinitions, instructions, additionalInstructions, reasoningKey, toolEnd, instructionTokens, useLegacyContent, discoveredTools, summarizationEnabled, summarizationConfig, contextPruningConfig, maxToolResultChars, }: {
         agentId: string;
         name?: string;
         provider: Providers;
@@ -160,6 +162,7 @@ export declare class AgentContext {
         streamBuffer?: number;
         tokenCounter?: t.TokenCounter;
         tools?: t.GraphTools;
+        modelHiddenTools?: string[];
         toolMap?: t.ToolMap;
         toolRegistry?: t.LCToolRegistry;
         toolDefinitions?: t.LCTool[];
@@ -319,4 +322,7 @@ export declare class AgentContext {
     private getEventDrivenToolsForBinding;
     /** Filters tool instances for binding based on registry config */
     private filterToolsForBinding;
+    private isToolVisibleToModel;
+    /** Registry used by model-controlled Tool Search / programmatic execution. */
+    getModelToolRegistry(): t.LCToolRegistry | undefined;
 }

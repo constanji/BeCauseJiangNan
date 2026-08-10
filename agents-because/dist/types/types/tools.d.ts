@@ -75,6 +75,8 @@ export type ToolNodeOptions = {
      * Used by the auto-chart pipeline to surface shadow tool calls in the UI stream.
      */
     dispatchSyntheticToolCall?: (toolCall: ToolCall, config: RunnableConfig) => Promise<string | undefined>;
+    /** Shared Graph-owned chart registry for dedupe / max_charts */
+    chartRunRegistry?: import('@/tools/ChartRunRegistry').ChartRunRegistry;
 };
 export type ToolNodeConstructorParams = ToolRefs & ToolNodeOptions;
 /** Artifact shape on tool results that carry session/files from the code API. */

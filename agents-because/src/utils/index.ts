@@ -8,3 +8,6 @@ export * from './schema';
 export * from './truncation';
 export * from './errors';
 export * from './autoChartFromRows';
+export * from './autoChartUnits';
+export * from './kpiFieldDictionary';
+export * from './autoChartRules';

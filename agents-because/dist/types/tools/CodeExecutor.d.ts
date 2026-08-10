@@ -10,12 +10,12 @@ declare const CodeExecutionToolSchema: z.ZodObject<{
     args: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
 }, "strip", z.ZodTypeAny, {
     code: string;
-    lang: "r" | "d" | "py" | "js" | "ts" | "c" | "cpp" | "java" | "php" | "rs" | "go" | "f90";
+    lang: "c" | "r" | "d" | "py" | "js" | "ts" | "cpp" | "java" | "php" | "rs" | "go" | "f90";
     args?: string[] | undefined;
     session_id?: string | undefined;
 }, {
     code: string;
-    lang: "r" | "d" | "py" | "js" | "ts" | "c" | "cpp" | "java" | "php" | "rs" | "go" | "f90";
+    lang: "c" | "r" | "d" | "py" | "js" | "ts" | "cpp" | "java" | "php" | "rs" | "go" | "f90";
     args?: string[] | undefined;
     session_id?: string | undefined;
 }>;

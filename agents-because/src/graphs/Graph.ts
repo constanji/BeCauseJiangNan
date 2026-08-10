@@ -31,6 +31,13 @@ import {
   Providers,
   StepTypes,
 } from '@/common';
+import { ChartRunRegistry } from '@/tools/ChartRunRegistry';
+import {
+  ChartPlacementBufferMap,
+  buildPlaceholder,
+  placePrepend,
+} from '@/messages/chartPlacement';
+import type { ChartRole } from '@/utils/autoChartRules/types';
 import {
   resetIfNotEmpty,
   isAnthropicLike,
@@ -172,6 +179,28 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
   agentContexts: Map<string, AgentContext> = new Map();
   /** Default agent ID to use */
   defaultAgentId: string;
+  /**
+   * Per-run chart registry (shared by all ToolNodes of this Graph instance).
+   * Cleared in-place by resetValues() — never reassign the instance.
+   */
+  chartRunRegistry: ChartRunRegistry = new ChartRunRegistry();
+  /**
+   * Semantic placement buffers keyed by message stepId (Phase 5).
+   * Cleared with the registry each turn.
+   */
+  chartPlacementBuffers: ChartPlacementBufferMap =
+    new ChartPlacementBufferMap();
+  /** Track which stepIds already received prepend placeholders */
+  private chartPrependDone: Set<string> = new Set();
+  /**
+   * Track which stepIds already had semantic chart placeholders injected.
+   * Without this, ChartPlacementBufferMap.flush() deletes the buffer entry
+   * on every flush (paragraph boundary), so the *next* paragraph's delta
+   * would see `registered.some(role matches)` still true (registry isn't
+   * cleared mid-turn) and re-activate + re-inject the same placeholders —
+   * duplicating them across paragraphs within the same reply.
+   */
+  private chartSemanticDone: Set<string> = new Set();
 
   constructor({
     runId,
@@ -223,6 +252,10 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
      * a stale reference on 2nd+ processStream calls.
      */
     this.toolCallStepIds.clear();
+    this.chartRunRegistry.clear();
+    this.chartPlacementBuffers.clear();
+    this.chartPrependDone.clear();
+    this.chartSemanticDone.clear();
     this.handlerDispatchedStepIds = resetIfNotEmpty(
       this.handlerDispatchedStepIds,
       new Set()
@@ -503,9 +536,9 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
         eventDrivenMode: true,
         sessions: this.sessions,
         toolDefinitions: toolDefMap,
-        agentId: agentContext?.agentId,
+        agentId: agentContext?.agentId ?? this.defaultAgentId,
         toolCallStepIds: this.toolCallStepIds,
-        toolRegistry: agentContext?.toolRegistry,
+        toolRegistry: agentContext?.getModelToolRegistry(),
         directToolNames: directToolNames.size > 0 ? directToolNames : undefined,
         maxContextTokens: agentContext?.maxContextTokens,
         maxToolResultChars: agentContext?.maxToolResultChars,
@@ -513,6 +546,7 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
           StandardGraph.handleToolCallErrorStatic(this, data, metadata),
         dispatchSyntheticToolCall: (toolCall, config) =>
           this.dispatchSyntheticToolCall(toolCall, config),
+        chartRunRegistry: this.chartRunRegistry,
       });
     }
 
@@ -525,11 +559,11 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
     const traditionalToolMap =
       graphTools && graphTools.length > 0
         ? new Map([
-          ...(currentToolMap ?? new Map()),
-          ...graphTools
-            .filter((t): t is t.GenericTool & { name: string } => 'name' in t)
-            .map((t) => [t.name, t] as [string, t.GenericTool]),
-        ])
+            ...(currentToolMap ?? new Map()),
+            ...graphTools
+              .filter((t): t is t.GenericTool & { name: string } => 'name' in t)
+              .map((t) => [t.name, t] as [string, t.GenericTool]),
+          ])
         : currentToolMap;
 
     return new CustomToolNode<t.BaseGraphState>({
@@ -538,12 +572,14 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
       toolCallStepIds: this.toolCallStepIds,
       errorHandler: (data, metadata) =>
         StandardGraph.handleToolCallErrorStatic(this, data, metadata),
-      toolRegistry: agentContext?.toolRegistry,
+      toolRegistry: agentContext?.getModelToolRegistry(),
       sessions: this.sessions,
+      agentId: agentContext?.agentId ?? this.defaultAgentId,
       maxContextTokens: agentContext?.maxContextTokens,
       maxToolResultChars: agentContext?.maxToolResultChars,
       dispatchSyntheticToolCall: (toolCall, config) =>
         this.dispatchSyntheticToolCall(toolCall, config),
+      chartRunRegistry: this.chartRunRegistry,
     });
   }
 
@@ -934,10 +970,10 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
           const toolPct =
             budgetBreakdown.toolSchemaTokens > 0
               ? Math.round(
-                (budgetBreakdown.toolSchemaTokens /
+                  (budgetBreakdown.toolSchemaTokens /
                     budgetBreakdown.instructionTokens) *
                     100
-              )
+                )
               : 0;
           guidance =
             toolPct > 50
@@ -1000,7 +1036,7 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
       } catch (primaryError) {
         result = await tryFallbackProviders({
           fallbacks,
-          tools: agentContext.tools,
+          tools: toolsForBinding,
           messages: finalMessages,
           config,
           primaryError,
@@ -1354,6 +1390,12 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
       throw new Error('No config provided');
     }
 
+    // Before a new TOOL_CALLS step, flush any semantic placement buffers
+    // so trailing body text is not held forever.
+    if (stepDetails.type === StepTypes.TOOL_CALLS) {
+      await this.flushChartPlacementBuffers();
+    }
+
     const [stepId, stepIndex] = this.generateStepId(stepKey);
     if (stepDetails.type === StepTypes.TOOL_CALLS && stepDetails.tool_calls) {
       for (const tool_call of stepDetails.tool_calls) {
@@ -1511,15 +1553,160 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
     if (!this.config) {
       throw new Error('No config provided');
     }
+
+    const processed = this.applyChartPlacementToDelta(id, delta);
+    if (processed == null) {
+      // Buffered for semantic placement — do not dispatch yet
+      return;
+    }
+
     const messageDelta: t.MessageDeltaEvent = {
       id,
-      delta,
+      delta: processed,
     };
     await safeDispatchCustomEvent(
       GraphEvents.ON_MESSAGE_DELTA,
       messageDelta,
       this.config
     );
+  }
+
+  /**
+   * Flush all (or one) chart placement buffers into ON_MESSAGE_DELTA events.
+   * Must run before getContentParts() and before clearing the registry.
+   */
+  async flushChartPlacementBuffers(stepId?: string): Promise<void> {
+    if (!this.config) {
+      return;
+    }
+    if (stepId) {
+      const text = this.chartPlacementBuffers.flush(stepId);
+      // Mark done regardless of whether flush() had pending text — an empty
+      // buffer being flushed still means "this stepId is settled", and
+      // marking it prevents a later delta on the same stepId from
+      // re-activating semantic buffering (see chartSemanticDone comment).
+      this.chartSemanticDone.add(stepId);
+      if (text) {
+        await safeDispatchCustomEvent(
+          GraphEvents.ON_MESSAGE_DELTA,
+          { id: stepId, delta: { content: [{ type: 'text', text }] } },
+          this.config
+        );
+      }
+      return;
+    }
+    const flushed = this.chartPlacementBuffers.flushAll();
+    for (const [sid, text] of flushed) {
+      this.chartSemanticDone.add(sid);
+      await safeDispatchCustomEvent(
+        GraphEvents.ON_MESSAGE_DELTA,
+        { id: sid, delta: { content: [{ type: 'text', text }] } },
+        this.config
+      );
+    }
+  }
+
+  private applyChartPlacementToDelta(
+    stepId: string,
+    delta: t.MessageDelta
+  ): t.MessageDelta | null {
+    const chartConfig = this.config?.configurable?.chart_config as
+      | {
+          preset?: string;
+          placement?: 'prepend' | 'semantic';
+          marker?: string;
+        }
+      | undefined;
+
+    const content = delta?.content;
+    if (!Array.isArray(content) || content.length === 0) {
+      return delta;
+    }
+
+    // Extract plain text pieces
+    const texts: string[] = [];
+    for (const part of content) {
+      if (
+        part &&
+        typeof part === 'object' &&
+        'type' in part &&
+        (part as { type?: string }).type === 'text' &&
+        typeof (part as { text?: string }).text === 'string'
+      ) {
+        texts.push((part as { text: string }).text);
+      }
+    }
+    if (texts.length === 0) {
+      return delta;
+    }
+    let combined = texts.join('');
+
+    // Charts are registered under ToolNode's real agentId (see
+    // resolveChartScope), not always defaultAgentId. Message run steps carry
+    // agentId in multi-agent graphs (set in dispatchRunStep); fall back to
+    // defaultAgentId for single-agent runs where runStep.agentId is unset.
+    const agentId = this.getRunStep(stepId)?.agentId ?? this.defaultAgentId;
+    // Placeholder ownership follows the individual chart source, not merely
+    // the Agent-level auto_chart switch. Server-generated charts have no
+    // model-authored marker, so Graph places them. Model-generated charts
+    // retain the legacy/simple contract where the model places its own marker.
+    const autoGeneratedCharts = this.chartRunRegistry
+      .getCharts(agentId, 'current')
+      .filter((chart) => chart.source === 'server_auto');
+    const placement = chartConfig?.placement ?? 'prepend';
+
+    // Prepend: inject placeholders once before first visible body
+    if (
+      placement === 'prepend' &&
+      autoGeneratedCharts.length > 0 &&
+      !this.chartPrependDone.has(stepId)
+    ) {
+      const placeholders = autoGeneratedCharts.map((c) =>
+        buildPlaceholder(c.typeHint || 'bar', c.chartId)
+      );
+      combined = placePrepend(combined, placeholders);
+      this.chartPrependDone.add(stepId);
+      return {
+        ...delta,
+        content: [{ type: 'text', text: combined }],
+      } as t.MessageDelta;
+    }
+
+    // Semantic: buffer when attribution preset and roles present. Only ever
+    // injects once per stepId — see chartSemanticDone comment above for why
+    // this guard is required (flush() deletes the buffer entry, so without
+    // this the next paragraph would re-activate and re-inject).
+    if (
+      placement === 'semantic' &&
+      chartConfig?.preset === 'attribution' &&
+      !this.chartSemanticDone.has(stepId) &&
+      autoGeneratedCharts.some((c) =>
+        ['indicator', 'contribution', 'drag'].includes(c.role)
+      )
+    ) {
+      const buf = this.chartPlacementBuffers.getOrCreate(stepId);
+      if (!buf.active) {
+        const placeholders = autoGeneratedCharts.map((c) =>
+          buildPlaceholder(c.typeHint || 'bar', c.chartId)
+        );
+        this.chartPlacementBuffers.activate(
+          stepId,
+          placeholders,
+          autoGeneratedCharts.map((c) => c.role as ChartRole)
+        );
+      }
+      const maybe = this.chartPlacementBuffers.pushDelta(stepId, combined);
+      if (maybe == null) {
+        return null;
+      }
+      this.chartSemanticDone.add(stepId);
+      return {
+        ...delta,
+        content: [{ type: 'text', text: maybe }],
+      } as t.MessageDelta;
+    }
+
+    return delta;
   }
 
   dispatchReasoningDelta = async (

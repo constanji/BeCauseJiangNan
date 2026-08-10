@@ -255,6 +255,8 @@ export interface AgentInputs {
     toolEnd?: boolean;
     toolMap?: ToolMap;
     tools?: GraphTools;
+    /** Tools retained for server-side execution but omitted from model bindings. */
+    model_hidden_tools?: string[];
     provider: Providers;
     instructions?: string;
     streamBuffer?: number;

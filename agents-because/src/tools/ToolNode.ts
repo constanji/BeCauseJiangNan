@@ -1,4 +1,5 @@
 import { nanoid } from 'nanoid';
+import { createHash } from 'node:crypto';
 import { ToolCall } from '@langchain/core/messages/tool';
 import {
   ToolMessage,
@@ -30,12 +31,74 @@ import {
   extractTableFromToolOutput,
   isAutoChartPipelineGloballyEnabled,
   isAutoChartTriggerTool,
+  matchAutoChartData,
 } from '@/utils/autoChartFromRows';
+import { buildIndicatorCharts } from '@/utils/autoChartRules/indicator';
+import { buildAttributionCharts } from '@/utils/autoChartRules/attribution';
+import type { ChartRole, ChartRunRegistry } from '@/tools/ChartRunRegistry';
+import type { SimpleChartSpec } from '@/utils/autoChartRules/types';
+import type { ChartMatchRules } from '@/utils/autoChartRules/types';
+import { normalizeAutoChartUnits } from '@/utils/autoChartUnits';
 import { safeDispatchCustomEvent } from '@/utils/events';
 import { Constants, GraphEvents } from '@/common';
 
 const ECHARTS_TOOL_NAME = 'echarts_generator_app';
-const MAX_AUTO_CHARTS_PER_TURN = 2;
+const DEFAULT_MAX_CHARTS = 2;
+
+function isAutoChartDataCall(call: ToolCall): boolean {
+  if (call.name === 'because_jn') {
+    const args = call.args as Record<string, unknown> | undefined;
+    return args?.command === 'sql-executor';
+  }
+  return /^ask_data(_mcp_.+)?$/i.test(call.name);
+}
+
+function isExplicitDataFailure(call: ToolCall, content: string): boolean {
+  if (call.name !== 'because_jn') {
+    return false;
+  }
+  try {
+    const parsed = JSON.parse(content) as { success?: boolean };
+    return parsed?.success === false;
+  } catch {
+    return false;
+  }
+}
+
+function safeConversationToken(value: unknown): string {
+  const input = String(value || '').trim();
+  if (!input) return '';
+  // Keep the token protocol-safe: chartIdSequence scans hexadecimal tokens,
+  // while base64url may contain '_' and '-'.
+  return createHash('sha256').update(input).digest('hex').slice(0, 16);
+}
+
+function safeChartPrefix(value: unknown, fallback: string): string {
+  const normalized = String(value || '')
+    .trim()
+    .replace(/[^A-Za-z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 24);
+  return normalized || fallback;
+}
+
+function chartTypeHint(chart: Record<string, unknown>): string | undefined {
+  const normalize = (value: unknown): string | undefined => {
+    const type = String(value || '').trim().toLowerCase();
+    return ['line', 'bar', 'pie'].includes(type) ? type : undefined;
+  };
+  const direct = normalize(chart.type);
+  if (direct) return direct;
+  const option = chart.echartsOption as Record<string, unknown> | undefined;
+  const series = Array.isArray(option?.series) ? option.series[0] : undefined;
+  if (series && typeof series === 'object' && typeof (series as Record<string, unknown>).type === 'string') {
+    return normalize((series as Record<string, unknown>).type);
+  }
+  const spec = chart.g2Spec as Record<string, unknown> | undefined;
+  const specType = normalize(spec?.type);
+  if (specType) return specType;
+  return undefined;
+}
 
 /**
  * Helper to check if a value is a Send object
@@ -71,6 +134,8 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
   private maxToolResultChars: number;
   /** Optional callback to register synthetic tool calls in the UI stream */
   private dispatchSyntheticToolCall?: t.ToolNodeOptions['dispatchSyntheticToolCall'];
+  /** Graph-owned per-run chart registry */
+  private chartRunRegistry?: ChartRunRegistry;
 
   constructor({
     tools,
@@ -90,6 +155,7 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
     maxContextTokens,
     maxToolResultChars,
     dispatchSyntheticToolCall,
+    chartRunRegistry,
   }: t.ToolNodeConstructorParams) {
     super({ name, tags, func: (input, config) => this.run(input, config) });
     this.toolMap = toolMap ?? new Map(tools.map((tool) => [tool.name, tool]));
@@ -114,6 +180,7 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
     this.maxToolResultChars =
       maxToolResultChars ?? calculateMaxToolResultChars(maxContextTokens);
     this.dispatchSyntheticToolCall = dispatchSyntheticToolCall;
+    this.chartRunRegistry = chartRunRegistry;
   }
 
   /**
@@ -150,6 +217,177 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
     return new Map(this.toolUsageCount); // Return a copy
   }
 
+  private resolveChartScope(
+    config: RunnableConfig,
+    callId?: string
+  ): {
+    agentId: string;
+    stepId: string;
+    maxCharts: number;
+    dedupeRoles: boolean;
+  } {
+    const agentId =
+      this.agentId ||
+      (typeof config.metadata?.agent_id === 'string'
+        ? config.metadata.agent_id
+        : 'default');
+    // Turn-scoped key: registry is cleared each processStream, so 'current'
+    // isolates agents without requiring the message step id at tool time.
+    const stepId = 'current';
+    const chartConfig = config.configurable?.chart_config as
+      | { max_charts?: number; dedupe_roles?: boolean }
+      | undefined;
+    const maxCharts =
+      typeof chartConfig?.max_charts === 'number' && chartConfig.max_charts >= 1
+        ? chartConfig.max_charts
+        : DEFAULT_MAX_CHARTS;
+    const dedupeRoles = chartConfig?.dedupe_roles !== false;
+    return { agentId, stepId, maxCharts, dedupeRoles };
+  }
+
+  private inferIncomingRole(item: Record<string, unknown>): ChartRole {
+    if (
+      item.role === 'indicator' ||
+      item.role === 'contribution' ||
+      item.role === 'drag' ||
+      item.role === 'general'
+    ) {
+      return item.role;
+    }
+    const title = typeof item.title === 'string' ? item.title : '';
+    if (/贡献/.test(title)) {
+      return 'contribution';
+    }
+    if (/拖累/.test(title)) {
+      return 'drag';
+    }
+    const analysisType =
+      typeof item.analysisType === 'string' ? item.analysisType : '';
+    if (
+      analysisType === 'trend_analysis' ||
+      analysisType === 'dimension_compare' ||
+      analysisType === 'combined_analysis'
+    ) {
+      return 'indicator';
+    }
+    return 'general';
+  }
+
+  /**
+   * Trim charts[] before tool.invoke so max_charts / role dedupe apply to all
+   * three paths (legacy, simple, server auto). Counts each chart individually.
+   */
+  private trimChartsForRegistry(
+    charts: unknown[],
+    config: RunnableConfig,
+    callId?: string
+  ): { charts: unknown[]; rejected: boolean; reason?: string } {
+    if (!this.chartRunRegistry || !Array.isArray(charts)) {
+      return { charts, rejected: false };
+    }
+    const { agentId, stepId, maxCharts, dedupeRoles } = this.resolveChartScope(
+      config,
+      callId
+    );
+    const remaining =
+      maxCharts - this.chartRunRegistry.countThisTurn(agentId, stepId);
+    if (remaining <= 0) {
+      return {
+        charts: [],
+        rejected: true,
+        reason: `已达本轮图表上限（max_charts=${maxCharts}）`,
+      };
+    }
+
+    const kept: unknown[] = [];
+    for (const raw of charts) {
+      if (kept.length >= remaining) {
+        break;
+      }
+      if (!raw || typeof raw !== 'object') {
+        continue;
+      }
+      const item = raw as Record<string, unknown>;
+      const role = this.inferIncomingRole(item);
+      // A successful server-generated chart owns this role for the turn. This
+      // prevents the model from emitting a second chart for the same result
+      // after Auto already rendered one.
+      if (
+        dedupeRoles &&
+        this.chartRunRegistry.hasSource(agentId, stepId, 'server_auto') &&
+        role !== 'general' &&
+        this.chartRunRegistry.hasRole(agentId, stepId, role)
+      ) {
+        continue;
+      }
+      // Deduplicate non-general roles across batches
+      if (
+        dedupeRoles &&
+        role !== 'general' &&
+        this.chartRunRegistry.hasRole(agentId, stepId, role)
+      ) {
+        continue;
+      }
+      // Also skip if this batch already kept the same role
+      if (
+        dedupeRoles &&
+        role !== 'general' &&
+        kept.some(
+          (k) =>
+            k &&
+            typeof k === 'object' &&
+            this.inferIncomingRole(k as Record<string, unknown>) === role
+        )
+      ) {
+        continue;
+      }
+      kept.push(item);
+    }
+    return { charts: kept, rejected: kept.length === 0 && charts.length > 0 };
+  }
+
+  private registerChartsFromToolOutput(
+    content: string,
+    config: RunnableConfig,
+    callId: string | undefined,
+    source: 'model_legacy' | 'model_simple' | 'server_auto'
+  ): string {
+    if (!this.chartRunRegistry) {
+      return content;
+    }
+    try {
+      const parsed = JSON.parse(content) as {
+        success?: boolean;
+        charts?: Array<Record<string, unknown>>;
+      };
+      if (parsed?.success !== true || !Array.isArray(parsed.charts)) {
+        return content;
+      }
+      const { agentId, stepId } = this.resolveChartScope(config, callId);
+      let changed = false;
+      for (const chart of parsed.charts) {
+        const requestedId =
+          typeof chart.id === 'string' && chart.id ? chart.id : nanoid();
+        const role = this.inferIncomingRole(chart);
+        const finalId = this.chartRunRegistry.register(agentId, stepId, {
+          chartId: requestedId,
+          role,
+          source,
+          toolCallId: callId,
+          title: typeof chart.title === 'string' ? chart.title : undefined,
+          typeHint: chartTypeHint(chart),
+        });
+        if (finalId !== chart.id) {
+          chart.id = finalId;
+          changed = true;
+        }
+      }
+      return changed ? JSON.stringify(parsed, null, 2) : content;
+    } catch {
+      return content;
+    }
+  }
+
   /**
    * Runs a single tool call with error handling
    */
@@ -167,8 +405,39 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
       if (call.id != null && call.id !== '') {
         this.toolCallTurns.set(call.id, turn);
       }
-      const args = call.args;
+      let args = call.args;
       const stepId = this.toolCallStepIds?.get(call.id!);
+
+      // Pre-invoke chart cap / role dedupe (all three generation paths)
+      if (
+        call.name === ECHARTS_TOOL_NAME &&
+        args != null &&
+        typeof args === 'object' &&
+        Array.isArray((args as { charts?: unknown }).charts)
+      ) {
+        const trimmed = this.trimChartsForRegistry(
+          (args as { charts: unknown[] }).charts,
+          config,
+          call.id
+        );
+        if (trimmed.rejected && trimmed.charts.length === 0) {
+          return new ToolMessage({
+            status: 'success',
+            name: ECHARTS_TOOL_NAME,
+            content: JSON.stringify(
+              {
+                success: false,
+                error: trimmed.reason || '已达本轮图表上限，跳过本次调用',
+                skipped: true,
+              },
+              null,
+              2
+            ),
+            tool_call_id: call.id ?? '',
+          });
+        }
+        args = { ...args, charts: trimmed.charts };
+      }
 
       // Build invoke params - LangChain extracts non-schema fields to config.toolCall
       let invokeParams: Record<string, unknown> = {
@@ -234,10 +503,63 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
         (isBaseMessage(output) && output._getType() === 'tool') ||
         isCommand(output)
       ) {
+        if (
+          call.name === ECHARTS_TOOL_NAME &&
+          isBaseMessage(output) &&
+          typeof (output as ToolMessage).content === 'string'
+        ) {
+          const toolMsg = output as ToolMessage;
+          const source =
+            (call.args as { _autoGenerated?: boolean } | undefined)
+              ?._autoGenerated === true
+              ? 'server_auto'
+              : Array.isArray(
+                    (
+                      call.args as {
+                        charts?: Array<{ echartsOption?: unknown }>;
+                      }
+                    )?.charts
+                  ) &&
+                  (
+                    call.args as { charts: Array<{ echartsOption?: unknown }> }
+                  ).charts.some((c) => c && c.echartsOption != null)
+                ? 'model_legacy'
+                : 'model_simple';
+          const rewritten = this.registerChartsFromToolOutput(
+            toolMsg.content as string,
+            config,
+            call.id,
+            source
+          );
+          if (rewritten !== toolMsg.content) {
+            return new ToolMessage({
+              status: toolMsg.status ?? 'success',
+              name: toolMsg.name ?? tool.name,
+              content: truncateToolResultContent(
+                rewritten,
+                this.maxToolResultChars
+              ),
+              tool_call_id: call.id!,
+            });
+          }
+        }
         return output;
       } else {
-        const rawContent =
+        let rawContent =
           typeof output === 'string' ? output : JSON.stringify(output);
+        if (call.name === ECHARTS_TOOL_NAME) {
+          const source =
+            (call.args as { _autoGenerated?: boolean } | undefined)
+              ?._autoGenerated === true
+              ? 'server_auto'
+              : 'model_simple';
+          rawContent = this.registerChartsFromToolOutput(
+            rawContent,
+            config,
+            call.id,
+            source
+          );
+        }
         return new ToolMessage({
           status: 'success',
           name: tool.name,
@@ -282,13 +604,13 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
             handlerError:
               handlerError instanceof Error
                 ? {
-                  message: handlerError.message,
-                  stack: handlerError.stack ?? undefined,
-                }
+                    message: handlerError.message,
+                    stack: handlerError.stack ?? undefined,
+                  }
                 : {
-                  message: String(handlerError),
-                  stack: undefined,
-                },
+                    message: String(handlerError),
+                    stack: undefined,
+                  },
           });
         }
       }
@@ -370,10 +692,12 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
       const existingFiles = existingSession?.files ?? [];
 
       if (newFiles.length > 0) {
-        const filesWithSession: t.FileRefs = newFiles.map((file: t.FileRef) => ({
-          ...file,
-          session_id: artifact.session_id,
-        }));
+        const filesWithSession: t.FileRefs = newFiles.map(
+          (file: t.FileRef) => ({
+            ...file,
+            session_id: artifact.session_id,
+          })
+        );
 
         const newFileNames = new Set(filesWithSession.map((f) => f.name));
         const filteredExisting = existingFiles.filter(
@@ -514,7 +838,48 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
     toolCalls: ToolCall[],
     config: RunnableConfig
   ): Promise<ToolMessage[]> {
-    const requests: t.ToolCallRequest[] = toolCalls.map((call) => {
+    const skippedById = new Map<string, ToolMessage>();
+    const callsToDispatch: ToolCall[] = [];
+    for (const call of toolCalls) {
+      if (
+        call.name !== ECHARTS_TOOL_NAME ||
+        !call.args ||
+        typeof call.args !== 'object' ||
+        !Array.isArray((call.args as { charts?: unknown }).charts)
+      ) {
+        callsToDispatch.push(call);
+        continue;
+      }
+      const trimmed = this.trimChartsForRegistry(
+        (call.args as { charts: unknown[] }).charts,
+        config,
+        call.id
+      );
+      if (trimmed.rejected && trimmed.charts.length === 0) {
+        const skipped = new ToolMessage({
+          status: 'success',
+          name: ECHARTS_TOOL_NAME,
+          content: JSON.stringify({
+            success: false,
+            skipped: true,
+            error: trimmed.reason || '已达本轮图表上限，跳过本次调用',
+          }),
+          tool_call_id: call.id ?? '',
+        });
+        skippedById.set(call.id ?? '', skipped);
+        this.handleRunToolCompletions([call], [skipped], config);
+        continue;
+      }
+      callsToDispatch.push({
+        ...call,
+        args: {
+          ...(call.args as Record<string, unknown>),
+          charts: trimmed.charts,
+        },
+      });
+    }
+
+    const requests: t.ToolCallRequest[] = callsToDispatch.map((call) => {
       const turn = this.toolUsageCount.get(call.name) ?? 0;
       this.toolUsageCount.set(call.name, turn + 1);
 
@@ -536,27 +901,33 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
       return request;
     });
 
-    const results = await new Promise<t.ToolExecuteResult[]>(
-      (resolve, reject) => {
-        const request: t.ToolExecuteBatchRequest = {
-          toolCalls: requests,
-          userId: config.configurable?.user_id as string | undefined,
-          agentId: this.agentId,
-          configurable: config.configurable as
-            | Record<string, unknown>
-            | undefined,
-          metadata: config.metadata as Record<string, unknown> | undefined,
-          resolve,
-          reject,
-        };
+    const results =
+      requests.length > 0
+        ? await new Promise<t.ToolExecuteResult[]>((resolve, reject) => {
+            const request: t.ToolExecuteBatchRequest = {
+              toolCalls: requests,
+              userId: config.configurable?.user_id as string | undefined,
+              agentId: this.agentId,
+              configurable: config.configurable as
+                | Record<string, unknown>
+                | undefined,
+              metadata: config.metadata as Record<string, unknown> | undefined,
+              resolve,
+              reject,
+            };
 
-        safeDispatchCustomEvent(GraphEvents.ON_TOOL_EXECUTE, request, config);
-      }
-    );
+            safeDispatchCustomEvent(
+              GraphEvents.ON_TOOL_EXECUTE,
+              request,
+              config
+            );
+          })
+        : [];
 
     this.storeCodeSessionFromResults(results, requests);
 
-    return results.map((result) => {
+    const completedById = new Map<string, ToolMessage>();
+    results.forEach((result) => {
       const request = requests.find((r) => r.id === result.toolCallId);
       const toolName = request?.name ?? 'unknown';
       const stepId = this.toolCallStepIds?.get(result.toolCallId) ?? '';
@@ -585,8 +956,29 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
           typeof result.content === 'string'
             ? result.content
             : JSON.stringify(result.content);
+        let registeredContent = rawContent;
+        if (toolName === ECHARTS_TOOL_NAME) {
+          const requestArgs = request?.args as
+            | {
+                _autoGenerated?: boolean;
+                charts?: Array<{ echartsOption?: unknown }>;
+              }
+            | undefined;
+          const source =
+            requestArgs?._autoGenerated === true
+              ? 'server_auto'
+              : requestArgs?.charts?.some((chart) => chart?.echartsOption != null)
+                ? 'model_legacy'
+                : 'model_simple';
+          registeredContent = this.registerChartsFromToolOutput(
+            rawContent,
+            config,
+            result.toolCallId,
+            source,
+          );
+        }
         contentString = truncateToolResultContent(
-          rawContent,
+          registeredContent,
           this.maxToolResultChars
         );
         toolMessage = new ToolMessage({
@@ -624,7 +1016,18 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
         config
       );
 
-      return toolMessage;
+      completedById.set(result.toolCallId, toolMessage);
+    });
+
+    return toolCalls.map((call) => {
+      const output =
+        skippedById.get(call.id ?? '') ?? completedById.get(call.id ?? '');
+      if (!output) {
+        throw new Error(
+          `[ToolNode] No event output found for tool_call_id=${call.id} (tool=${call.name}).`
+        );
+      }
+      return output;
     });
   }
 
@@ -651,6 +1054,7 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
    * After data-query tools succeed, deterministically generate charts by
    * synthesizing an echarts_generator_app tool call (no model decision).
    * Gated by agent.auto_chart + AUTO_CHART_PIPELINE_ENABLED.
+   * Caps / role dedupe are enforced inside runTool via ChartRunRegistry.
    */
   private async maybeInjectAutoCharts(
     calls: ToolCall[],
@@ -678,20 +1082,78 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
         return outputs;
       }
 
+      const chartConfig = (config.configurable?.chart_config ?? undefined) as
+        | {
+            preset?: 'indicator' | 'attribution' | 'custom';
+            input_mode?: 'simple' | 'legacy';
+            max_charts?: number;
+            dedupe_roles?: boolean;
+            marker?: string;
+            match_rules?: ChartMatchRules;
+          }
+        | undefined;
+
+      const userQuestion =
+        typeof config.configurable?.requestBody?.text === 'string'
+          ? config.configurable.requestBody.text
+          : undefined;
+
       const extraCalls: ToolCall[] = [];
       const extraOutputs: ToolMessage[] = [];
 
-      for (
-        let i = 0;
-        i < calls.length && extraCalls.length < MAX_AUTO_CHARTS_PER_TURN;
-        i++
-      ) {
+      // Pull fluctuation-attribution args if present in this batch. Two real
+      // call shapes exist:
+      // 1. Standalone tool `fluctuation_attribution` (underscore) — args has
+      //    base_data/current_data directly as arrays (see
+      //    FluctuationAttributionTool.js schema).
+      // 2. `because_jn` skills wrapper — args is
+      //    `{ command: 'fluctuation-attribution' (hyphen), arguments: '<JSON string>' }`,
+      //    where the JSON string (not the outer args object) carries
+      //    base_data/current_data (see BeCauseSkillsJN.js).
+      let attrBase: Record<string, unknown>[] | undefined;
+      let attrCurrent: Record<string, unknown>[] | undefined;
+      for (const c of calls) {
+        const rawArgs = (c.args ?? {}) as Record<string, unknown>;
+        let attrArgs: Record<string, unknown> | undefined;
+
+        if (c.name === 'fluctuation_attribution') {
+          attrArgs = rawArgs;
+        } else if (
+          c.name === 'because_jn' &&
+          rawArgs.command === 'fluctuation-attribution'
+        ) {
+          const argumentsStr = rawArgs.arguments;
+          if (typeof argumentsStr === 'string' && argumentsStr.trim()) {
+            try {
+              const parsed = JSON.parse(argumentsStr);
+              if (parsed && typeof parsed === 'object') {
+                attrArgs = parsed as Record<string, unknown>;
+              }
+            } catch {
+              // Malformed JSON string — fall through, leaves attrArgs undefined
+              // so callers fall back to sql-executor rows.
+            }
+          }
+        }
+
+        if (!attrArgs) {
+          continue;
+        }
+        if (Array.isArray(attrArgs.base_data)) {
+          attrBase = attrArgs.base_data as Record<string, unknown>[];
+        }
+        if (Array.isArray(attrArgs.current_data)) {
+          attrCurrent = attrArgs.current_data as Record<string, unknown>[];
+        }
+      }
+
+      for (let i = 0; i < calls.length; i++) {
         const call = calls[i];
         const output = outputs[i];
         if (!call || output == null || isCommand(output)) {
           continue;
         }
-        if (!isAutoChartTriggerTool(call.name)) {
+        if (!isAutoChartTriggerTool(call.name) || !isAutoChartDataCall(call)) {
           continue;
         }
 
@@ -710,6 +1172,10 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
             ? (call.args as Record<string, unknown>)
             : {};
 
+        if (isExplicitDataFailure(call, contentString)) {
+          continue;
+        }
+
         const table = extractTableFromToolOutput(
           call.name,
           args,
@@ -719,11 +1185,168 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
           continue;
         }
 
-        const chartId = `auto_${call.id || nanoid()}`;
-        const charts = buildAutoCharts(table.rows, table.columns, chartId);
+        const prefix = `auto_${call.id || nanoid()}`;
+        const maxCharts = chartConfig?.max_charts ?? DEFAULT_MAX_CHARTS;
+        const preset = chartConfig?.preset ?? 'custom';
+        const useSimple = chartConfig?.input_mode === 'simple';
+
+        if (preset !== 'attribution') {
+          const decision = matchAutoChartData(
+            table.rows,
+            table.columns,
+            userQuestion,
+            chartConfig?.match_rules,
+          );
+          if (decision.status === 'disabled') {
+            continue;
+          }
+          if (decision.status === 'no_match') {
+            continue;
+          }
+        }
+
+        let charts: unknown[] | null = null;
+
+        if (useSimple) {
+          let specs: SimpleChartSpec[] = [];
+          if (preset === 'indicator') {
+            specs = buildIndicatorCharts(table.rows, {
+              columns: table.columns,
+              userQuestion,
+              maxCharts,
+              chartIdPrefix: prefix,
+              matchRules: chartConfig?.match_rules,
+            });
+          } else if (preset === 'attribution') {
+            specs = buildAttributionCharts({
+              rows: table.rows,
+              columns: table.columns,
+              base_data: attrBase,
+              current_data: attrCurrent,
+              userQuestion,
+              maxCharts,
+              chartIdPrefix: prefix,
+            });
+          } else {
+            // custom: generic chartability, role=general
+            const legacy = buildAutoCharts(
+              table.rows,
+              table.columns,
+              `${prefix}_0`,
+              userQuestion,
+              chartConfig?.match_rules,
+            );
+            if (legacy && legacy.length > 0) {
+              // Convert legacy echartsOption charts to simple when possible is complex;
+              // for custom+simple, emit a general simple bar/line via indicator builder first,
+              // fall back to wrapping legacy as echartsOption items if needed.
+              const ind = buildIndicatorCharts(table.rows, {
+                columns: table.columns,
+                userQuestion,
+                maxCharts,
+                chartIdPrefix: prefix,
+                matchRules: chartConfig?.match_rules,
+              });
+              if (ind.length > 0) {
+                specs = ind.map((s) => ({ ...s, role: 'general' as const }));
+              } else {
+                charts = legacy.map((c) => ({
+                  ...c,
+                  role: 'general',
+                }));
+              }
+            }
+          }
+          if (!charts && specs.length > 0) {
+            charts = specs;
+          }
+        } else {
+          // legacy protocol: full echartsOption
+          const legacy = buildAutoCharts(
+            table.rows,
+            table.columns,
+            `${prefix}_0`,
+            userQuestion,
+            chartConfig?.match_rules,
+          );
+          charts = legacy;
+        }
+
         if (!charts || charts.length === 0) {
           continue;
         }
+
+        charts = normalizeAutoChartUnits(charts, table.rows);
+
+        // Continue stable session ids from the current conversation branch.
+        // instead of restarting at chart_1 on every request. The API derives
+        // chart_id_offset from historical assistant placeholders before those
+        // placeholders are stripped from model context. The per-run registry
+        // still owns dedupe/max_charts and accounts for charts in this turn.
+        const { agentId: chartAgentId, stepId: chartScopeStepId } =
+          this.resolveChartScope(config, call.id);
+        const autoGenerationKey = call.id || `${call.name}:${contentString}`;
+        if (
+          this.chartRunRegistry?.hasAutoGenerationKey(
+            chartAgentId,
+            chartScopeStepId,
+            autoGenerationKey,
+          )
+        ) {
+          continue;
+        }
+        // Mark before dispatching so repeated/concurrent graph entry cannot
+        // create a second synthetic tool call for the same data call.
+        this.chartRunRegistry?.markAutoGenerationKey(
+          chartAgentId,
+          chartScopeStepId,
+          autoGenerationKey,
+        );
+        const conversationToken = safeConversationToken(
+          config.configurable?.requestBody?.conversationId,
+        );
+        const configuredOffset = Number(
+          conversationToken
+            ? config.configurable?.chart_index_offset
+            : config.configurable?.chart_id_offset,
+        );
+        const chartIdOffset =
+          Number.isSafeInteger(configuredOffset) && configuredOffset >= 0
+            ? configuredOffset
+            : 0;
+        const turnChartCount = this.chartRunRegistry?.countThisTurn(
+          chartAgentId,
+          chartScopeStepId
+        ) ?? 0;
+        const defaultPrefix =
+          preset === 'indicator'
+            ? 'zb'
+            : preset === 'attribution'
+              ? 'result'
+              : 'chart';
+        const configuredPrefix = safeChartPrefix(chartConfig?.marker, defaultPrefix);
+        let nextChartIndex = chartIdOffset + turnChartCount;
+        charts = charts.map((c) => {
+          if (c && typeof c === 'object') {
+            const chart = c as Record<string, unknown>;
+            return {
+              ...chart,
+              id: conversationToken
+                ? `${configuredPrefix}_${conversationToken}_${nextChartIndex++}`
+                : `chart_${nextChartIndex++ + 1}`,
+            };
+          }
+          return c;
+        });
+
+        // Apply the same cap/role rules before registering the synthetic UI
+        // step. runTool repeats this check defensively, but doing it here
+        // prevents a rejected duplicate from appearing as a second tool call.
+        const preflight = this.trimChartsForRegistry(charts, config, call.id);
+        if (preflight.rejected && preflight.charts.length === 0) {
+          continue;
+        }
+        charts = preflight.charts;
 
         const syntheticId = `auto_chart_${call.id || nanoid()}`;
         const syntheticCall: ToolCall = {
@@ -744,51 +1367,73 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
           continue;
         }
 
-        const invokeParams = {
-          ...syntheticCall,
-          args: { charts },
-          type: 'tool_call' as const,
-        };
-        const result = await echartsTool.invoke(invokeParams, config);
+        // Route through runTool so max_charts / registry apply uniformly
+        const result = await this.runTool(syntheticCall, config);
+        if (isCommand(result) || !isBaseMessage(result)) {
+          continue;
+        }
+        const syntheticMessage = result as ToolMessage;
         const rawContent =
-          typeof result === 'string' ? result : JSON.stringify(result);
+          typeof syntheticMessage.content === 'string'
+            ? syntheticMessage.content
+            : JSON.stringify(syntheticMessage.content);
 
         try {
           const parsed = JSON.parse(rawContent) as {
             success?: boolean;
             __echartsConfig?: boolean;
+            skipped?: boolean;
           };
-          if (parsed?.success !== true || parsed?.__echartsConfig !== true) {
+          if (parsed?.skipped === true) {
+            continue;
+          }
+          if (parsed?.success !== true) {
+            // Surface failure in UI stream without polluting graph state
+            this.handleRunToolCompletions(
+              [syntheticCall],
+              [
+                new ToolMessage({
+                  status: 'error',
+                  name: ECHARTS_TOOL_NAME,
+                  content: truncateToolResultContent(
+                    rawContent,
+                    this.maxToolResultChars
+                  ),
+                  tool_call_id: syntheticId,
+                }),
+              ],
+              config
+            );
             continue;
           }
         } catch {
           continue;
         }
 
-        const syntheticMessage = new ToolMessage({
-          status: 'success',
-          name: ECHARTS_TOOL_NAME,
-          content: truncateToolResultContent(
-            rawContent,
-            this.maxToolResultChars
-          ),
-          tool_call_id: syntheticId,
-        });
-
         this.toolCallTurns.set(syntheticId, 0);
         extraCalls.push(syntheticCall);
-        extraOutputs.push(syntheticMessage);
+        extraOutputs.push(
+          new ToolMessage({
+            status: 'success',
+            name: ECHARTS_TOOL_NAME,
+            content: truncateToolResultContent(
+              rawContent,
+              this.maxToolResultChars
+            ),
+            tool_call_id: syntheticId,
+          })
+        );
+
+        // One auto-chart invocation per successful data tool is enough;
+        // further caps are handled by the registry inside runTool.
+        break;
       }
 
       if (extraCalls.length > 0) {
-        // Surface in the UI stream / contentParts only.
-        // Do NOT append ToolMessages to graph state — the preceding AIMessage
-        // has no matching tool_calls entry, and providers reject orphan tool results.
         this.handleRunToolCompletions(extraCalls, extraOutputs, config);
       }
       return outputs;
     } catch (err) {
-      // Never break the normal tool pipeline for auto-chart failures
       // eslint-disable-next-line no-console
       console.warn('[auto_chart] maybeInjectAutoCharts failed:', err);
       return outputs;
@@ -884,8 +1529,8 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
         const directOutputs: (BaseMessage | Command)[] =
           directCalls.length > 0
             ? await Promise.all(
-              directCalls.map((call) => this.runTool(call, config))
-            )
+                directCalls.map((call) => this.runTool(call, config))
+              )
             : [];
 
         if (directCalls.length > 0 && directOutputs.length > 0) {
@@ -897,7 +1542,48 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
             ? await this.dispatchToolEvents(eventCalls, config)
             : [];
 
-        outputs = [...directOutputs, ...eventOutputs];
+        /**
+         * Re-associate outputs with their originating call by tool_call_id,
+         * then rebuild `outputs` in `filteredCalls`'s original (possibly
+         * direct/event-interleaved) order. Two reasons this can't be simple
+         * concatenation + index-based pairing (as it used to be):
+         * 1. `[...directOutputs, ...eventOutputs]` groups by execution path,
+         *    not by original call order — interleaved direct/event calls
+         *    would misalign against `filteredCalls` at any index (i)
+         *    downstream code (e.g. maybeInjectAutoCharts) pairs by.
+         * 2. `dispatchToolEvents`'s results resolve via an external event
+         *    handler and are not guaranteed to preserve the request order
+         *    of `eventCalls` either — they must be matched by id, not
+         *    position, even within the event group itself.
+         * `directOutputs[i]` <-> `directCalls[i]` IS a safe positional pair
+         * (Promise.all preserves array order), so we key off `directCalls`'
+         * ids rather than trying to read an id back out of the output.
+         */
+        const directOutputById = new Map<string, BaseMessage | Command>();
+        directCalls.forEach((call, i) => {
+          if (call.id != null) {
+            directOutputById.set(call.id, directOutputs[i]);
+          }
+        });
+        const eventOutputById = new Map<string, ToolMessage>();
+        for (const msg of eventOutputs) {
+          eventOutputById.set(msg.tool_call_id, msg);
+        }
+
+        outputs = filteredCalls.map((call) => {
+          const matched =
+            (call.id != null ? directOutputById.get(call.id) : undefined) ??
+            (call.id != null ? eventOutputById.get(call.id) : undefined);
+          if (matched == null) {
+            // Should be unreachable — every filteredCalls entry was routed
+            // into exactly one of directCalls/eventCalls above — but fail
+            // loudly rather than silently misaligning arrays downstream.
+            throw new Error(
+              `[ToolNode] No output found for tool_call_id=${call.id} (tool=${call.name}) after direct/event split.`
+            );
+          }
+          return matched;
+        });
         outputs = await this.maybeInjectAutoCharts(
           filteredCalls,
           outputs,

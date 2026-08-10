@@ -30,7 +30,9 @@ export declare class ToolNode<T = any> extends RunnableCallable<T, T> {
     private maxToolResultChars;
     /** Optional callback to register synthetic tool calls in the UI stream */
     private dispatchSyntheticToolCall?;
-    constructor({ tools, toolMap, name, tags, errorHandler, toolCallStepIds, handleToolErrors, loadRuntimeTools, toolRegistry, toolDefinitions, sessions, eventDrivenMode, agentId, directToolNames, maxContextTokens, maxToolResultChars, dispatchSyntheticToolCall, }: t.ToolNodeConstructorParams);
+    /** Graph-owned per-run chart registry */
+    private chartRunRegistry?;
+    constructor({ tools, toolMap, name, tags, errorHandler, toolCallStepIds, handleToolErrors, loadRuntimeTools, toolRegistry, toolDefinitions, sessions, eventDrivenMode, agentId, directToolNames, maxContextTokens, maxToolResultChars, dispatchSyntheticToolCall, chartRunRegistry, }: t.ToolNodeConstructorParams);
     /**
      * Returns cached programmatic tools, computing once on first access.
      * Single iteration builds both toolMap and toolDefs simultaneously.
@@ -41,6 +43,14 @@ export declare class ToolNode<T = any> extends RunnableCallable<T, T> {
      * @returns A ReadonlyMap where keys are tool names and values are their usage counts.
      */
     getToolUsageCounts(): ReadonlyMap<string, number>;
+    private resolveChartScope;
+    private inferIncomingRole;
+    /**
+     * Trim charts[] before tool.invoke so max_charts / role dedupe apply to all
+     * three paths (legacy, simple, server auto). Counts each chart individually.
+     */
+    private trimChartsForRegistry;
+    private registerChartsFromToolOutput;
     /**
      * Runs a single tool call with error handling
      */
@@ -79,6 +89,7 @@ export declare class ToolNode<T = any> extends RunnableCallable<T, T> {
      * After data-query tools succeed, deterministically generate charts by
      * synthesizing an echarts_generator_app tool call (no model decision).
      * Gated by agent.auto_chart + AUTO_CHART_PIPELINE_ENABLED.
+     * Caps / role dedupe are enforced inside runTool via ChartRunRegistry.
      */
     private maybeInjectAutoCharts;
     protected run(input: any, config: RunnableConfig): Promise<T>;

@@ -245,6 +245,45 @@ describe('AgentContext', () => {
       expect(result).toEqual(tools);
     });
 
+    it('keeps server tools hidden from the model without removing their instances', () => {
+      const hiddenTool = createMockTool('echarts_generator_app');
+      const visibleTool = createMockTool('because_jn');
+      const ctx = createBasicContext({
+        agentConfig: {
+          tools: [hiddenTool, visibleTool],
+          model_hidden_tools: ['echarts_generator_app'],
+        },
+      });
+
+      expect(ctx.tools).toEqual([hiddenTool, visibleTool]);
+      expect(
+        ctx
+          .getToolsForBinding()
+          ?.map((tool) => ('name' in tool ? tool.name : undefined))
+      ).toEqual(['because_jn']);
+    });
+
+    it('removes hidden tools from model-controlled registries', () => {
+      const toolRegistry: t.LCToolRegistry = new Map([
+        ['echarts_generator_app', { name: 'echarts_generator_app' }],
+        ['because_jn', { name: 'because_jn', defer_loading: true }],
+      ]);
+      const ctx = createBasicContext({
+        agentConfig: {
+          toolRegistry,
+          model_hidden_tools: ['echarts_generator_app'],
+        },
+      });
+
+      expect(Array.from(ctx.getModelToolRegistry()?.keys() ?? [])).toEqual([
+        'because_jn',
+      ]);
+      expect(Array.from(ctx.getDeferredToolRegistry(false).keys())).toEqual([
+        'because_jn',
+      ]);
+      expect(ctx.markToolsAsDiscovered(['echarts_generator_app'])).toBe(false);
+    });
+
     it('excludes code_execution-only tools', () => {
       const tools = [
         createMockTool('direct_tool'),
@@ -381,7 +420,13 @@ describe('AgentContext', () => {
 
       ctx.markToolsAsDiscovered(['tool1']);
       void ctx.systemRunnable;
-      ctx.instructionTokens = 100;
+      // Seed the mutable backing field; instructionTokens is intentionally
+      // exposed as a read-only derived value.
+      (
+        ctx as unknown as {
+          systemMessageTokens: number;
+        }
+      ).systemMessageTokens = 100;
       ctx.indexTokenCountMap = { '0': 50 };
       ctx.currentUsage = { input_tokens: 100 };
 

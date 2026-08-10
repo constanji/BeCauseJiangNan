@@ -3,6 +3,8 @@ import { RunnableConfig } from '@langchain/core/runnables';
 import type { UsageMetadata, BaseMessage } from '@langchain/core/messages';
 import type { ToolCall } from '@langchain/core/messages/tool';
 import type * as t from '@/types';
+import { ChartRunRegistry } from '@/tools/ChartRunRegistry';
+import { ChartPlacementBufferMap } from '@/messages/chartPlacement';
 import { ToolNode as CustomToolNode } from '@/tools/ToolNode';
 import { AgentContext } from '@/agents/AgentContext';
 import { HandlerRegistry } from '@/events';
@@ -77,6 +79,27 @@ export declare class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> 
     agentContexts: Map<string, AgentContext>;
     /** Default agent ID to use */
     defaultAgentId: string;
+    /**
+     * Per-run chart registry (shared by all ToolNodes of this Graph instance).
+     * Cleared in-place by resetValues() — never reassign the instance.
+     */
+    chartRunRegistry: ChartRunRegistry;
+    /**
+     * Semantic placement buffers keyed by message stepId (Phase 5).
+     * Cleared with the registry each turn.
+     */
+    chartPlacementBuffers: ChartPlacementBufferMap;
+    /** Track which stepIds already received prepend placeholders */
+    private chartPrependDone;
+    /**
+     * Track which stepIds already had semantic chart placeholders injected.
+     * Without this, ChartPlacementBufferMap.flush() deletes the buffer entry
+     * on every flush (paragraph boundary), so the *next* paragraph's delta
+     * would see `registered.some(role matches)` still true (registry isn't
+     * cleared mid-turn) and re-activate + re-inject the same placeholders —
+     * duplicating them across paragraphs within the same reply.
+     */
+    private chartSemanticDone;
     constructor({ runId, signal, agents, tokenCounter, indexTokenCountMap, calibrationRatio, }: t.StandardGraphInput);
     resetValues(keepContent?: boolean): void;
     clearHeavyState(): void;
@@ -155,5 +178,11 @@ export declare class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> 
     handleToolCallError(data: t.ToolErrorData, metadata?: Record<string, unknown>): Promise<void>;
     dispatchRunStepDelta(id: string, delta: t.ToolCallDelta): Promise<void>;
     dispatchMessageDelta(id: string, delta: t.MessageDelta): Promise<void>;
+    /**
+     * Flush all (or one) chart placement buffers into ON_MESSAGE_DELTA events.
+     * Must run before getContentParts() and before clearing the registry.
+     */
+    flushChartPlacementBuffers(stepId?: string): Promise<void>;
+    private applyChartPlacementToDelta;
     dispatchReasoningDelta: (stepId: string, delta: t.ReasoningDelta) => Promise<void>;
 }

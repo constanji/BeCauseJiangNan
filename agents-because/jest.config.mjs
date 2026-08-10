@@ -11,6 +11,28 @@ const config = {
   moduleNameMapper: pathsToModuleNameMapper(tsconfig.compilerOptions.paths, {
     prefix: '<rootDir>/'
   }),
+  transform: {
+    '^.+\\.tsx?$': [
+      'ts-jest',
+      {
+        // Do NOT use global diagnostics.warnOnly — that would let new type
+        // errors in test/source files slip through the Jest gate.
+        //
+        // These two paths have pre-existing type errors from duplicate
+        // @anthropic-ai/sdk package versions between the monorepo root and
+        // agents-because/node_modules (see config/build-types.js). Excluding
+        // them from *Jest* type-checking lets Graph/ToolNode integration
+        // tests load; the real type gate remains `npm run build:types`
+        // (batched tsc), which CI must keep as a required step.
+        diagnostics: {
+          exclude: [
+            '**/src/llm/anthropic/**',
+            '**/src/run.ts',
+          ],
+        },
+      },
+    ],
+  },
   modulePaths: [
     '<rootDir>'
   ],

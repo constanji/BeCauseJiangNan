@@ -1,6 +1,9 @@
 // src/types/tools.ts
 import type { StructuredToolInterface } from '@langchain/core/tools';
-import type { RunnableConfig, RunnableToolLike } from '@langchain/core/runnables';
+import type {
+  RunnableConfig,
+  RunnableToolLike,
+} from '@langchain/core/runnables';
 import type { ToolCall } from '@langchain/core/messages/tool';
 import type { ToolErrorData } from './stream';
 import { EnvVar } from '@/common';
@@ -56,7 +59,10 @@ export type CodeSessionContext = {
 };
 
 /** Session bucket for code execution / programmatic tools (keyed by tool name constant). */
-export type ToolSessionMap = Map<string, CodeSessionContext | Record<string, unknown>>;
+export type ToolSessionMap = Map<
+  string,
+  CodeSessionContext | Record<string, unknown>
+>;
 
 export type ToolNodeOptions = {
   name?: string;
@@ -91,6 +97,8 @@ export type ToolNodeOptions = {
     toolCall: ToolCall,
     config: RunnableConfig
   ) => Promise<string | undefined>;
+  /** Shared Graph-owned chart registry for dedupe / max_charts */
+  chartRunRegistry?: import('@/tools/ChartRunRegistry').ChartRunRegistry;
 };
 
 export type ToolNodeConstructorParams = ToolRefs & ToolNodeOptions;

@@ -38,6 +38,7 @@ export class AgentContext {
       provider,
       clientOptions,
       tools,
+      model_hidden_tools,
       toolMap,
       toolEnd,
       toolRegistry,
@@ -65,6 +66,7 @@ export class AgentContext {
       maxContextTokens,
       streamBuffer,
       tools,
+      modelHiddenTools: model_hidden_tools,
       toolMap,
       toolRegistry,
       toolDefinitions,
@@ -182,6 +184,8 @@ export class AgentContext {
   lastStreamCall?: number;
   /** Tools available to this agent */
   tools?: t.GraphTools;
+  /** Tools executable by the graph but hidden from model-facing schemas. */
+  private modelHiddenToolNames: Set<string> = new Set();
   /** Graph-managed tools (e.g., handoff tools created by MultiAgentGraph) that bypass event-driven dispatch */
   graphTools?: t.GraphTools;
   /** Tool map for this agent */
@@ -278,6 +282,7 @@ export class AgentContext {
     streamBuffer,
     tokenCounter,
     tools,
+    modelHiddenTools,
     toolMap,
     toolRegistry,
     toolDefinitions,
@@ -301,6 +306,7 @@ export class AgentContext {
     streamBuffer?: number;
     tokenCounter?: t.TokenCounter;
     tools?: t.GraphTools;
+    modelHiddenTools?: string[];
     toolMap?: t.ToolMap;
     toolRegistry?: t.LCToolRegistry;
     toolDefinitions?: t.LCTool[];
@@ -324,6 +330,7 @@ export class AgentContext {
     this.streamBuffer = streamBuffer;
     this.tokenCounter = tokenCounter;
     this.tools = tools;
+    this.modelHiddenToolNames = new Set(modelHiddenTools ?? []);
     this.toolMap = toolMap;
     this.toolRegistry = toolRegistry;
     this.toolDefinitions = toolDefinitions;
@@ -366,6 +373,7 @@ export class AgentContext {
 
     const programmaticOnlyTools: t.LCTool[] = [];
     for (const [name, toolDef] of this.toolRegistry) {
+      if (!this.isToolVisibleToModel(name)) continue;
       const allowedCallers = toolDef.allowed_callers ?? ['direct'];
       const isCodeExecutionOnly =
         allowedCallers.includes('code_execution') &&
@@ -582,14 +590,14 @@ export class AgentContext {
 
         const summaryMsg = usePromptCache
           ? new HumanMessage({
-            content: [
-              {
-                type: 'text',
-                text: wrappedSummary,
-                cache_control: { type: 'ephemeral' },
-              },
-            ],
-          })
+              content: [
+                {
+                  type: 'text',
+                  text: wrappedSummary,
+                  cache_control: { type: 'ephemeral' },
+                },
+              ],
+            })
           : new HumanMessage(wrappedSummary);
         body = [summaryMsg, ...messages];
       } else {
@@ -677,11 +685,14 @@ export class AgentContext {
     if (this.tools && this.tools.length > 0) {
       for (const tool of this.tools) {
         const genericTool = tool as Record<string, unknown>;
+        const toolName = (genericTool.name as string | undefined) ?? '';
+        if (toolName && !this.isToolVisibleToModel(toolName)) {
+          continue;
+        }
         if (
           genericTool.schema != null &&
           typeof genericTool.schema === 'object'
         ) {
-          const toolName = (genericTool.name as string | undefined) ?? '';
           const jsonSchema = toJsonSchema(
             genericTool.schema,
             toolName,
@@ -699,7 +710,10 @@ export class AgentContext {
 
     if (this.toolDefinitions && this.toolDefinitions.length > 0) {
       for (const def of this.toolDefinitions) {
-        if (countedToolNames.has(def.name)) {
+        if (
+          countedToolNames.has(def.name) ||
+          !this.isToolVisibleToModel(def.name)
+        ) {
           continue;
         }
         const schema = {
@@ -741,6 +755,9 @@ export class AgentContext {
     }
 
     for (const [name, toolDef] of this.toolRegistry) {
+      if (!this.isToolVisibleToModel(name)) {
+        continue;
+      }
       if (!onlyDeferred || toolDef.defer_loading === true) {
         registry.set(name, toolDef);
       }
@@ -953,6 +970,9 @@ export class AgentContext {
   markToolsAsDiscovered(toolNames: string[]): boolean {
     let hasNewDiscoveries = false;
     for (const name of toolNames) {
+      if (!this.isToolVisibleToModel(name)) {
+        continue;
+      }
       if (!this.discoveredToolNames.has(name)) {
         this.discoveredToolNames.add(name);
         hasNewDiscoveries = true;
@@ -977,10 +997,9 @@ export class AgentContext {
       return this.getEventDrivenToolsForBinding();
     }
 
-    const filtered =
-      !this.tools || !this.toolRegistry
-        ? this.tools
-        : this.filterToolsForBinding(this.tools);
+    const filtered = !this.tools
+      ? this.tools
+      : this.filterToolsForBinding(this.tools);
 
     if (this.graphTools && this.graphTools.length > 0) {
       return [...(filtered ?? []), ...this.graphTools];
@@ -996,6 +1015,9 @@ export class AgentContext {
     }
 
     const defsToInclude = this.toolDefinitions.filter((def) => {
+      if (!this.isToolVisibleToModel(def.name)) {
+        return false;
+      }
       const allowedCallers = def.allowed_callers ?? ['direct'];
       if (!allowedCallers.includes('direct')) {
         return false;
@@ -1018,7 +1040,7 @@ export class AgentContext {
     }
 
     if (this.tools && this.tools.length > 0) {
-      allTools.push(...this.tools);
+      allTools.push(...this.filterToolsForBinding(this.tools));
     }
 
     return allTools;
@@ -1029,6 +1051,10 @@ export class AgentContext {
     return tools.filter((tool) => {
       if (!('name' in tool)) {
         return true;
+      }
+
+      if (!this.isToolVisibleToModel(tool.name)) {
+        return false;
       }
 
       const toolDef = this.toolRegistry?.get(tool.name);
@@ -1046,5 +1072,21 @@ export class AgentContext {
         allowedCallers.includes('direct') && toolDef.defer_loading !== true
       );
     });
+  }
+
+  private isToolVisibleToModel(toolName: string): boolean {
+    return !this.modelHiddenToolNames.has(toolName);
+  }
+
+  /** Registry used by model-controlled Tool Search / programmatic execution. */
+  getModelToolRegistry(): t.LCToolRegistry | undefined {
+    if (!this.toolRegistry) {
+      return undefined;
+    }
+    return new Map(
+      Array.from(this.toolRegistry).filter(
+        ([name]) => !this.modelHiddenToolNames.has(name)
+      )
+    );
   }
 }

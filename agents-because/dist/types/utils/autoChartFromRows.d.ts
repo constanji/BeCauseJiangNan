@@ -3,13 +3,22 @@
  * server-side auto-chart pipeline (ToolNode). Rules mirror
  * echarts_generator_app description / echarts.html financial style.
  */
-export declare const TIME_COMPARE_FIELDS: readonly ["yd_value", "m_begin_value", "q_begin_value", "y_begin_value", "ly_value"];
-export type ChartType = 'bar' | 'line';
+import type { RowRecord } from './kpiFieldDictionary';
+import { type ChartMatchRules } from './autoChartRules/types';
+export { TIME_COMPARE_FIELDS } from './kpiFieldDictionary';
+export type { RowRecord } from './kpiFieldDictionary';
+export type ChartType = 'bar' | 'line' | 'pie';
 export type Chartability = {
     type: 'bar';
-    analysisType: 'dimension_compare';
+    analysisType: 'dimension_compare' | 'trend_analysis';
     dimCol: string;
     measureCols: string[];
+    titleHint?: string;
+} | {
+    type: 'pie';
+    analysisType: 'dimension_compare';
+    dimCol: string;
+    measureCol: string;
     titleHint?: string;
 } | {
     type: 'line';
@@ -20,7 +29,29 @@ export type Chartability = {
     currentValueCol?: string;
     titleHint?: string;
 };
-export type RowRecord = Record<string, unknown>;
+export type ChartMatchRuleName = 'time_series' | 'dimension_compare' | 'baseline_compare';
+export type AutoChartMatchResult = {
+    status: 'matched';
+    rule: ChartMatchRuleName;
+    chartability: Chartability;
+    rows: RowRecord[];
+    columns: string[];
+    rowCount: number;
+    categoryCount: number;
+} | {
+    status: 'disabled';
+    rule: ChartMatchRuleName;
+    rows: RowRecord[];
+    columns: string[];
+    rowCount: number;
+    categoryCount: number;
+} | {
+    status: 'no_match';
+    rows: RowRecord[];
+    columns: string[];
+    rowCount: number;
+    categoryCount: number;
+};
 export type ExtractedTable = {
     rows: RowRecord[];
     columns: string[];
@@ -35,11 +66,14 @@ export type AutoChartItem = {
  * Decide whether rows should produce a chart and of which type.
  * Returns null when no chart should be generated.
  */
-export declare function detectChartability(rows: RowRecord[], columns?: string[]): Chartability | null;
+export declare function detectChartability(rows: RowRecord[], columns?: string[], userQuestion?: string, matchRules?: ChartMatchRules): Chartability | null;
+/** Shared classifier and row preprocessor used by Simple and Legacy Auto. */
+export declare function matchAutoChartData(rows: RowRecord[], columns?: string[], userQuestion?: string, matchRules?: ChartMatchRules): AutoChartMatchResult;
 export declare function buildAutoChartOption(rows: RowRecord[], chartability: Chartability, title: string): Record<string, unknown>;
-export declare function buildAutoCharts(rows: RowRecord[], columns: string[] | undefined, chartId: string): AutoChartItem[] | null;
-/** Bracket-matching JSON array parse from a text prefix starting with '['. */
+export declare function buildAutoCharts(rows: RowRecord[], columns: string[] | undefined, chartId: string, userQuestion?: string, matchRules?: ChartMatchRules): AutoChartItem[] | null;
 export declare function parseJsonArrayPrefix(text: string): unknown[] | null;
+/** Unwrap tool output that was JSON-stringified one or more times by MCP. */
+export declare function unwrapJsonEncodedText(text: string): string;
 /**
  * Extract rows/columns from because_jn sql-executor JSON output.
  */
