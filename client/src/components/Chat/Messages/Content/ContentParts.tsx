@@ -172,6 +172,20 @@ const ContentParts = memo(
       return buildEChartsChartsById(outputs);
     }, [content, isCreatedByUser]);
 
+    const messageText = useMemo(() => {
+      if (!content) {
+        return '';
+      }
+      return content
+        .map((part) => {
+          if (!part || part.type !== ContentTypes.TEXT) {
+            return '';
+          }
+          return typeof part.text === 'string' ? part.text : part.text?.value ?? '';
+        })
+        .join('');
+    }, [content]);
+
     if (edit === true && enterEdit && setSiblingIdx) {
       return (
         <>
@@ -309,6 +323,7 @@ const ContentParts = memo(
                   isCreatedByUser={isCreatedByUser}
                   isLast={idx === content.length - 1}
                   showCursor={idx === content.length - 1 && isLast}
+                  messageText={messageText}
                 />
               </MessageContext.Provider>
             );

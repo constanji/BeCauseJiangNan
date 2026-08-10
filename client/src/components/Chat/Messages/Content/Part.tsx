@@ -28,10 +28,20 @@ type PartProps = {
   showCursor: boolean;
   isCreatedByUser: boolean;
   attachments?: TAttachment[];
+  /** Full message body text — used by ToolCall to suppress duplicate auto-charts */
+  messageText?: string;
 };
 
 const Part = memo(
-  ({ part, isSubmitting, attachments, isLast, showCursor, isCreatedByUser }: PartProps) => {
+  ({
+    part,
+    isSubmitting,
+    attachments,
+    isLast,
+    showCursor,
+    isCreatedByUser,
+    messageText,
+  }: PartProps) => {
 
     if (!part) {
       return null;
@@ -177,6 +187,7 @@ const Part = memo(
             auth={toolCall.auth}
             expires_at={toolCall.expires_at}
             isLast={isLast}
+            messageText={messageText}
           />
         );
       } else if (toolCall.type === ToolCallTypes.CODE_INTERPRETER) {
@@ -227,6 +238,7 @@ const Part = memo(
             output={toolCall.function.output}
             attachments={attachments}
             isLast={isLast}
+            messageText={messageText}
           />
         );
       }

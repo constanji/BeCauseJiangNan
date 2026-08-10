@@ -2,6 +2,7 @@ import { AgentCapabilities, ArtifactModes } from '@because/data-provider';
 import type {
   AgentModelParameters,
   SupportContact,
+  AgentChartConfig,
   AgentProvider,
   GraphEdge,
   Agent,
@@ -49,4 +50,6 @@ export type AgentForm = {
   data_source_id?: string | null;
   /** 保存时写入本次 versions 快照的备注（不落 agent 顶层） */
   versionNote?: string | null;
+  /** echarts_generator_app 行为配置；auto_chart（见 TAgentCapabilities）才是强制生图的唯一开关 */
+  chart_config?: AgentChartConfig;
 } & TAgentCapabilities;

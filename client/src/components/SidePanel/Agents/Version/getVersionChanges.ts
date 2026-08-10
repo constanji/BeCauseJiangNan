@@ -3,8 +3,12 @@ import type { VersionRecord } from './types';
 export type VersionChange = {
   field: string;
   label: string;
+  /** Full before text (not truncated) — UI decides collapsed preview vs expanded diff */
   before: string;
+  /** Full after text (not truncated) */
   after: string;
+  /** Prefer side-by-side line diff when expanded (prompts / long text) */
+  longText?: boolean;
 };
 
 export type VersionChangeSummary = {
@@ -13,7 +17,6 @@ export type VersionChangeSummary = {
 };
 
 const EMPTY = '（空）';
-const TRUNCATE = 80;
 
 function asText(value: unknown): string {
   if (value == null) return '';
@@ -26,25 +29,9 @@ function asText(value: unknown): string {
   }
 }
 
-function truncateText(value: string, max = TRUNCATE): string {
-  const t = value.trim();
-  if (!t) return EMPTY;
-  if (t.length <= max) return t;
-  return `${t.slice(0, max)}…`;
-}
-
 function displayScalar(value: unknown): string {
   const t = asText(value).trim();
   return t ? t : EMPTY;
-}
-
-function displayLong(value: unknown): string {
-  const raw = asText(value);
-  const trimmed = raw.trim();
-  if (!trimmed) return EMPTY;
-  const preview = truncateText(trimmed);
-  if (trimmed.length <= TRUNCATE) return preview;
-  return `${preview}（共 ${trimmed.length} 字）`;
 }
 
 function normalizeList(value: unknown): string[] {
@@ -89,6 +76,49 @@ function listsEqual(a: unknown, b: unknown): boolean {
   return sortedJoin(a) === sortedJoin(b);
 }
 
+/** Stable, human-readable summary of chart_config for version diffs. */
+function formatChartConfig(value: unknown): string {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) {
+    return EMPTY;
+  }
+  const cfg = value as Record<string, unknown>;
+  const parts: string[] = [];
+  if (cfg.preset != null && cfg.preset !== '') {
+    parts.push(`预设=${String(cfg.preset)}`);
+  }
+  if (cfg.input_mode != null && cfg.input_mode !== '') {
+    parts.push(`协议=${String(cfg.input_mode)}`);
+  }
+  if (cfg.marker != null && cfg.marker !== '') {
+    parts.push(`标记=${String(cfg.marker)}`);
+  }
+  if (cfg.placement != null && cfg.placement !== '') {
+    parts.push(`位置=${String(cfg.placement)}`);
+  }
+  if (typeof cfg.max_charts === 'number') {
+    parts.push(`上限=${cfg.max_charts}`);
+  }
+  if (cfg.dedupe_roles === false) {
+    parts.push('同角色去重=关');
+  } else if (cfg.dedupe_roles === true) {
+    parts.push('同角色去重=开');
+  }
+  if (cfg.hide_legend === true) {
+    parts.push('去掉图例=开');
+  } else if (cfg.hide_legend === false) {
+    parts.push('去掉图例=关');
+  }
+  if (cfg.hide_from_model === true) {
+    parts.push('对模型隐藏=开');
+  } else if (cfg.hide_from_model === false) {
+    parts.push('对模型隐藏=关');
+  }
+  if (cfg.match_rules != null) {
+    parts.push(`匹配规则=${JSON.stringify(cfg.match_rules)}`);
+  }
+  return parts.length ? parts.join('，') : EMPTY;
+}
+
 /**
  * 比较相邻版本快照，生成带修改前后的变更摘要。
  * @param previous 上一版（更旧）；null 表示当前为初始版本
@@ -117,20 +147,26 @@ export function getVersionChanges(
   }
 
   if (asText(previous.description).trim() !== asText(current.description).trim()) {
+    const before = asText(previous.description).trim() || EMPTY;
+    const after = asText(current.description).trim() || EMPTY;
     changes.push({
       field: 'description',
       label: '修改了描述',
-      before: displayLong(previous.description),
-      after: displayLong(current.description),
+      before,
+      after,
+      longText: true,
     });
   }
 
   if (asText(previous.instructions).trim() !== asText(current.instructions).trim()) {
+    const before = asText(previous.instructions).trim() || EMPTY;
+    const after = asText(current.instructions).trim() || EMPTY;
     changes.push({
       field: 'instructions',
       label: '修改了提示词',
-      before: displayLong(previous.instructions),
-      after: displayLong(current.instructions),
+      before,
+      after,
+      longText: true,
     });
   }
 
@@ -159,6 +195,26 @@ export function getVersionChanges(
       label: '修改了能力',
       before: sortedJoin(previous.capabilities),
       after: sortedJoin(current.capabilities),
+    });
+  }
+
+  if (Boolean(previous.auto_chart) !== Boolean(current.auto_chart)) {
+    changes.push({
+      field: 'auto_chart',
+      label: '修改了自动生图',
+      before: previous.auto_chart ? '开启' : '关闭',
+      after: current.auto_chart ? '开启' : '关闭',
+    });
+  }
+
+  const prevChart = formatChartConfig(previous.chart_config);
+  const currChart = formatChartConfig(current.chart_config);
+  if (prevChart !== currChart) {
+    changes.push({
+      field: 'chart_config',
+      label: '修改了图表设置',
+      before: prevChart,
+      after: currChart,
     });
   }
 

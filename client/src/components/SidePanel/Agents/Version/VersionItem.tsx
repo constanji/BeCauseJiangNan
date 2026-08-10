@@ -4,6 +4,7 @@ import { useLocalize } from '~/hooks';
 import { cn, defaultTextProps, removeFocusOutlines } from '~/utils';
 import type { VersionRecord } from './types';
 import type { VersionChange, VersionChangeSummary } from './getVersionChanges';
+import { buildSideBySideDiff } from './promptDiff';
 
 type VersionItemProps = {
   version: VersionRecord;
@@ -23,11 +24,95 @@ const noteInputClass = cn(
   removeFocusOutlines,
 );
 
+const PREVIEW_LEN = 80;
+
+function truncatePreview(value: string, max = PREVIEW_LEN): string {
+  const t = value.trim();
+  if (!t) return '（空）';
+  if (t.length <= max) return t;
+  return `${t.slice(0, max)}…（共 ${t.length} 字）`;
+}
+
 function oneLineSummary(change: VersionChange): string {
   if (change.field === 'tools') {
     return change.after;
   }
+  if (change.longText) {
+    return `${truncatePreview(change.before)} → ${truncatePreview(change.after)}`;
+  }
   return `${change.before} → ${change.after}`;
+}
+
+function LongTextDiff({ before, after }: { before: string; after: string }) {
+  const rows = useMemo(() => buildSideBySideDiff(before, after), [before, after]);
+  const changedOnly = useMemo(
+    () => rows.filter((r) => r.kind !== 'equal'),
+    [rows],
+  );
+  const [showUnchanged, setShowUnchanged] = useState(false);
+  const visible = showUnchanged ? rows : changedOnly.length > 0 ? changedOnly : rows;
+
+  return (
+    <div className="mt-1.5 space-y-2">
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-text-secondary">
+        <span>
+          前 {before.length} 字 → 后 {after.length} 字
+          {!showUnchanged && changedOnly.length > 0
+            ? ` · 仅差异 ${changedOnly.length} 行`
+            : ` · 共 ${rows.length} 行`}
+        </span>
+        {changedOnly.length > 0 && changedOnly.length < rows.length && (
+          <button
+            type="button"
+            className="underline-offset-2 hover:underline"
+            onClick={() => setShowUnchanged((v) => !v)}
+          >
+            {showUnchanged ? '只看差异行' : '显示全文对照'}
+          </button>
+        )}
+      </div>
+      <div className="grid max-h-[min(60vh,28rem)] grid-cols-1 gap-0 overflow-auto rounded-lg border border-border-light md:grid-cols-2">
+        <div className="border-b border-border-light bg-surface-secondary/60 px-3 py-1.5 text-xs font-medium text-text-secondary md:border-b-0 md:border-r">
+          之前
+        </div>
+        <div className="hidden bg-surface-secondary/60 px-3 py-1.5 text-xs font-medium text-text-secondary md:block">
+          当前
+        </div>
+        {visible.map((row, idx) => (
+          <div key={idx} className="contents">
+            <div
+              className={cn(
+                'border-b border-border-light px-3 py-1 font-mono text-[11px] leading-5 whitespace-pre-wrap break-words md:border-r',
+                row.kind === 'remove' || row.kind === 'change'
+                  ? 'bg-red-500/10 text-text-primary'
+                  : 'bg-surface-primary text-text-secondary',
+                row.left == null ? 'text-text-tertiary italic' : '',
+              )}
+            >
+              <span className="md:hidden mr-2 text-[10px] font-sans font-medium text-text-tertiary">
+                前
+              </span>
+              {row.left ?? '（无）'}
+            </div>
+            <div
+              className={cn(
+                'border-b border-border-light px-3 py-1 font-mono text-[11px] leading-5 whitespace-pre-wrap break-words',
+                row.kind === 'add' || row.kind === 'change'
+                  ? 'bg-green-500/10 text-text-primary'
+                  : 'bg-surface-primary text-text-secondary',
+                row.right == null ? 'text-text-tertiary italic' : '',
+              )}
+            >
+              <span className="md:hidden mr-2 text-[10px] font-sans font-medium text-text-tertiary">
+                后
+              </span>
+              {row.right ?? '（无）'}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function ChangeRows({
@@ -50,6 +135,11 @@ function ChangeRows({
         <li key={c.field} className="min-w-0">
           <div className="text-token-text-primary dark:text-text-primary text-sm font-medium">
             {c.label}
+            {c.longText && (
+              <span className="ml-2 text-xs font-normal text-text-tertiary">
+                {c.before.length} → {c.after.length} 字
+              </span>
+            )}
           </div>
           {!expanded ? (
             <p
@@ -58,8 +148,10 @@ function ChangeRows({
             >
               {oneLineSummary(c)}
             </p>
+          ) : c.longText ? (
+            <LongTextDiff before={c.before} after={c.after} />
           ) : (
-            <div className="mt-1.5 grid gap-1 rounded-lg border border-border-light bg-surface-secondary/50 px-3 py-2 text-xs leading-relaxed">
+            <div className="mt-1.5 grid gap-1 rounded-lg border border-border-light bg-surface-secondary/50 px-3 py-2 text-xs leading-relaxed md:grid-cols-2">
               <div className="break-words text-text-secondary">
                 <span className="mr-2 font-medium text-text-tertiary">前</span>
                 {c.before}

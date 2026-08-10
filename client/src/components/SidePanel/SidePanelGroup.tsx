@@ -218,6 +218,7 @@ const SidePanelGroup = memo(
                   thoughtChainCollapsed ? 'min-w-0 opacity-0' : 'min-w-[340px] sm:min-w-[352px] opacity-100',
                 )}
                 style={{
+                  overflowX: 'hidden',
                   overflowY: 'auto',
                   transition: 'width 0.2s ease, visibility 0s linear 0.2s',
                 }}

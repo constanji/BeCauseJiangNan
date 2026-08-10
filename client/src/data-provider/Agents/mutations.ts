@@ -377,7 +377,14 @@ export const useRevertAgentVersionMutation = (
       onMutate: (variables) => options?.onMutate?.(variables),
       onError: (error, variables, context) => options?.onError?.(error, variables, context),
       onSuccess: (revertedAgent, variables, context) => {
+        // Keep basic + expanded agent caches in sync. AgentPanel prefers the
+        // expanded query when the user can edit; omitting it leaves the builder
+        // form on the pre-restore prompt after a successful revert.
         queryClient.setQueryData<t.Agent>([QueryKeys.agent, variables.agent_id], revertedAgent);
+        queryClient.setQueryData<t.Agent>(
+          [QueryKeys.agent, variables.agent_id, 'expanded'],
+          revertedAgent,
+        );
 
         ((keys: t.AgentListParams[]) => {
           keys.forEach((key) => {

@@ -119,6 +119,13 @@ export default function AgentSelect({
           return;
         }
 
+        // chart_config 是嵌套对象，下面的通用分支显式排除 object 类型，这里单独处理
+        // 才能让已保存的 preset/marker/placement/max_charts/hide_legend 正确回填进表单。
+        if (name === 'chart_config') {
+          formValues[name] = value ?? undefined;
+          return;
+        }
+
         if (!keys.has(name)) {
           return;
         }

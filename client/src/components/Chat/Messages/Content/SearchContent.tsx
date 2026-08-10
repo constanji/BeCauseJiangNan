@@ -31,6 +31,20 @@ const SearchContent = ({
 
   const attachmentMap = useMemo(() => mapAttachments(attachments ?? []), [attachments]);
 
+  const messageText = useMemo(() => {
+    if (!Array.isArray(message.content)) {
+      return message.text || '';
+    }
+    return message.content
+      .map((part: TMessageContentParts | undefined) => {
+        if (!part || part.type !== ContentTypes.TEXT) {
+          return '';
+        }
+        return typeof part.text === 'string' ? part.text : part.text?.value ?? '';
+      })
+      .join('');
+  }, [message.content, message.text]);
+
   if (Array.isArray(message.content) && message.content.length > 0) {
     return (
       <SearchContext.Provider value={{ searchResults }}>
@@ -53,6 +67,7 @@ const SearchContent = ({
                 isCreatedByUser={message.isCreatedByUser}
                 attachments={attachments}
                 part={part}
+                messageText={messageText}
               />
             );
           })}

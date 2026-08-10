@@ -59,9 +59,14 @@ export function preprocessEChartsMarkers(text: string): string {
   }
 
   EC_MARKER_REGEX.lastIndex = 0;
+  const renderedChartIds = new Set<string>();
   return text.replace(EC_MARKER_REGEX, (_match, inner: string) => {
     const parsed = parseEChartsMarker(`@ec@${inner}@ec@`);
     const chartId = parsed?.chartId ?? inner;
+    if (renderedChartIds.has(chartId)) {
+      return '';
+    }
+    renderedChartIds.add(chartId);
     return `<div class="echarts-marker" data-chart-id="${escapeHtmlAttr(chartId)}"></div>`;
   });
 }
@@ -99,9 +104,9 @@ export function parseEChartsToolOutput(output: string): EChartsChartData[] | nul
 }
 
 /**
- * Build a Map<id, chartData> from all echarts_generator_app tool outputs in message content.
- * Also indexes by analysisType when present, so markers like @ec@trend_analysis@ec@
- * still resolve if the model used analysisType as the placeholder id while charts[].id is chart_1.
+ * Build a Map<id, chartData> from all echarts_generator_app tool outputs.
+ * Only indexes by exact chart.id — analysisType fuzzy matching removed
+ * (do not bind historical charts via @ec@trend_analysis@ec@).
  */
 export function buildEChartsChartsById(
   toolOutputs: string[],
@@ -116,9 +121,6 @@ export function buildEChartsChartsById(
     for (const chart of charts) {
       if (chart.id) {
         map.set(chart.id, chart);
-      }
-      if (chart.analysisType && !map.has(chart.analysisType)) {
-        map.set(chart.analysisType, chart);
       }
     }
   }

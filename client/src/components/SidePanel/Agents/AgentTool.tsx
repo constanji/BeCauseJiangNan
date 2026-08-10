@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useFormContext } from 'react-hook-form';
+import { Settings as SettingsIcon } from 'lucide-react';
 import { useUpdateUserPluginsMutation } from '@because/data-provider/react-query';
 import {
   OGDialog,
@@ -12,7 +13,9 @@ import {
 import type { TPlugin } from '@because/data-provider';
 import type { AgentForm } from '~/common';
 import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
+import ChartConfigDialog from './ChartConfigDialog';
+
+const ECHARTS_TOOL_KEY = 'echarts_generator_app';
 
 export default function AgentTool({
   tool,
@@ -29,6 +32,7 @@ export default function AgentTool({
 
   const [isFocused, setIsFocused] = useState(false);
   const [isHovering, setIsHovering] = useState(false);
+  const [chartConfigOpen, setChartConfigOpen] = useState(false);
 
   if (!regularTools) {
     return null;
@@ -58,15 +62,20 @@ export default function AgentTool({
     }
   };
 
+  const isEchartsTool = tool === ECHARTS_TOOL_KEY;
+
   return (
-    <OGDialog>
+    <>
+      {isEchartsTool && (
+        <ChartConfigDialog open={chartConfigOpen} onOpenChange={setChartConfigOpen} />
+      )}
+      <OGDialog>
       <div
         className="group relative flex w-full items-center gap-1 rounded-lg p-1 text-sm hover:bg-gray-50 dark:hover:bg-gray-800/50"
         onMouseEnter={() => setIsHovering(true)}
         onMouseLeave={() => setIsHovering(false)}
         onFocus={() => setIsFocused(true)}
         onBlur={(e) => {
-          // Check if focus is moving to a child element
           if (!e.currentTarget.contains(e.relatedTarget)) {
             setIsFocused(false);
           }
@@ -91,6 +100,17 @@ export default function AgentTool({
             {currentTool.name}
           </div>
         </div>
+
+        {isEchartsTool && (
+          <button
+            type="button"
+            className="flex h-7 w-7 items-center justify-center rounded transition-all duration-200 hover:bg-gray-200 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1"
+            aria-label="Chart settings"
+            onClick={() => setChartConfigOpen(true)}
+          >
+            <SettingsIcon className="h-4 w-4 text-text-secondary" />
+          </button>
+        )}
 
         <OGDialogTrigger asChild>
           <button
@@ -127,10 +147,11 @@ export default function AgentTool({
         selection={{
           selectHandler: () => removeTool(tool),
           selectClasses:
-            'bg-red-700 hover:bg-red-800 dark:bg-red-600 dark:hover:bg-red-800 text-white',
+            'bg-red-700 dark:bg-red-600 hover:bg-red-800 dark:hover:bg-red-800 text-white',
           selectText: localize('com_ui_delete'),
         }}
       />
     </OGDialog>
+    </>
   );
 }

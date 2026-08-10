@@ -144,9 +144,11 @@ function DatServerThoughtChainContent({ data }: { data: ThoughtChainData }) {
   }
 
   return (
-    <div className="mt-2 border-t border-border-light pt-2">
+    <div className="mt-2 w-full min-w-0 max-w-full border-t border-border-light pt-2">
       <div className="mb-2 text-xs font-medium text-text-primary">推理过程</div>
-      <ThoughtChain items={items} defaultExpandedKeys={[]} />
+      <div className="w-full min-w-0 max-w-full">
+        <ThoughtChain items={items} defaultExpandedKeys={[]} />
+      </div>
     </div>
   );
 }
@@ -350,20 +352,59 @@ function parseSqlExecutePayload(content: string): unknown {
   return null;
 }
 
+/** 侧栏默认优先展示的 KPI / 问数列（存在才显示） */
+const SQL_RESULT_PRIORITY_COLS = [
+  'standard_name',
+  'brchna',
+  'org_code',
+  'data_dt',
+  'index_value',
+  'mea_unit',
+  'm_begin_change_value',
+  'm_begin_change_ratio',
+  'y_begin_change_value',
+  'y_begin_change_ratio',
+  'yd_change_value',
+  'yd_change_ratio',
+];
+
+const SQL_RESULT_DEFAULT_COL_LIMIT = 6;
+
 function formatSqlCellValue(value: unknown): string {
   if (value == null) return '';
   if (typeof value === 'number') {
     return value.toLocaleString('zh-CN', { maximumFractionDigits: 2 });
   }
   if (typeof value === 'boolean') return value ? 'true' : 'false';
+  // DAT 常见日期数组：[2026,5,31,0,0] → 2026-05-31
+  if (Array.isArray(value) && value.length >= 3 && value.every((n) => typeof n === 'number')) {
+    const [y, m, d] = value as number[];
+    if (y >= 1900 && y <= 2100 && m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+      return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    }
+  }
   if (typeof value === 'object') return JSON.stringify(value);
   return String(value);
 }
 
+function pickVisibleSqlColumns(allKeys: string[], showAll: boolean): string[] {
+  if (showAll || allKeys.length <= SQL_RESULT_DEFAULT_COL_LIMIT) {
+    return allKeys;
+  }
+  const priority = SQL_RESULT_PRIORITY_COLS.filter((k) => allKeys.includes(k));
+  if (priority.length > 0) {
+    return priority;
+  }
+  return allKeys.slice(0, SQL_RESULT_DEFAULT_COL_LIMIT);
+}
+
 /**
- * SQL 执行结果组件 — 优先渲染为表格
+ * SQL 执行结果组件 — 优先渲染为表格。
+ * 关键：滚动容器宽度必须被侧栏约束（min-w-0 + max-w-full），
+ * 表格用 w-max 超出容器，才能出现横向滚动条。
  */
 function SqlExecuteResult({ content }: { content: string }) {
+  const [showAllCols, setShowAllCols] = useState(false);
   const parsed = useMemo(() => parseSqlExecutePayload(content), [content]);
 
   const rows = useMemo(() => {
@@ -378,6 +419,22 @@ function SqlExecuteResult({ content }: { content: string }) {
     }
     return [];
   }, [parsed]);
+
+  const allKeys = useMemo(
+    () =>
+      Array.from(
+        rows.reduce((set, row) => {
+          Object.keys(row).forEach((k) => set.add(k));
+          return set;
+        }, new Set<string>()),
+      ),
+    [rows],
+  );
+
+  const visibleKeys = useMemo(
+    () => pickVisibleSqlColumns(allKeys, showAllCols),
+    [allKeys, showAllCols],
+  );
 
   const fallbackText = useMemo(() => {
     const unescaped = content
@@ -396,54 +453,90 @@ function SqlExecuteResult({ content }: { content: string }) {
   }, [content]);
 
   if (rows.length > 0) {
-    const keys = Array.from(
-      rows.reduce((set, row) => {
-        Object.keys(row).forEach((k) => set.add(k));
-        return set;
-      }, new Set<string>()),
-    );
+    const hiddenColCount = Math.max(0, allKeys.length - visibleKeys.length);
 
     return (
-      <div className="sql-chain-content overflow-x-auto">
-        <table className="min-w-full border-collapse border border-border-light text-sm">
-          <thead>
-            <tr className="bg-surface-secondary">
-              {keys.map((key) => (
-                <th
-                  key={key}
-                  className="border border-border-light px-2 py-1.5 text-left font-medium text-text-primary"
-                >
-                  {key}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.slice(0, 50).map((row, idx) => (
-              <tr key={idx} className="hover:bg-surface-tertiary">
-                {keys.map((key) => (
-                  <td
+      <div className="sql-chain-content w-full min-w-0 max-w-full space-y-1.5">
+        <div
+          className="sql-result-scroll rounded-md border border-border-light"
+          style={{
+            // width:0 + minWidth:100%：在 flex 祖先未设 min-width:0 时仍锁住侧栏宽度，
+            // 避免表格把滚动容器撑到与内容同宽，导致外层裁切且无横滑条。
+            width: 0,
+            minWidth: '100%',
+            maxWidth: '100%',
+            overflowX: 'auto',
+            overflowY: 'hidden',
+            WebkitOverflowScrolling: 'touch',
+          }}
+        >
+          <table
+            className="border-collapse text-sm"
+            style={{ width: 'max-content', tableLayout: 'auto' }}
+          >
+            <thead>
+              <tr className="bg-surface-secondary">
+                {visibleKeys.map((key, colIdx) => (
+                  <th
                     key={key}
-                    className="border border-border-light px-2 py-1.5 text-text-primary"
+                    className={[
+                      'border-b border-r border-border-light px-2 py-1.5 text-left font-medium text-text-primary',
+                      colIdx === 0 ? 'sticky left-0 z-[1] bg-surface-secondary shadow-[2px_0_4px_rgba(0,0,0,0.12)]' : '',
+                    ].join(' ')}
+                    style={{ whiteSpace: 'nowrap' }}
                   >
-                    {formatSqlCellValue(row[key])}
-                  </td>
+                    {key}
+                  </th>
                 ))}
               </tr>
-            ))}
-          </tbody>
-        </table>
-        {rows.length > 50 && (
-          <div className="mt-1 text-xs text-text-secondary">
-            显示前 50 条，共 {rows.length} 条记录
-          </div>
-        )}
+            </thead>
+            <tbody>
+              {rows.slice(0, 50).map((row, idx) => (
+                <tr key={idx} className="hover:bg-surface-tertiary">
+                  {visibleKeys.map((key, colIdx) => (
+                    <td
+                      key={key}
+                      className={[
+                        'border-b border-r border-border-light px-2 py-1.5 text-text-primary',
+                        colIdx === 0 ? 'sticky left-0 z-[1] bg-surface-primary shadow-[2px_0_4px_rgba(0,0,0,0.12)]' : '',
+                      ].join(' ')}
+                      style={{ whiteSpace: 'nowrap' }}
+                    >
+                      {formatSqlCellValue(row[key])}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-secondary">
+          {rows.length > 50 && <span>显示前 50 条，共 {rows.length} 条</span>}
+          {hiddenColCount > 0 && (
+            <button
+              type="button"
+              className="underline-offset-2 hover:underline"
+              onClick={() => setShowAllCols(true)}
+            >
+              显示全部 {allKeys.length} 列（已隐藏 {hiddenColCount}）
+            </button>
+          )}
+          {showAllCols && allKeys.length > SQL_RESULT_DEFAULT_COL_LIMIT && (
+            <button
+              type="button"
+              className="underline-offset-2 hover:underline"
+              onClick={() => setShowAllCols(false)}
+            >
+              只看关键列
+            </button>
+          )}
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="sql-chain-content max-h-48 overflow-auto rounded-md border border-border-light bg-surface-tertiary p-2 text-sm">
+    <div className="sql-chain-content max-h-48 w-full min-w-0 overflow-auto rounded-md border border-border-light bg-surface-tertiary p-2 text-sm">
       <pre className="m-0 whitespace-pre-wrap break-words font-mono text-xs text-text-primary">
         {fallbackText}
       </pre>
@@ -529,9 +622,9 @@ function ToolCallDetailContent({
   );
 
   return (
-    <div className="w-full space-y-3 overflow-hidden" style={{ maxWidth: '100%' }}>
+    <div className="w-full min-w-0 max-w-full space-y-3">
       {args && (
-        <div className="w-full overflow-hidden" style={{ maxWidth: '100%' }}>
+        <div className="w-full min-w-0 max-w-full overflow-hidden">
           <Text type="secondary" className="mb-1 block text-xs">
             {domain
               ? localize('com_assistants_domain_info', { 0: domain })
@@ -551,7 +644,7 @@ function ToolCallDetailContent({
       )}
 
       {hasOutput && !chartData && previewOutput && (
-        <div className="w-full overflow-hidden" style={{ maxWidth: '100%' }}>
+        <div className="w-full min-w-0 max-w-full overflow-hidden">
           <Text type="secondary" className="mb-1 block text-xs">
             {localize('com_ui_result')}
           </Text>
@@ -560,7 +653,11 @@ function ToolCallDetailContent({
       )}
 
       {/* dat-server 结构化推理过程（意图分类 / SQL 生成 / SQL 执行结果等） */}
-      {thoughtChain && <DatServerThoughtChainContent data={thoughtChain} />}
+      {thoughtChain && (
+        <div className="w-full min-w-0 max-w-full">
+          <DatServerThoughtChainContent data={thoughtChain} />
+        </div>
+      )}
     </div>
   );
 }
@@ -748,7 +845,7 @@ function SidePanelToolCallItem({
   ];
 
   return (
-    <div className="w-full overflow-hidden text-sm" style={{ maxWidth: '100%' }}>
+    <div className="w-full min-w-0 max-w-full text-sm">
       <ThoughtChain items={toolCallItems} />
     </div>
   );
@@ -937,7 +1034,7 @@ const ThoughtChainPanel = memo(function ThoughtChainPanel({
         },
       } as any}
     >
-      <div className="flex h-full flex-col overflow-hidden">
+      <div className="flex h-full min-w-0 w-full flex-col overflow-hidden">
         {/* 标题 */}
         <div className="flex flex-shrink-0 items-center justify-between border-b border-border-light bg-background px-4 py-3">
           <div className="text-base font-semibold text-text-primary">思维链</div>
@@ -946,7 +1043,7 @@ const ThoughtChainPanel = memo(function ThoughtChainPanel({
 
         {/* 思维链内容 */}
         <div
-          className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 py-2 thought-chain-container text-sm"
+          className="thought-chain-container min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden px-3 py-2 text-sm"
           style={{
             // 思维链整体基准文字颜色用三级文字色，更浅一些
             color: 'var(--text-tertiary)',
@@ -955,6 +1052,33 @@ const ThoughtChainPanel = memo(function ThoughtChainPanel({
           } as React.CSSProperties}
         >
           <style dangerouslySetInnerHTML={{ __html: `
+            /* ThoughtChain flex 链：允许内容区收缩到侧栏宽度，横滑发生在 .sql-result-scroll 内 */
+            .thought-chain-container .ant-thought-chain,
+            .thought-chain-container .ant-thought-chain-box,
+            .thought-chain-container .ant-thought-chain-node,
+            .thought-chain-container .ant-thought-chain-node-box,
+            .thought-chain-container .ant-thought-chain-node-content,
+            .thought-chain-container .ant-thought-chain-node-content-box,
+            .thought-chain-container .ant-thought-chain-item,
+            .thought-chain-container .ant-thought-chain-item-content {
+              min-width: 0 !important;
+              max-width: 100%;
+            }
+            .thought-chain-container .ant-thought-chain-node-box {
+              flex: 1 1 0%;
+              overflow-x: clip;
+            }
+            .thought-chain-container .sql-result-scroll {
+              overflow-x: auto !important;
+              -webkit-overflow-scrolling: touch;
+            }
+            .thought-chain-container .sql-result-scroll table {
+              width: max-content;
+            }
+            .thought-chain-container .sql-result-scroll th,
+            .thought-chain-container .sql-result-scroll td {
+              white-space: nowrap;
+            }
             /* 基础文字颜色：使用次级文字色，降低对比度 */
             .thought-chain-container,
             .thought-chain-container *,

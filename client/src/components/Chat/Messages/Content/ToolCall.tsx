@@ -34,6 +34,7 @@ export default function ToolCall({
   output,
   attachments,
   auth,
+  messageText,
 }: {
   initialProgress: number;
   isLast?: boolean;
@@ -44,6 +45,8 @@ export default function ToolCall({
   attachments?: TAttachment[];
   auth?: string;
   expires_at?: number;
+  /** Full message body text — used to suppress duplicate auto-charts when @ec@ placeholders exist */
+  messageText?: string;
 }) {
   const localize = useLocalize();
   const [showInfo, setShowInfo] = useState(false);
@@ -128,7 +131,7 @@ export default function ToolCall({
     [output],
   );
 
-  /** Server-side auto-chart: always show charts below the tool header (no @ec@ needed) */
+  /** Server-side auto-chart: show under tool card only when body has no matching @ec@ placeholder */
   const autoECharts = useMemo(() => {
     if (function_name !== 'echarts_generator_app') {
       return null;
@@ -139,8 +142,19 @@ export default function ToolCall({
     if (typeof output !== 'string' || !output) {
       return null;
     }
-    return parseEChartsToolOutput(output);
-  }, [function_name, _args, output]);
+    const charts = parseEChartsToolOutput(output);
+    if (!charts || charts.length === 0) {
+      return null;
+    }
+    // If any chart id already appears as @ec@...:id@ec@ in message body, skip tool-card render
+    if (typeof messageText === 'string' && messageText.includes('@ec@')) {
+      const remaining = charts.filter(
+        (c) => c.id && !messageText.includes(`:${c.id}@ec@`) && !messageText.includes(`@ec@${c.id}@ec@`),
+      );
+      return remaining.length > 0 ? remaining : null;
+    }
+    return charts;
+  }, [function_name, _args, output, messageText]);
 
   const authDomain = useMemo(() => {
     const authURL = auth ?? '';

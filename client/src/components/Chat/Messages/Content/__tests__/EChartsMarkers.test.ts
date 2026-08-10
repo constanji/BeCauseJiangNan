@@ -40,6 +40,16 @@ describe('EChartsMarkers', () => {
     );
   });
 
+  it('renders the same chart id only once when marker types differ', () => {
+    const text =
+      '@ec@zb:chart_1@ec@\n\n@ec@line:chart_1@ec@\n\n分析正文';
+    const processed = preprocessEChartsMarkers(text);
+
+    expect(processed.match(/class="echarts-marker"/g)).toHaveLength(1);
+    expect(processed).toContain('data-chart-id="chart_1"');
+    expect(processed).toContain('分析正文');
+  });
+
   it('parseEChartsToolOutput and buildEChartsChartsById', () => {
     const charts = parseEChartsToolOutput(sampleOutput);
     expect(charts?.[0]?.id).toBe('chart_1');
@@ -47,8 +57,8 @@ describe('EChartsMarkers', () => {
 
     const map = buildEChartsChartsById([sampleOutput]);
     expect(map.get('chart_1')?.title).toBe('测试图表');
-    // analysisType also indexed for mismatched LLM placeholders
-    expect(map.get('line')?.id).toBe('chart_1');
+    // Only exact chart ids are indexed; marker type / analysisType is not an alias.
+    expect(map.get('line')).toBeUndefined();
   });
 
   it('returns null for invalid tool output', () => {

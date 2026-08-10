@@ -17,6 +17,16 @@ import { useAgentPanelContext } from '~/Providers/AgentPanelContext';
 import { useLocalize, usePluginDialogHelpers } from '~/hooks';
 import ToolItem from './ToolItem';
 
+/** 首次挂载该工具时初始化的默认 chart_config（决策 8）：simple 协议 + custom 预设，不联动 auto_chart */
+const ECHARTS_TOOL_KEY = 'echarts_generator_app';
+const DEFAULT_CHART_CONFIG = {
+  input_mode: 'simple' as const,
+  preset: 'custom' as const,
+  placement: 'prepend' as const,
+  max_charts: 2,
+  dedupe_roles: true,
+};
+
 function ToolSelectDialog({
   isOpen,
   endpoint,
@@ -69,8 +79,19 @@ function ToolSelectDialog({
   const handleInstall = (pluginAction: TPluginAction) => {
     const addFunction = () => {
       const installedToolIds: string[] = getValues('tools') || [];
+      const alreadyInstalled = installedToolIds.includes(pluginAction.pluginKey);
       installedToolIds.push(pluginAction.pluginKey);
       setValue('tools', Array.from(new Set(installedToolIds)));
+
+      // 决策 8：只在「从无到有」新挂载 echarts_generator_app 且当前 chart_config 为空时初始化，
+      // 不覆盖用户已有配置，也不会连带打开 auto_chart（见决策 11）。
+      if (
+        pluginAction.pluginKey === ECHARTS_TOOL_KEY &&
+        !alreadyInstalled &&
+        !getValues('chart_config')
+      ) {
+        setValue('chart_config', DEFAULT_CHART_CONFIG, { shouldDirty: true });
+      }
     };
 
     if (!pluginAction.auth) {
