@@ -53,18 +53,20 @@ COPY --chown=node:node agents-because/dist ./agents-because/dist
 
 RUN \
     cd agents-because && \
-    # Only the compiled runtime entry (dist/cjs/main.cjs) matters for `node`
-    # to load @because/agents — checking "dist non-empty" here would wrongly
-    # skip the rebuild when only dist/types (committed, always present) is on
-    # disk but the runtime bundle isn't.
-    if [ ! -f "dist/cjs/main.cjs" ]; then \
-      echo "Building agents-because runtime bundle (dist/cjs/main.cjs not found)..."; \
-      npm install --no-audit --omit=dev && \
-      DISABLE_SOURCEMAP=true NODE_OPTIONS="--max-old-space-size=8192" npm run build:runtime; \
-    else \
-      echo "Using existing dist/cjs, installing dependencies only..."; \
-      npm install --no-audit --omit=dev; \
-    fi && \
+    # Unconditionally rebuild the runtime bundle instead of trusting a
+    # "dist/cjs/main.cjs exists" check: file-existence/mtime says nothing about
+    # whether it matches the src/ that was just COPY'd. Docker's own layer cache
+    # (keyed on the content hash of the `COPY agents-because/src` layer above)
+    # already skips re-running this RUN step when src is unchanged, so this is
+    # "rebuild only when needed" without relying on any timestamp assumption.
+    echo "Building agents-because runtime bundle..." && \
+    # NOT --omit=dev: rollup and its plugins (incl. esbuild, used for pure
+    # transpilation without OOM-prone type-checking) live in devDependencies.
+    # This install is scoped to this ephemeral agents-because build step only
+    # — its node_modules never ship in the final image (only dist/ is kept),
+    # so there is no production-bloat tradeoff to `--omit=dev` here.
+    npm install --no-audit && \
+    DISABLE_SOURCEMAP=true NODE_OPTIONS="--max-old-space-size=8192" npm run build:runtime && \
     if [ ! -f "dist/types/index.d.ts" ]; then \
       echo "WARNING: dist/types/index.d.ts missing — packages/api will build with degraded (but non-fatal) type warnings. Run 'npm run build:types' locally and commit dist/types to fix."; \
     fi

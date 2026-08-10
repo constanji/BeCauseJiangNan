@@ -106,15 +106,13 @@ COPY agents-because/src ./agents-because/src
 COPY agents-because/dist ./agents-because/dist
 ENV DISABLE_SOURCEMAP=true
 ENV NODE_OPTIONS="--max-old-space-size=8192"
-# Only dist/cjs/main.cjs matters for `node` to load @because/agents at
-# runtime — checking "dist non-empty" would wrongly skip the rebuild when
-# only the committed dist/types is on disk but the runtime bundle isn't.
-RUN     if [ ! -f "agents-because/dist/cjs/main.cjs" ]; then \
-      echo "Building agents-because runtime bundle (dist/cjs/main.cjs not found)..."; \
-      cd agents-because && npm install --no-audit --legacy-peer-deps && DISABLE_SOURCEMAP=true npm run build:runtime; \
-    else \
-      echo "Using existing dist/cjs, skipping runtime build"; \
-    fi
+# Unconditionally rebuild instead of trusting "dist/cjs/main.cjs exists":
+# file-existence/mtime says nothing about whether it matches the src/ that
+# was just COPY'd above. Docker's own layer cache (keyed on the content hash
+# of the `COPY agents-because/src` layer) already skips re-running this RUN
+# step when src is unchanged — that's the real "skip when nothing changed".
+RUN     echo "Building agents-because runtime bundle..." && \
+    cd agents-because && npm install --no-audit --legacy-peer-deps && DISABLE_SOURCEMAP=true npm run build:runtime
 
 # Install all dependencies for every build
 # 这个阶段只负责安装依赖，不进行构建
