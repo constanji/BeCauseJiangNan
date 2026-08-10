@@ -532,7 +532,7 @@ class FluctuationAttributionTool extends Tool {
       if (sa.type === 'additive' && sa.topContributor) {
         const tc = sa.topContributor;
         const label = tc.label || tc.metric || tc.dimensionValue;
-        lines.push(`【加法归因】最大贡献子项: ${label}（变化 ${tc.change?.toFixed ? tc.change.toFixed(2) : tc.change}，贡献率 ${typeof tc.contributionRate === 'number' ? (tc.contributionRate * 100).toFixed(1) : tc.contributionRate}%）`);
+        lines.push(`【加法归因】最大贡献子项: ${label}（变化 ${tc.change?.toFixed ? tc.change.toFixed(2) : tc.change}，占比 ${typeof tc.contributionRate === 'number' ? (tc.contributionRate * 100).toFixed(1) : tc.contributionRate}%）`);
       } else if (sa.type === 'multiplicative' && sa.topContributor) {
         const tc = sa.topContributor;
         lines.push(`【乘法链式归因】最大驱动因子: ${tc.metric}（贡献值 ${typeof tc.contribution === 'number' ? tc.contribution.toFixed(2) : tc.contribution}，变化率 ${typeof tc.pct_change === 'number' ? (tc.pct_change * 100).toFixed(1) : tc.pct_change}%）`);
@@ -665,10 +665,20 @@ class FluctuationAttributionTool extends Tool {
     const top_drill_path = result.dimension_attribution?.drillPaths?.[0] || null;
 
     const sa = result.structured_attribution;
+    let structuredTop = sa?.topContributor || null;
+    if (structuredTop && structuredTop.contributionRate != null && structuredTop.占比 == null) {
+      const { contributionRate, ...rest } = structuredTop;
+      structuredTop = {
+        ...rest,
+        占比: typeof contributionRate === 'number'
+          ? `${(contributionRate * 100).toFixed(2)}%`
+          : contributionRate,
+      };
+    }
     const structured = sa
       ? {
           type: sa.type,
-          topContributor: sa.topContributor || null,
+          topContributor: structuredTop,
           warnings: (sa.methodology_warnings || []).map((w) => ({
             code: w.code,
             title: w.title,

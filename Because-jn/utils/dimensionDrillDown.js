@@ -102,7 +102,7 @@ class DimensionDrillDown {
         currentValue: c.currentValue,
         change: c.change,
         changeRate: c.changeRate === Infinity ? 'new' : (c.changeRate * 100).toFixed(2) + '%',
-        contributionRate: (c.contributionRate * 100).toFixed(2) + '%',
+        占比: (c.contributionRate * 100).toFixed(2) + '%',
       })),
       totalContributors: contributions.length,
       significantContributors: significantContributions.length,
@@ -142,9 +142,9 @@ class DimensionDrillDown {
           dimension: dimensionFields[0],
           value: topVal.value,
           change: topVal.change,
-          contributionRate: topVal.contributionRate,
+          占比: topVal.占比,
         }],
-        cumulativeExplanation: Number(topVal.contributionRate.replace('%', '')),
+        cumulativeExplanation: Number(String(topVal.占比).replace('%', '')),
       };
 
       this._drillDeeper(
@@ -185,7 +185,7 @@ class DimensionDrillDown {
       dimension: nextDim,
       value: topContributor.value,
       change: topContributor.change,
-      contributionRate: topContributor.contributionRate,
+      占比: topContributor.占比,
       explanatoryPower: analysis.explanatoryPower,
       surprise: analysis.surprise,
     };
@@ -259,7 +259,7 @@ class DimensionDrillDown {
       if (top.topContributors.length > 0) {
         const topC = top.topContributors[0];
         summary += `\n其中"${topC.value}"的贡献最大，变化幅度为${topC.changeRate}，`;
-        summary += `对整体变化的贡献率为${topC.contributionRate}。`;
+        summary += `对整体变化的占比为${topC.占比 ?? topC.contributionRate}。`;
       }
 
       if (top.surprise > 0.05) {

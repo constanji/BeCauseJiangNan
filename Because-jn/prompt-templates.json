@@ -10,6 +10,11 @@
     "file": "prompt-kpi-jn.md"
   },
   {
+    "id": "kpi-simple",
+    "label": "指标归因提示词（Simple 图表）",
+    "file": "prompt-kpi-jn-simple.md"
+  },
+  {
     "id": "kpi-nochart",
     "label": "指标归因提示词（无图表）",
     "file": "prompt-kpi-jn-nochart.md"
@@ -23,5 +28,10 @@
     "id": "kpi-nochart-old",
     "label": "指标归因提示词（旧版）",
     "file": "prompt-kpi-jn-nochart-old.md"
+  },
+  {
+    "id": "dat",
+    "label": "数据分析智能体",
+    "file": "prompt-dat.md"
   }
 ]

@@ -93,7 +93,7 @@ function buildDrillDownNextSteps(dimensionAttribution, metricField, options = {}
       steps.push({
         action: `查看"${top.dimension}"维度中贡献最大的取值`,
         question: `为何 "${topVal}" 在 "${top.dimension}" 维度贡献最大？`,
-        reason: `Adtributor评分 ${top.adtributorScore}，贡献率 ${top.topContributors[0].contributionRate}`,
+        reason: `Adtributor评分 ${top.adtributorScore}，占比 ${top.topContributors[0].占比 ?? top.topContributors[0].contributionRate}`,
         sql_hint: `SELECT * FROM ${table || '<表名>'} WHERE ${top.dimension} = ${escapeSqlValue(topVal)}`,
         filter: `${top.dimension} = ${escapeSqlValue(topVal)}`,
         priority: 'medium',
@@ -160,7 +160,7 @@ function generateKeyInsights(report, columnTypes, results) {
       insights.push({
         type: 'attribution_detail',
         dimension: `${top.dimension}=${tc.value}`,
-        value: `贡献率 ${tc.contributionRate}，变化 ${tc.changeRate || tc.change}`,
+        value: `占比 ${tc.占比 ?? tc.contributionRate}，变化 ${tc.changeRate || tc.change}`,
         impact: '该维度取值对整体波动贡献最大',
         importance: 'high',
       });

@@ -16,7 +16,7 @@
 
 ### 调试开关
 
-- `compact: false` 或 `verbose: true` → 返回接近 2.0 的完整报告（仍无 pretty JSON）
+- `compact: false` 或 `verbose: true`
 
 ## 默认输出结构（compact !== false）
 

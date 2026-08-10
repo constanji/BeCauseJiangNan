@@ -298,7 +298,7 @@ ELSE（leaf_child_codes 为空 = 叶子网点/无下属）
 |------|------|
 | `overview` | 总体变化（主指标方向/幅度） |
 | `top_dimension` | Top1 维度的 Adtributor 分数 |
-| `top_contributors` | 该维 Top3 贡献项（机构名/变化/贡献率） |
+| `top_contributors` | 该维 Top3 贡献项（机构名/变化/占比） |
 | `top_drill_path` | Top1 下钻路径（可无） |
 | `structured` | 公式归因摘要：`type` / `topContributor` / `warnings`（仅 code+title） |
 | `conclusion` | 短结论（优先转述） |
