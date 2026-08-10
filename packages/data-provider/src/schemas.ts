@@ -242,6 +242,8 @@ export const defaultAgentFormValues = {
   end_after_tools: false,
   hide_sequential_outputs: false,
   auto_chart: false,
+  /** Undefined on purpose: only initialized once echarts_generator_app is newly mounted (see ToolSelectDialog) */
+  chart_config: undefined,
   category: 'general',
   support_contact: {
     name: '',

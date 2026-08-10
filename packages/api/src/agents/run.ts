@@ -129,6 +129,8 @@ export function getReasoningKey(
 
 type RunAgent = Omit<Agent, 'tools'> & {
   tools?: GenericTool[];
+  /** Tools kept executable server-side but omitted from model bindings. */
+  model_hidden_tools?: string[];
   maxContextTokens?: number;
   baseContextTokens?: number;
   useLegacyContent?: boolean;
@@ -302,6 +304,7 @@ export async function createRun({
       toolDefinitions,
       agentId: agent.id,
       tools: agent.tools,
+      model_hidden_tools: agent.model_hidden_tools,
       clientOptions: llmConfig,
       instructions: systemContent,
       name: agent.name ?? undefined,

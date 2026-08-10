@@ -295,6 +295,8 @@ export const revertAgentVersion = (agent_id: string) => `${agents({ path: `${age
 export const agentVersionNote = (agent_id: string, versionIndex: number | string) =>
   `${agents({ path: `${agent_id}/versions/${versionIndex}/note` })}`;
 
+export const chartMatchPreview = () => `${agents({ path: 'chart-match-preview' })}`;
+
 export const toolPromptTemplates = (toolId: string) =>
   `${agents({ path: `tools/${toolId}/prompt-templates` })}`;
 

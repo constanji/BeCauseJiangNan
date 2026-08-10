@@ -6,6 +6,7 @@ const v1 = require('~/server/controllers/agents/v1');
 const { getRoleByName } = require('~/models/Role');
 const actions = require('./actions');
 const tools = require('./tools');
+const { chartMatchPreview } = require('~/server/controllers/agents/chartMatchPreview');
 
 const router = express.Router();
 const avatar = express.Router();
@@ -56,6 +57,8 @@ router.get('/categories', v1.getAgentCategories);
  * @returns {Agent} 201 - Success response - application/json
  */
 router.post('/', checkAgentCreate, v1.createAgent);
+
+router.post('/chart-match-preview', chartMatchPreview);
 
 /**
  * Retrieves basic agent information (VIEW permission required).

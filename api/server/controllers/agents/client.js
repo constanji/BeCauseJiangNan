@@ -40,6 +40,10 @@ const {
   removeNullishValues,
 } = require('@because/data-provider');
 const { initializeAgent } = require('~/server/services/Endpoints/agents/agent');
+const {
+  getConversationChartIdOffset,
+  getConversationChartIndexOffset,
+} = require('~/server/services/Endpoints/agents/chartIdSequence');
 const { spendTokens, spendStructuredTokens } = require('~/models/spendTokens');
 const { getFormattedMemories, deleteMemory, setMemory } = require('~/models');
 const { encodeAndFormat } = require('~/server/services/Files/images/encode');
@@ -262,6 +266,10 @@ class AgentClient extends BaseClient {
     this.processQAExtractor;
     /** @type {Record<number, string> | null} */
     this.agentIdMap = null;
+    /** Highest sequential chart_N id on the active conversation branch. */
+    this.chartIdOffset = 0;
+    /** Next zero-based session chart index on the active conversation branch. */
+    this.chartIndexOffset = 0;
   }
 
   /**
@@ -360,6 +368,12 @@ class AgentClient extends BaseClient {
       this.agentConfigs,
     );
 
+    // Capture chart ids before historical placeholders are stripped from the
+    // model-facing copy below. This keeps server-generated ids unique across
+    // turns without reintroducing old chart markers into model context.
+    this.chartIdOffset = getConversationChartIdOffset(orderedMessages);
+    this.chartIndexOffset = getConversationChartIndexOffset(orderedMessages);
+
     let payload;
     /** @type {number | undefined} */
     let promptTokens;
@@ -427,8 +441,19 @@ class AgentClient extends BaseClient {
     const latestMessageId = orderedMessages[orderedMessages.length - 1]?.messageId;
 
     const formattedMessages = orderedMessages.map((message, i) => {
+      // Multi-turn isolation: strip historical @ec@ placeholders from the
+      // copy passed to the model — never mutate DB-backed originals.
+      const isHistory = i < orderedMessages.length - 1;
+      const messageForModel =
+        isHistory && typeof message.text === 'string' && message.text.includes('@ec@')
+          ? {
+              ...message,
+              text: message.text.replace(/@ec@[^@]*@ec@/g, ''),
+            }
+          : message;
+
       const formattedMessage = formatMessage({
-        message,
+        message: messageForModel,
         userName: this.options?.name,
         assistantName: this.options?.modelLabel,
       });
@@ -1171,6 +1196,12 @@ class AgentClient extends BaseClient {
           ? rawDatasourceId
           : undefined;
 
+      // 决策 11：echarts_generator_app 一旦从工具列表移除，auto_chart/chart_config
+      // 一律按未启用处理，即使数据库里仍保留旧配置值——不需要在删除工具时反向清库。
+      const echartsToolMounted = (this.options.agent.tools ?? []).some(
+        (tool) => tool && tool.name === 'echarts_generator_app',
+      );
+
       config = {
         runName: 'AgentRun',
         configurable: {
@@ -1179,7 +1210,13 @@ class AgentClient extends BaseClient {
           user_id: this.user ?? this.options.req.user?.id,
           hide_sequential_outputs: this.options.agent.hide_sequential_outputs,
           /** Per-agent switch for server-side auto chart after data-query tools */
-          auto_chart: this.options.agent.auto_chart === true,
+          auto_chart: echartsToolMounted && this.options.agent.auto_chart === true,
+          /** echarts_generator_app 的行为配置；undefined 时按 legacy 协议处理 */
+          chart_config: echartsToolMounted ? this.options.agent.chart_config : undefined,
+          /** Continue legacy chart_N ids when no conversation id is available. */
+          chart_id_offset: this.chartIdOffset,
+          /** Continue session-scoped automatic ids from the conversation branch. */
+          chart_index_offset: this.chartIndexOffset,
           requestBody: {
             messageId: this.responseMessageId,
             conversationId: this.conversationId,

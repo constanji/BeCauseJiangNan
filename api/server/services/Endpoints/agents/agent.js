@@ -20,6 +20,7 @@ const { getProviderConfig } = require('~/server/services/Endpoints');
 const { processFiles } = require('~/server/services/Files/process');
 const { getFiles, getToolFilesByIds } = require('~/models/File');
 const { getConvoFiles } = require('~/models/Conversation');
+const { getModelHiddenTools } = require('./chartToolVisibility');
 
 /**
  * @param {object} params
@@ -127,6 +128,7 @@ const initializeAgent = async ({
     agentId: agent.id,
     tools: agent.tools,
     model: agent.model,
+    chart_config: agent.chart_config,
     tool_resources,
   })) ?? {};
 
@@ -214,6 +216,9 @@ const initializeAgent = async ({
   return {
     ...agent,
     tools,
+    // agent.tools contains persisted tool ids; `tools` contains the resolved
+    // instances that are actually bound to the model and executed by ToolNode.
+    model_hidden_tools: getModelHiddenTools(agent, tools),
     attachments,
     resendFiles,
     userMCPAuthMap,

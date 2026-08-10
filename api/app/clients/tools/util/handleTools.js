@@ -212,6 +212,9 @@ const loadTools = async ({
       req: options.req,
       res: options.res,
     },
+    echarts_generator_app: {
+      chartConfig: agent?.chart_config,
+    },
   };
 
   /** @type {Record<string, string>} */

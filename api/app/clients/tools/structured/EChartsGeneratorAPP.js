@@ -1,5 +1,6 @@
 const { Tool } = require('@langchain/core/tools');
 const { z } = require('zod');
+const { nanoid } = require('nanoid');
 const { logger } = require('@because/data-schemas');
 
 /** 金融指标对比柱状图默认配色（对齐 echarts.html 规范） */
@@ -121,6 +122,17 @@ function getPrimarySeriesType(option) {
   return series[0]?.type || null;
 }
 
+function toNumber(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string' && value.trim() !== '') {
+    const n = Number(value.replace(/,/g, '').replace(/%$/, ''));
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
 /**
  * 按 echarts.html 金融指标规范补齐默认样式：
  * - 柱状对比：双色板、shadow tooltip、legend、grid
@@ -234,6 +246,33 @@ function applyFinancialStyleDefaults(option, title) {
   return next;
 }
 
+const analysisTypeEnum = z.enum([
+  'dimension_compare',
+  'trend_analysis',
+  'combined_analysis',
+  'composition_distribution',
+  'general',
+]);
+
+const simpleChartItemSchema = z.object({
+  id: z
+    .string()
+    .optional()
+    .describe('可选；若省略由工具自动生成。正文占位必须使用本次调用返回结果里的 charts[].id，不要用请求时自己填的 id。'),
+  role: z
+    .enum(['indicator', 'contribution', 'drag', 'general'])
+    .describe('图表角色：indicator=指标对比/趋势，contribution=正向贡献，drag=拖累项，general=通用'),
+  type: z.enum(['bar', 'line', 'pie']).describe('图表类型：bar / line / pie'),
+  style: z.string().optional().describe('可选样式提示，如 trend / composition'),
+  data: z.array(z.record(z.any())).describe('行数据数组，每行一条记录'),
+  xField: z.string().describe('X 轴 / 分类 / 名称字段名'),
+  yFields: z.array(z.string()).min(1).describe('Y 轴数值字段名数组'),
+  seriesField: z.string().optional().describe('可选，按该字段分组为多系列'),
+  unit: z.string().optional().describe('Y 轴单位，如「万元」「%」'),
+  title: z.string().describe('图表标题'),
+  analysisType: analysisTypeEnum.optional().describe('业务场景标签（可选元数据）'),
+});
+
 const chartItemSchema = z.object({
   id: z
     .string()
@@ -253,90 +292,283 @@ const chartItemSchema = z.object({
         '必须包含 series（系列数据数组）以及对应的 xAxis/yAxis 或其它坐标系配置。' +
         '样式规范见工具 description（对齐金融指标 echarts.html）。',
     ),
-  analysisType: z
-    .enum([
-      'dimension_compare',
-      'trend_analysis',
-      'combined_analysis',
-      'composition_distribution',
-      'general',
-    ])
+  analysisType: analysisTypeEnum
     .optional()
     .describe(
       '业务场景标签（可选，仅元数据，不参与正文占位匹配）：' +
         'dimension_compare / trend_analysis / combined_analysis / composition_distribution / general。' +
         '切勿写成 @ec@trend_analysis@ec@ —— 占位必须用 @ec@line:chart_1@ec@ 这种 type:id 形式。',
     ),
+  role: z.enum(['indicator', 'contribution', 'drag', 'general']).optional(),
 });
+
+const SIMPLE_DESCRIPTION =
+  'ECharts 简版图表工具。传入 charts 数组，每项用 role/type/data/xField/yFields/title 描述图表，无需手写 echartsOption。\n\n' +
+  '## 正文占位约定\n' +
+  '- 调用后须在回复正文插入：`@ec@<type>:<id>@ec@`\n' +
+  '- `<type>` = bar / line / pie\n' +
+  '- `<id>` = **本次调用返回结果**里的 charts[].id（工具可能自动生成 id，**必须使用返回值中的 id，不要用请求时自己填的 id**）\n' +
+  '- ✅ `@ec@bar:chart_abc123_0@ec@`\n\n' +
+  '## 角色与类型\n' +
+  '- role=indicator + type=bar → 纵向柱状对比\n' +
+  '- role=indicator + type=line（或 style=trend）→ 折线趋势（含 max/min/average 标注）\n' +
+  '- role=contribution → 横向柱状，红色 (#ee6666)，展示正向贡献\n' +
+  '- role=drag → 横向柱状，绿色 (#91cc75)，保留负值\n' +
+  '- type=pie（或 style=composition）→ 饼图\n\n' +
+  '## 数据要求\n' +
+  '- data 为行数组；xField 为分类/名称字段；yFields 为数值字段数组\n' +
+  '- 数值必须来自 sql-executor，禁止编造\n' +
+  '- seriesField 可选，用于按维度拆分为多系列';
+
+const LEGACY_DESCRIPTION =
+  'ECharts 图表生成工具。传入 charts 数组（每项含 id、title、echartsOption）生成交互式图表。\n\n' +
+  '## 正文占位约定（本工具特有，必须遵守）\n' +
+  '- 调用本工具后，Agent 须在回复正文插入：`@ec@<type>:<id>@ec@`\n' +
+  '- `<type>` = 图型，取 series[0].type：`bar` / `line` / `pie`\n' +
+  '- `<id>` = **本次调用返回结果**里的 charts[].id，须逐字一致（不要用请求时自行填写的 id 若与返回值不同）\n' +
+  '- ✅ `@ec@line:chart_1@ec@`  `@ec@bar:chart_2@ec@`\n' +
+  '- ❌ `@ec@trend_analysis@ec@`（误用 analysisType）  ❌ `@ec@chart_1@ec@`（缺 type）\n' +
+  '- analysisType 只是业务标签，不参与占位匹配\n\n' +
+  '**参数格式**：charts 必须是 JSON 数组（[{id,title,echartsOption},...]），不要传 JSON 字符串。\n\n' +
+  '支持类型：柱状图(bar)、折线图(line)优先；饼图/环图仅在构成占比场景使用。\n\n' +
+  '## 图表生成规则（强制执行）\n\n' +
+  '### 1. 何时必须画图\n' +
+  '- 数据有 ≥2 行且存在维度字段（机构/地区等）有 ≥2 个不同值 → 柱状对比图\n' +
+  '- 数据只有 1 行但含时间对比字段（yd_value/m_begin_value/q_begin_value/y_begin_value/ly_value）→ 折线趋势图\n' +
+  '- ≥2 行且含 data_dt 多期 → 折线趋势图\n' +
+  '- 1 行且无时间对比字段 → 禁止画图\n\n' +
+  '### 2. 数据真实性\n' +
+  '- 数值必须来自 sql-executor，禁止编造/估算\n' +
+  '- 字段名用中文；严禁 emoji\n' +
+  '- 图表 series[].data 使用 SQL 原始万元值；yAxis.name 标注「万元」或「数值（万元）」；' +
+  '若文字侧已按量级统一换算为亿元，图表仍保持万元原值（与文字单位可不同）\n' +
+  '- 占比类指标 yAxis.name 用「单位：百分比」或「%」\n\n' +
+  '### 3. 金融指标样式规范（对齐 echarts.html，工具会自动补缺省项）\n' +
+  '**柱状对比图（bar）**：\n' +
+  '- tooltip: { trigger:"axis", axisPointer:{ type:"shadow" }, confine:true }\n' +
+  '- legend: { data:[系列名...], top:"10%" }\n' +
+  '- grid: { left:"3%", right:"4%", bottom:"3%", top:"22%", containLabel:true }\n' +
+  '- series[].itemStyle.color 按序使用 #5470c6 / #91cc75 / #fac858 / #ee6666 …\n' +
+  '- title: { left:"center", text:"…" }\n\n' +
+  '**折线趋势图（line）**：\n' +
+  '- tooltip: { trigger:"axis", confine:true }\n' +
+  '- xAxis: { type:"category", boundaryGap:false, axisLabel:{ rotate:45 } }\n' +
+  '- legend: { data:[指标名], left:"right" }\n' +
+  '- grid: { left:"3%", bottom:"3%", right:"4%", containLabel:true }\n' +
+  '- series 建议带 markPoint:{ data:[{type:"max"},{type:"min"}] } 与 markLine:{ data:[{type:"average"}] }\n' +
+  '- title: { left:"center", text:"…趋势图" }\n\n' +
+  '**通用**：推荐 toolbox.feature.saveAsImage；数据点多时加 dataZoom。\n\n' +
+  '### 4. 配套表格（不由本工具返回）\n' +
+  '- 时间对比/增量增幅明细用正文 markdown 表格展示（列：时间维度、当前值、增量、增幅）\n' +
+  '- 增量/增幅：上涨标红语义、下跌标绿语义（文字说明即可）；正数可加「+」前缀\n' +
+  '- 本工具只负责 echarts 配置，不要把 tableColumns 塞进 charts\n\n' +
+  '### 5. Option 最少字段\n' +
+  '- 必须含 series 与坐标系（xAxis/yAxis 等）；series[0].type 必填（bar/line/pie）\n' +
+  '- 参考：https://echarts.apache.org/zh/option.html';
+
+/**
+ * 推断图表角色：显式 role > 标题关键词 > analysisType > general
+ */
+function inferRole(chart) {
+  if (chart.role) {
+    return chart.role;
+  }
+  const title = chart.title || '';
+  if (/贡献/.test(title)) {
+    return 'contribution';
+  }
+  if (/拖累/.test(title)) {
+    return 'drag';
+  }
+  const at = chart.analysisType;
+  if (at === 'trend_analysis' || at === 'dimension_compare' || at === 'combined_analysis') {
+    return 'indicator';
+  }
+  return 'general';
+}
+
+function buildVerticalBarOption(item) {
+  const { data, xField, yFields, seriesField, unit, title } = item;
+  const categories = data.map((row) => String(row[xField] ?? ''));
+
+  let series;
+  if (seriesField) {
+    const groupMap = new Map();
+    for (const row of data) {
+      const key = String(row[seriesField] ?? '');
+      if (!groupMap.has(key)) {
+        groupMap.set(key, []);
+      }
+      groupMap.get(key).push(row);
+    }
+    series = [...groupMap.entries()].map(([name, rows], i) => ({
+      name,
+      type: 'bar',
+      data: categories.map((cat) => {
+        const row = rows.find((r) => String(r[xField] ?? '') === cat);
+        return row ? toNumber(row[yFields[0]]) : null;
+      }),
+      itemStyle: { color: BAR_PALETTE[i % BAR_PALETTE.length] },
+    }));
+  } else if (yFields.length === 1) {
+    series = [
+      {
+        name: yFields[0],
+        type: 'bar',
+        data: data.map((row) => toNumber(row[yFields[0]])),
+        itemStyle: { color: BAR_PALETTE[0] },
+      },
+    ];
+  } else {
+    series = yFields.map((yf, i) => ({
+      name: yf,
+      type: 'bar',
+      data: data.map((row) => toNumber(row[yf])),
+      itemStyle: { color: BAR_PALETTE[i % BAR_PALETTE.length] },
+    }));
+  }
+
+  const legendData = series.map((s) => s.name).filter(Boolean);
+
+  return {
+    title: { left: 'center', text: title },
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, confine: true },
+    legend: { data: legendData, top: '10%' },
+    grid: { left: '3%', right: '4%', bottom: '3%', top: '22%', containLabel: true },
+    xAxis: { type: 'category', data: categories },
+    yAxis: { type: 'value', name: unit || '' },
+    series,
+  };
+}
+
+function buildLineOptionFromSimple(item) {
+  const { data, xField, yFields, unit, title } = item;
+  const categories = data.map((row) => String(row[xField] ?? ''));
+
+  const series = yFields.map((yf) => ({
+    name: yf,
+    type: 'line',
+    data: data.map((row) => toNumber(row[yf])),
+    markPoint: { data: [{ type: 'max' }, { type: 'min' }] },
+    markLine: { data: [{ type: 'average' }] },
+  }));
+
+  return {
+    title: { left: 'center', text: title },
+    tooltip: { trigger: 'axis', confine: true },
+    legend: { data: yFields, left: 'right' },
+    grid: { left: '3%', bottom: '3%', right: '4%', containLabel: true },
+    xAxis: {
+      type: 'category',
+      boundaryGap: false,
+      axisLabel: { rotate: 45 },
+      data: categories,
+    },
+    yAxis: { type: 'value', name: unit || '' },
+    series,
+  };
+}
+
+function buildHorizontalBarOption(item, color) {
+  const { data, xField, yFields, unit, title } = item;
+  const yField = yFields[0];
+  const categories = data.map((row) => String(row[xField] ?? ''));
+  const values = data.map((row) => toNumber(row[yField]));
+
+  return {
+    title: { left: 'center', text: title },
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, confine: true },
+    grid: { left: '3%', right: '8%', bottom: '3%', top: '15%', containLabel: true },
+    xAxis: { type: 'value', name: unit || '' },
+    yAxis: { type: 'category', data: categories, inverse: true },
+    series: [
+      {
+        name: yField,
+        type: 'bar',
+        data: values,
+        itemStyle: { color },
+      },
+    ],
+  };
+}
+
+function buildPieOption(item) {
+  const { data, xField, yFields, title } = item;
+  const yField = yFields[0];
+
+  return {
+    title: { left: 'center', text: title },
+    tooltip: { trigger: 'item', confine: true },
+    legend: { orient: 'vertical', left: 'left', top: '15%' },
+    series: [
+      {
+        name: title,
+        type: 'pie',
+        radius: '55%',
+        center: ['50%', '55%'],
+        data: data.map((row) => ({
+          name: String(row[xField] ?? ''),
+          value: toNumber(row[yField]),
+        })),
+      },
+    ],
+  };
+}
+
+/**
+ * 从简版协议 spec 构建 ECharts option（不含金融样式缺省补齐，由 applyFinancialStyleDefaults 处理）
+ */
+function buildOptionFromSimpleSpec(item) {
+  const { role, type, style } = item;
+
+  if (role === 'contribution') {
+    return buildHorizontalBarOption(item, '#ee6666');
+  }
+  if (role === 'drag') {
+    return buildHorizontalBarOption(item, '#91cc75');
+  }
+  if (type === 'pie' || style === 'composition') {
+    return buildPieOption(item);
+  }
+  if (type === 'line' || style === 'trend') {
+    return buildLineOptionFromSimple(item);
+  }
+  return buildVerticalBarOption(item);
+}
 
 /**
  * EChartsGeneratorAPP Tool - ECharts 多图生成工具
  *
- * 接收 LLM 生成的 ECharts Option JSON 配置数组，验证后按金融指标样式规范补齐默认配置，
- * 返回供前端按 @ec@ 标记内联渲染。
+ * 接收 LLM 生成的图表配置数组，验证后按金融指标样式规范补齐默认配置，
+ * 返回供前端按 @ec@ 标记内联渲染。支持 simple（行数据协议）与 legacy（完整 echartsOption）两种入参模式。
  */
 class EChartsGeneratorAPP extends Tool {
   name = 'echarts_generator_app';
 
-  description =
-    'ECharts 图表生成工具。传入 charts 数组（每项含 id、title、echartsOption）生成交互式图表。\n\n' +
-    '## 正文占位约定（本工具特有，必须遵守）\n' +
-    '- 调用本工具后，Agent 须在回复正文插入：`@ec@<type>:<id>@ec@`\n' +
-    '- `<type>` = 图型，取 series[0].type：`bar` / `line` / `pie`\n' +
-    '- `<id>` = 本调用 charts[].id（如 chart_1），须逐字一致\n' +
-    '- ✅ `@ec@line:chart_1@ec@`  `@ec@bar:chart_2@ec@`\n' +
-    '- ❌ `@ec@trend_analysis@ec@`（误用 analysisType）  ❌ `@ec@chart_1@ec@`（缺 type）\n' +
-    '- analysisType 只是业务标签，不参与占位匹配\n\n' +
-    '**参数格式**：charts 必须是 JSON 数组（[{id,title,echartsOption},...]），不要传 JSON 字符串。\n\n' +
-    '支持类型：柱状图(bar)、折线图(line)优先；饼图/环图仅在构成占比场景使用。\n\n' +
-    '## 图表生成规则（强制执行）\n\n' +
-    '### 1. 何时必须画图\n' +
-    '- 数据有 ≥2 行且存在维度字段（机构/地区等）有 ≥2 个不同值 → 柱状对比图\n' +
-    '- 数据只有 1 行但含时间对比字段（yd_value/m_begin_value/q_begin_value/y_begin_value/ly_value）→ 折线趋势图\n' +
-    '- ≥2 行且含 data_dt 多期 → 折线趋势图\n' +
-    '- 1 行且无时间对比字段 → 禁止画图\n\n' +
-    '### 2. 数据真实性\n' +
-    '- 数值必须来自 sql-executor，禁止编造/估算\n' +
-    '- 字段名用中文；严禁 emoji\n' +
-    '- 图表 series[].data 使用 SQL 原始万元值；yAxis.name 标注「万元」或「数值（万元）」；' +
-    '若文字侧已按量级统一换算为亿元，图表仍保持万元原值（与文字单位可不同）\n' +
-    '- 占比类指标 yAxis.name 用「单位：百分比」或「%」\n\n' +
-    '### 3. 金融指标样式规范（对齐 echarts.html，工具会自动补缺省项）\n' +
-    '**柱状对比图（bar）**：\n' +
-    '- tooltip: { trigger:"axis", axisPointer:{ type:"shadow" }, confine:true }\n' +
-    '- legend: { data:[系列名...], top:"10%" }\n' +
-    '- grid: { left:"3%", right:"4%", bottom:"3%", top:"22%", containLabel:true }\n' +
-    '- series[].itemStyle.color 按序使用 #5470c6 / #91cc75 / #fac858 / #ee6666 …\n' +
-    '- title: { left:"center", text:"…" }\n\n' +
-    '**折线趋势图（line）**：\n' +
-    '- tooltip: { trigger:"axis", confine:true }\n' +
-    '- xAxis: { type:"category", boundaryGap:false, axisLabel:{ rotate:45 } }\n' +
-    '- legend: { data:[指标名], left:"right" }\n' +
-    '- grid: { left:"3%", bottom:"3%", right:"4%", containLabel:true }\n' +
-    '- series 建议带 markPoint:{ data:[{type:"max"},{type:"min"}] } 与 markLine:{ data:[{type:"average"}] }\n' +
-    '- title: { left:"center", text:"…趋势图" }\n\n' +
-    '**通用**：推荐 toolbox.feature.saveAsImage；数据点多时加 dataZoom。\n\n' +
-    '### 4. 配套表格（不由本工具返回）\n' +
-    '- 时间对比/增量增幅明细用正文 markdown 表格展示（列：时间维度、当前值、增量、增幅）\n' +
-    '- 增量/增幅：上涨标红语义、下跌标绿语义（文字说明即可）；正数可加「+」前缀\n' +
-    '- 本工具只负责 echarts 配置，不要把 tableColumns 塞进 charts\n\n' +
-    '### 5. Option 最少字段\n' +
-    '- 必须含 series 与坐标系（xAxis/yAxis 等）；series[0].type 必填（bar/line/pie）\n' +
-    '- 参考：https://echarts.apache.org/zh/option.html';
-
-  schema = z.object({
-    charts: z
-      .union([
-        chartItemSchema.array().min(1),
-        z.string().min(1),
-      ])
-      .describe(
-        '图表配置数组，每个图表配置包含 id、title、echartsOption。兼容少数模型误把数组序列化成 JSON 字符串的情况。',
-      ),
-  });
-
   constructor(fields = {}) {
-    super();
+    super(fields);
+    this.chartConfig = fields.chartConfig || null;
+    const inputMode = this.chartConfig?.input_mode;
+
+    if (inputMode === 'simple') {
+      this.description = SIMPLE_DESCRIPTION;
+      this.schema = z.object({
+        charts: z
+          .union([simpleChartItemSchema.array().min(1), z.string().min(1)])
+          .describe(
+            '简版图表配置数组，每项含 role/type/data/xField/yFields/title。兼容少数模型误把数组序列化成 JSON 字符串的情况。',
+          ),
+      });
+    } else {
+      this.description = LEGACY_DESCRIPTION;
+      this.schema = z.object({
+        charts: z
+          .union([chartItemSchema.array().min(1), z.string().min(1)])
+          .describe(
+            '图表配置数组，每个图表配置包含 id、title、echartsOption。兼容少数模型误把数组序列化成 JSON 字符串的情况。',
+          ),
+      });
+    }
   }
 
   validateEChartsOption(option) {
@@ -390,19 +622,43 @@ class EChartsGeneratorAPP extends Tool {
     return option;
   }
 
-  processChart(chart, index) {
-    const { id, title, echartsOption: rawOption, analysisType } = chart;
-
-    if (!id || typeof id !== 'string') {
-      throw new Error(`charts[${index}] 缺少图表标识（id）`);
-    }
+  processChart(chart, index, ctx = {}) {
+    const { title, echartsOption: rawOption, analysisType } = chart;
+    const role = inferRole(chart);
 
     if (!title || typeof title !== 'string') {
-      throw new Error(`charts[${id}] 缺少图表标题（title）`);
+      throw new Error(`charts[${index}] 缺少图表标题（title）`);
+    }
+
+    const isLegacy = rawOption != null;
+    const isSimple = !isLegacy && chart.data && chart.xField && chart.yFields;
+
+    if (!isLegacy && !isSimple) {
+      throw new Error(
+        `charts[${index}] 须包含 echartsOption（legacy 模式）或 data+xField+yFields（simple 模式）`,
+      );
+    }
+
+    let id;
+    if (isSimple) {
+      if (chart.id && typeof chart.id === 'string') {
+        id = chart.id;
+      } else {
+        const marker = ctx.chartConfig?.marker;
+        const toolCallId = ctx.toolCallId;
+        id = `${marker || 'chart'}_${toolCallId || nanoid()}_${index}`;
+      }
+    } else {
+      id = chart.id;
+      if (!id || typeof id !== 'string') {
+        throw new Error(`charts[${index}] 缺少图表标识（id）`);
+      }
     }
 
     let echartsOption;
-    if (typeof rawOption === 'string') {
+    if (isSimple) {
+      echartsOption = buildOptionFromSimpleSpec({ ...chart, role });
+    } else if (typeof rawOption === 'string') {
       try {
         echartsOption = JSON.parse(rawOption);
       } catch (parseErr) {
@@ -420,16 +676,41 @@ class EChartsGeneratorAPP extends Tool {
     echartsOption = this.sanitizeOption(echartsOption);
     echartsOption = applyFinancialStyleDefaults(echartsOption, title);
 
+    // Agent chart_config.hide_legend：对接方前端 title/legend 易重叠时，强制不输出 legend
+    if (ctx.chartConfig?.hide_legend === true && echartsOption && typeof echartsOption === 'object') {
+      const { legend: _omitLegend, ...rest } = echartsOption;
+      echartsOption = rest;
+    }
+
+    let resolvedAnalysisType = analysisType;
+    if (!resolvedAnalysisType) {
+      if (role === 'contribution' || role === 'drag') {
+        resolvedAnalysisType = 'composition_distribution';
+      } else if (role === 'indicator') {
+        const chartType = chart.type || getPrimarySeriesType(echartsOption);
+        resolvedAnalysisType =
+          chartType === 'line'
+            ? 'trend_analysis'
+            : chartType === 'pie'
+              ? 'composition_distribution'
+              : 'dimension_compare';
+      } else {
+        resolvedAnalysisType = 'general';
+      }
+    }
+
     return {
       id,
       title,
-      analysisType: analysisType || 'general',
+      analysisType: resolvedAnalysisType,
+      role,
       echartsOption,
     };
   }
 
-  async _call(input) {
+  async _call(input, _runManager, config) {
     const startTime = Date.now();
+    const toolCallId = config?.toolCall?.id;
 
     try {
       logger.info('[EChartsGeneratorAPP] ========== 开始调用 ==========');
@@ -450,13 +731,15 @@ class EChartsGeneratorAPP extends Tool {
         );
       }
 
+      const ctx = { toolCallId, chartConfig: this.chartConfig };
+
       // 单个图表配置有误不应拖累整批：逐个处理，收集失败项，
       // 只要至少一个图表成功就返回部分结果，让模型看到具体哪个/为何失败。
       const processedCharts = [];
       const failedCharts = [];
       for (let i = 0; i < charts.length; i++) {
         try {
-          const processedChart = this.processChart(charts[i], i);
+          const processedChart = this.processChart(charts[i], i, ctx);
           processedCharts.push(processedChart);
         } catch (chartErr) {
           failedCharts.push({
@@ -517,3 +800,5 @@ module.exports = EChartsGeneratorAPP;
 module.exports.parseChartsInput = parseChartsInput;
 module.exports.applyFinancialStyleDefaults = applyFinancialStyleDefaults;
 module.exports.BAR_PALETTE = BAR_PALETTE;
+module.exports.buildOptionFromSimpleSpec = buildOptionFromSimpleSpec;
+module.exports.inferRole = inferRole;

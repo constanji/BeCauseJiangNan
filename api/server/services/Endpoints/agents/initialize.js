@@ -34,6 +34,7 @@ function createToolLoader(signal) {
    * @param {string[]} params.tools
    * @param {string} params.provider
    * @param {string} params.model
+   * @param {AgentChartConfig} [params.chart_config]
    * @param {AgentToolResources} params.tool_resources
    * @returns {Promise<{
    * tools: StructuredTool[],
@@ -41,7 +42,16 @@ function createToolLoader(signal) {
    * userMCPAuthMap?: Record<string, Record<string, string>>
    * } | undefined>}
    */
-  return async function loadTools({ req, res, agentId, tools, provider, model, tool_resources }) {
+  return async function loadTools({
+    req,
+    res,
+    agentId,
+    tools,
+    provider,
+    model,
+    chart_config,
+    tool_resources,
+  }) {
     let data_source_id = null;
     try {
       const { resolveAgentDataSourceId } = require('~/server/services/AgentDataSourceResolver');
@@ -49,7 +59,7 @@ function createToolLoader(signal) {
     } catch (error) {
       logger.warn(`[loadTools] 解析 agent ${agentId} 的 data_source_id 失败:`, error.message);
     }
-    const agent = { id: agentId, tools, provider, model, data_source_id };
+    const agent = { id: agentId, tools, provider, model, chart_config, data_source_id };
     try {
       return await loadAgentTools({
         req,

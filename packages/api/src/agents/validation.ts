@@ -40,6 +40,56 @@ export const agentSupportContactSchema = z
   })
   .optional();
 
+/**
+ * echarts_generator_app behavior config. `auto_chart` (above/below) remains the sole
+ * gate for server-forced charting; this object only shapes how it charts once triggered.
+ * No `enabled` field on purpose — see chart-generation overhaul plan decision 11.
+ */
+export const agentChartConfigSchema = z
+  .object({
+    preset: z.enum(['indicator', 'attribution', 'custom']).optional(),
+    input_mode: z.enum(['simple', 'legacy']).optional(),
+    marker: z
+      .string()
+      .max(32)
+      .regex(/^[A-Za-z0-9_]*$/, 'marker 只能包含字母、数字、下划线')
+      .optional(),
+    placement: z.enum(['prepend', 'semantic']).optional(),
+    max_charts: z.number().int().min(1).max(5).optional(),
+    /** 未配置默认开启；关闭后只保留 max_charts 总数限制 */
+    dedupe_roles: z.boolean().optional(),
+    /** 开启后工具输出剥离 legend（哪怕入参已带也会去掉） */
+    hide_legend: z.boolean().optional(),
+    /** 开启后模型不可见，ToolNode 仍可用于服务端自动生图 */
+    hide_from_model: z.boolean().optional(),
+    match_rules: z
+      .object({
+        time_series: z.object({
+          enabled: z.boolean().optional(),
+          chart_type: z.enum(['line', 'bar']).optional(),
+          min_periods: z.number().int().min(2).max(100).optional(),
+          max_points: z.number().int().min(2).max(100).optional(),
+          sort: z.enum(['time_asc', 'time_desc']).optional(),
+        }).optional(),
+        dimension_compare: z.object({
+          enabled: z.boolean().optional(),
+          chart_type: z.enum(['pie', 'bar']).optional(),
+          min_categories: z.number().int().min(2).max(50).optional(),
+          sort: z.enum(['value_desc', 'value_asc', 'dimension_asc', 'source']).optional(),
+          pie_top_n: z.number().int().min(2).max(20).optional(),
+          bar_max_items: z.number().int().min(2).max(50).optional(),
+        }).optional(),
+        baseline_compare: z.object({
+          enabled: z.boolean().optional(),
+          chart_type: z.enum(['line', 'bar']).optional(),
+          min_points: z.number().int().min(2).max(6).optional(),
+          order: z.enum(['history_to_current', 'current_to_history']).optional(),
+        }).optional(),
+      })
+      .optional(),
+  })
+  .optional();
+
 /** Graph edge schema for agent handoffs */
 export const graphEdgeSchema = z.object({
   from: z.union([z.string(), z.array(z.string())]),
@@ -65,6 +115,7 @@ export const agentBaseSchema = z.object({
   end_after_tools: z.boolean().optional(),
   hide_sequential_outputs: z.boolean().optional(),
   auto_chart: z.boolean().optional(),
+  chart_config: agentChartConfigSchema,
   artifacts: z.string().optional(),
   recursion_limit: z.number().optional(),
   conversation_starters: z.array(z.string()).optional(),

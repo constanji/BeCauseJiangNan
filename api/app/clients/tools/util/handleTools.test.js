@@ -117,6 +117,42 @@ describe('Tool Handlers', () => {
       expect(tool).toBeInstanceOf(Calculator);
     });
 
+    it('passes agent chart_config to the ECharts tool schema', async () => {
+      const toolFunctions = await loadTools({
+        user: fakeUser._id,
+        agent: {
+          id: 'agent_chart_test',
+          chart_config: { input_mode: 'simple' },
+        },
+        tools: ['echarts_generator_app'],
+        returnMap: true,
+        useSpecs: true,
+      });
+
+      const tool = await toolFunctions.echarts_generator_app();
+      const simpleInput = {
+        charts: [
+          {
+            id: 'chart_1',
+            role: 'indicator',
+            type: 'line',
+            data: [{ data_dt: '2026-01', index_value: 1 }],
+            xField: 'data_dt',
+            yFields: ['index_value'],
+            title: '指标趋势图',
+          },
+        ],
+      };
+
+      expect(tool.chartConfig).toEqual({ input_mode: 'simple' });
+      expect(tool.schema.safeParse(simpleInput).success).toBe(true);
+      expect(
+        tool.schema.safeParse({
+          charts: [{ id: 'chart_1', title: '旧协议', echartsOption: { series: [] } }],
+        }).success,
+      ).toBe(false);
+    });
+
     it('returns an empty object when no tools are requested', async () => {
       const toolFunctions = await loadTools({
         user: fakeUser._id,

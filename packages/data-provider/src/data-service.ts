@@ -444,6 +444,29 @@ export const updateAgent = ({
   );
 };
 
+export type ChartMatchPreviewRequest = {
+  chartConfig: a.AgentChartConfig;
+  query?: string;
+  toolOutput: string | Record<string, unknown> | unknown[];
+  toolName?: string;
+};
+
+export type ChartMatchPreviewResponse = {
+  status: 'matched' | 'disabled' | 'no_match' | 'parse_failed';
+  rule?: string;
+  chartType?: 'bar' | 'line' | 'pie';
+  dimensionField?: string;
+  measureFields?: string[];
+  rowCount?: number;
+  categoryCount?: number;
+  effectiveRule?: unknown;
+  previewData?: unknown[];
+};
+
+export const chartMatchPreview = (
+  payload: ChartMatchPreviewRequest,
+): Promise<ChartMatchPreviewResponse> => request.post(endpoints.chartMatchPreview(), payload);
+
 export const duplicateAgent = ({
   agent_id,
 }: m.DuplicateAgentBody): Promise<{ agent: a.Agent; actions: ag.Action[] }> => {
