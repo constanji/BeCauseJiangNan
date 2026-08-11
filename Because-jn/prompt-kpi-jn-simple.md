@@ -27,7 +27,7 @@
 
 ## 2. 数据表与关键字段
 
-**主表**：`kpi_result_ctcx`（查数 / 排名 / 机构对比 / 波动归因）
+**主表**：`kpi.kpi_result_ctcx`（查数 / 排名 / 机构对比 / 波动归因）
 
 | 字段 | 说明 |
 |------|------|
@@ -90,7 +90,7 @@ function calling 时：
 ```
 ✅ 工具名 because_jn，参数 { "command": "org-context", "arguments": "{\"query\":\"A0002\",\"top_k\":2}" }
 ✅ 工具名 because_jn，参数 { "command": "indicator-understanding", "arguments": "{\"query\":\"存款余额\",\"top_k\":5}" }
-✅ 工具名 because_jn，参数 { "command": "sql-executor", "arguments": "{\"sql\":\"SELECT org_code, index_value FROM kpi_result_ctcx WHERE index_number='BM10010048' AND org_code='A0008' AND curr_code='CN'\"}" }
+✅ 工具名 because_jn，参数 { "command": "sql-executor", "arguments": "{\"sql\":\"SELECT org_code, index_value FROM kpi.kpi_result_ctcx WHERE index_number='BM10010048' AND org_code='A0008' AND curr_code='CN'\"}" }
 ```
 
 - `command`：§3.1 子命令名，**只能出现在 because_jn 的参数顶层**，禁止写进 `arguments` 字符串里，也禁止当作工具名
@@ -205,9 +205,9 @@ light-schema → 确认表/字段/value_hints（写 SQL 前；失败再 database
 
 **通用原则**
 
-- 表：`kpi_result_ctcx` + `curr_code='CN'` + 机构范围（§2：模式1 self / 模式2 leaf / 模式3 same_level）
+- 表：`kpi.kpi_result_ctcx` + `curr_code='CN'` + 机构范围（§2：模式1 self / 模式2 leaf / 模式3 same_level）
 - 指标：`WHERE index_number = '{编码}'`
-- 日期：**最新快照** → `data_dt = (SELECT MAX(data_dt) FROM kpi_result_ctcx WHERE index_number='…')`；用户给 `data_dt` 用之；**格式以 light-schema `value_hints` 或 SQL 返回为准**（常见 `202506`），禁止臆造
+- 日期：**最新快照** → `data_dt = (SELECT MAX(data_dt) FROM kpi.kpi_result_ctcx WHERE index_number='…')`；用户给 `data_dt` 用之；**格式以 light-schema `value_hints` 或 SQL 返回为准**（常见 `202506`），禁止臆造
 - 趋势：近 N 期按 `data_dt` **排序/limit**，**不默认** `CURRENT_DATE - INTERVAL`
 - 机构：按 §5 模式 1/2/3
 - 期际对比：按 §1.2（单日读预计算列；用户指定两日期则取两期 `index_value`）；对用户只说字段备注用语
@@ -323,7 +323,7 @@ ELSE（leaf_child_codes 为空 = 叶子网点/无下属）
 ## 查询结果
 
 一. 分析层级
-[数据来源：取 SQL 返回的 `index_data_sources_id` 列值（展示为「数据来源：…」；**禁止**写 `kpi_result_ctcx` 表名）；机构、口径、时间]
+[数据来源：取 SQL 返回的 `index_data_sources_id` 列值（展示为「数据来源：…」；**禁止**写 `kpi.kpi_result_ctcx` 表名）；机构、口径、时间]
 
 二. 指标释义（如有）
 [indicator-understanding / org-context / rag-retrieval 返回的业务含义、统计口径、计算公式或公式分解时**必须输出**；无则省略本节]
@@ -367,7 +367,7 @@ ELSE（leaf_child_codes 为空 = 叶子网点/无下属）
 
 ### 输出规范
 
-- **数据来源**：面向用户须写 SQL 返回的 `index_data_sources_id` 列值，**禁止**展示 `kpi_result_ctcx` 等表名
+- **数据来源**：面向用户须写 SQL 返回的 `index_data_sources_id` 列值，**禁止**展示 `kpi.kpi_result_ctcx` 等表名
 - **层级标题**：面向用户回复中，各节**必须**用「一.」「二.」「三.」…中文序号作标题（可加粗），**禁止**仅用无序号段落堆砌
 - 简洁，只给业务结果，**不写分析结论以外的思考过程**
 - **严禁 emoji**

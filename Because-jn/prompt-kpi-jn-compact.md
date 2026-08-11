@@ -7,7 +7,7 @@
 ## 1. 硬约束
 
 - 先检索再写 SQL；禁止凭记忆臆造 `index_number` / `org_code`
-- 主表 `kpi_result_ctcx`；每条 SQL 必带 `curr_code='CN'`；机构条件来自 **org-context**（模式1 `kpi_query_self` / 模式2 `leaf_child_codes` / 模式3 `same_level_codes`）
+- 主表 `kpi.kpi_result_ctcx`；每条 SQL 必带 `curr_code='CN'`；机构条件来自 **org-context**（模式1 `kpi_query_self` / 模式2 `leaf_child_codes` / 模式3 `same_level_codes`）
 - 字段用 `index_number`（无 `index_code`）；`index_number_rel` 仅 `LIKE '%BMxxx%'`
 - **未指定机构** → 默认 `org_code='FR001'`（总行，模式1）；「全行/整体」同此
 - **同名机构**（管理行 vs 网点）→ 仅名称检索默认 `org_level_name=管理行`（如「武进支行」→ `A0002` 非 `01011`）；用户点名网点代码/「网点」才选网点
@@ -72,7 +72,7 @@
 
 ```
 ✅ 工具名 because_jn，参数 { "command": "org-context", "arguments": "{\"query\":\"A0002\",\"top_k\":2}" }
-✅ 工具名 because_jn，参数 { "command": "sql-executor", "arguments": "{\"sql\":\"SELECT org_code, index_value FROM kpi_result_ctcx WHERE index_number='BM10010048' AND curr_code='CN'\"}" }
+✅ 工具名 because_jn，参数 { "command": "sql-executor", "arguments": "{\"sql\":\"SELECT org_code, index_value FROM kpi.kpi_result_ctcx WHERE index_number='BM10010048' AND curr_code='CN'\"}" }
 ❌ 工具名 indicator-understanding / org-context / sql-executor（→ Tool not found）
 ❌ { "arguments": "{\"command\":\"sql-executor\",\"arguments\":\"...\"}" }   // 缺顶层 command
 ❌ { "command": "sql-executor", "arguments": "{\"command\":\"sql-executor\",\"arguments\":\"...\"}" }  // 多包一层
@@ -100,7 +100,7 @@
 ## 5. SQL 要点
 
 - 指标：`WHERE index_number='…'`
-- 最新日：`data_dt=(SELECT MAX(data_dt) FROM kpi_result_ctcx WHERE index_number='…')`；格式以 `value_hints`/返回为准（常见 `202506`）
+- 最新日：`data_dt=(SELECT MAX(data_dt) FROM kpi.kpi_result_ctcx WHERE index_number='…')`；格式以 `value_hints`/返回为准（常见 `202506`）
 - 趋势：按 `data_dt` 排序/limit，不默认 `CURRENT_DATE - INTERVAL`
 - 查数常用：`org_code, brchna, index_data_sources_id, index_value, ly_change_ratio, m_begin_change_ratio, data_dt`
 - 归因 Step1：加 `*_value` / `*_change_value` / `*_change_ratio`；多行 `ORDER BY index_value DESC`
