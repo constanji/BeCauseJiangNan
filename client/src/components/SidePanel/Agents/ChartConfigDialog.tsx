@@ -20,7 +20,7 @@ const DEFAULT_MATCH_RULES = {
   time_series: { enabled: true, chart_type: "line", min_periods: 2, sort: "time_asc" },
   dimension_compare: {
     enabled: true,
-    chart_type: "pie",
+    chart_type: "bar",
     min_categories: 2,
     sort: "value_desc",
     pie_top_n: 8,
@@ -174,9 +174,9 @@ export default function ChartConfigDialog({ open, onOpenChange }: ChartConfigDia
         <div><Label>排序</Label>{select(ruleValue("time_series", "sort", "time_asc"), (v) => updateRule("time_series", "sort", v), [["time_asc", "时间正序"], ["time_desc", "时间倒序"]])}</div>
         {optionalNumberField("time_series", "max_points", "最多展示点数", 2, 100)}
       </>)}
-      {renderRule("dimension_compare", "2. 多机构 / 多指标单期", "Query Results 中机构或指标分类达到阈值时命中，默认生成饼图", <>
+      {renderRule("dimension_compare", "2. 多机构 / 多指标单期", "Query Results 中机构或指标分类达到阈值时命中，默认生成柱状图", <>
         <div className="flex items-center justify-between"><Label>启用</Label><Switch aria-label="启用多机构多维度规则" checked={ruleValue("dimension_compare", "enabled", true) !== false} onCheckedChange={(v) => updateRule("dimension_compare", "enabled", v)} /></div>
-        <div><Label>图形</Label>{select(ruleValue("dimension_compare", "chart_type", "pie"), (v) => updateRule("dimension_compare", "chart_type", v), [["pie", "饼图"], ["bar", "柱状图"]])}</div>
+        <div><Label>图形</Label>{select(ruleValue("dimension_compare", "chart_type", "bar"), (v) => updateRule("dimension_compare", "chart_type", v), [["bar", "柱状图"], ["pie", "饼图"]])}</div>
         {numberField("dimension_compare", "min_categories", "最少分类数", 2, 2, 50)}
         <div><Label>排序</Label>{select(ruleValue("dimension_compare", "sort", "value_desc"), (v) => updateRule("dimension_compare", "sort", v), [["value_desc", "数值降序"], ["value_asc", "数值升序"], ["dimension_asc", "分类名称正序"], ["source", "原始顺序"]])}</div>
         {numberField("dimension_compare", "pie_top_n", "饼图 Top N（其余合并为其他）", 8, 2, 20)}

@@ -16,17 +16,17 @@ describe('autoChartFromRows', () => {
       { org_name: '江南农商行', 资产规模: 5804 },
       { org_name: '招商行', 资产规模: 58040 },
     ];
-    expect(detectChartability(rows)?.type).toBe('pie');
+    expect(detectChartability(rows)?.type).toBe('bar');
   });
 
-  it('detects pie for multi-org data without relying on question wording', () => {
+  it('detects bar for multi-org data without relying on question wording', () => {
     const rows = [
       { org_name: '总行', index_value: 125050 },
       { org_name: '武进分行', index_value: 82030 },
       { org_name: '金坛分行', index_value: 69320 },
     ];
     const detected = detectChartability(rows, undefined, '各机构存款余额占比');
-    expect(detected?.type).toBe('pie');
+    expect(detected?.type).toBe('bar');
 
     const charts = buildAutoCharts(
       rows,
@@ -40,10 +40,10 @@ describe('autoChartFromRows', () => {
     expect(
       (charts?.[0].echartsOption.series as Array<Record<string, unknown>>)[0]
         .type,
-    ).toBe('pie');
+    ).toBe('bar');
   });
 
-  it('defaults same-period multi-org data to pie and merges overflow into other', () => {
+  it('defaults same-period multi-org data to bar', () => {
     const result = matchAutoChartData(
       [
         { org_code: 'A0008', brchna: '金坛支行', index_value: 4558628.599004 },
@@ -53,8 +53,8 @@ describe('autoChartFromRows', () => {
     );
     expect(result).toMatchObject({ status: 'matched', rule: 'dimension_compare' });
     if (result.status === 'matched') {
-      expect(result.chartability.type).toBe('pie');
-      if (result.chartability.type === 'pie' || result.chartability.type === 'bar') {
+      expect(result.chartability.type).toBe('bar');
+      if (result.chartability.type === 'bar') {
         expect(result.chartability.dimCol).toBe('brchna');
       }
       expect(result.rows).toHaveLength(2);
@@ -93,6 +93,7 @@ describe('autoChartFromRows', () => {
       undefined,
       'chart_1',
       '各机构存款余额占比',
+      { dimension_compare: { chart_type: 'pie' } },
     )?.[0];
     const series = chart?.echartsOption.series as Array<Record<string, unknown>>;
     expect(chart?.title).toBe('各项存款余额(人行口径)');
@@ -146,9 +147,9 @@ describe('autoChartFromRows', () => {
       { org_name: 'B', index_value: 20, curr_code: 1, mea_unit: 2 },
     ];
     const result = detectChartability(rows);
-    expect(result?.type).toBe('pie');
-    if (result?.type === 'pie') {
-      expect(result.measureCol).toBe('index_value');
+    expect(result?.type).toBe('bar');
+    if (result?.type === 'bar') {
+      expect(result.measureCols).toEqual(['index_value']);
     }
   });
 
@@ -156,7 +157,7 @@ describe('autoChartFromRows', () => {
     expect(detectChartability([{ org_name: 'A', value: 1 }])).toBeNull();
   });
 
-  it('honors dimension sorting for pie charts', () => {
+  it('honors dimension sorting for dimension compare charts', () => {
     const result = matchAutoChartData(
       [{ org_name: 'B', index_value: 10 }, { org_name: 'A', index_value: 20 }],
       undefined,
@@ -177,8 +178,8 @@ describe('autoChartFromRows', () => {
     expect(result.status).toBe('matched');
     if (result.status === 'matched') {
       expect(result.rule).toBe('dimension_compare');
-      expect(result.chartability.type).toBe('pie');
-      if (result.chartability.type === 'pie') {
+      expect(result.chartability.type).toBe('bar');
+      if (result.chartability.type === 'bar') {
         expect(result.chartability.dimCol).toBe('standard_name');
       }
     }

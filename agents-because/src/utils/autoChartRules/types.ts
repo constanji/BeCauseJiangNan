@@ -68,7 +68,7 @@ export const DEFAULT_CHART_MATCH_RULES: ResolvedChartMatchRules = {
   },
   dimension_compare: {
     enabled: true,
-    chart_type: 'pie',
+    chart_type: 'bar',
     min_categories: 2,
     sort: 'value_desc',
     pie_top_n: 8,

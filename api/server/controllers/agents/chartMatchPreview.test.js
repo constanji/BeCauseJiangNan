@@ -14,25 +14,25 @@ describe('chartMatchPreview', () => {
     { org_code: 'A0009', brchna: '溧阳支行', index_value: 7852121.095636, mea_unit: '万元' },
   ];
 
-  it('uses the default dimension rule and reports pie', async () => {
+  it('uses the default dimension rule and reports bar', async () => {
     const res = await invoke({ chartConfig: {}, query: '存款余额', toolOutput: rows });
     expect(res.status).not.toHaveBeenCalled();
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
       status: 'matched',
       rule: 'dimension_compare',
-      chartType: 'pie',
+      chartType: 'bar',
       dimensionField: 'brchna',
       measureFields: ['index_value'],
     }));
-    expect(res.json.mock.calls[0][0].effectiveRule.dimension_compare.chart_type).toBe('pie');
+    expect(res.json.mock.calls[0][0].effectiveRule.dimension_compare.chart_type).toBe('bar');
   });
 
   it('applies an override and a disabled rule', async () => {
-    const bar = await invoke({
-      chartConfig: { match_rules: { dimension_compare: { chart_type: 'bar' } } },
+    const pie = await invoke({
+      chartConfig: { match_rules: { dimension_compare: { chart_type: 'pie' } } },
       toolOutput: rows,
     });
-    expect(bar.json.mock.calls[0][0]).toEqual(expect.objectContaining({ chartType: 'bar' }));
+    expect(pie.json.mock.calls[0][0]).toEqual(expect.objectContaining({ chartType: 'pie' }));
 
     const disabled = await invoke({
       chartConfig: { match_rules: { dimension_compare: { enabled: false } } },

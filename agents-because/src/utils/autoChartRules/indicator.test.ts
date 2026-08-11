@@ -18,16 +18,16 @@ describe('buildIndicatorCharts', () => {
     expect(charts[0].data.length).toBeGreaterThanOrEqual(3);
   });
 
-  it('builds org pie for multi-row index_value by default', () => {
+  it('builds org bar for multi-row index_value by default', () => {
     const charts = buildIndicatorCharts([
       { org_name: 'A', index_value: 10 },
       { org_name: 'B', index_value: 20 },
     ]);
-    expect(charts[0]?.type).toBe('pie');
+    expect(charts[0]?.type).toBe('bar');
     expect(charts[0]?.xField).toBe('org_name');
   });
 
-  it('builds org pie from institution dimensions regardless of question wording', () => {
+  it('builds org bar from institution dimensions regardless of question wording', () => {
     const charts = buildIndicatorCharts(
       [
         { org_name: '总行', standard_name: '存款余额', index_value: 125050 },
@@ -39,12 +39,11 @@ describe('buildIndicatorCharts', () => {
 
     expect(charts).toHaveLength(1);
     expect(charts[0]).toMatchObject({
-      type: 'pie',
-      style: 'composition',
+      type: 'bar',
       role: 'indicator',
       xField: 'org_name',
       yFields: ['index_value'],
-      title: '存款余额机构占比',
+      title: '存款余额对比图',
     });
   });
 
@@ -67,9 +66,9 @@ describe('buildIndicatorCharts', () => {
       { userQuestion: '各机构存款余额占比' },
     );
     expect(charts[0]).toMatchObject({
-      type: 'pie',
+      type: 'bar',
       xField: 'brchna',
-      title: '存款余额机构占比',
+      title: '存款余额对比图',
     });
   });
 

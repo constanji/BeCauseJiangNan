@@ -445,7 +445,7 @@ export function matchAutoChartData(
     if (distinct.size >= 2) break;
   }
 
-  // Priority 2: multi-institution or multi-metric comparison (pie by default).
+  // Priority 2: multi-institution or multi-metric comparison (bar by default).
   if (
     rows.length >= 2 && preferredMeasures.length >= 1 && dimension &&
     categoryCount >= rules.dimension_compare.min_categories
