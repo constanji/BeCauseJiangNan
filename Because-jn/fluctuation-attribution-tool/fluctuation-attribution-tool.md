@@ -20,30 +20,67 @@
 
 ## 默认输出结构（compact !== false）
 
+公共 compact 外层：
+
 ```json
 {
   "overview": {},
   "top_dimension": {},
   "top_contributors": [],
   "top_drill_path": null,
-  "structured": {
-    "type": "multiplicative",
-    "topContributor": {},
-    "warnings": [{ "code": "", "title": "" }]
-  },
+  "structured": {},
   "conclusion": "",
   "drill_query_hint": null
 }
 ```
 
+加法型 `structured`：
+
+```json
+{
+  "type": "additive",
+  "increase_total": 103000,
+  "decrease_total": 3000,
+  "top_increase": {},
+  "top_decrease": {},
+  "warnings": [{ "code": "", "title": "" }]
+}
+```
+
+乘法型 `structured`：
+
+```json
+{
+  "type": "multiplicative",
+  "top_driver": {
+    "drive_impact": 0
+  },
+  "warnings": [{ "code": "", "title": "" }]
+}
+```
+
+除法型 `structured`：
+
+```json
+{
+  "type": "divisive",
+  "primary_driver": "denominator",
+  "numerator_impact": 0,
+  "denominator_impact": 0,
+  "warnings": [{ "code": "", "title": "" }]
+}
+```
+
 字段映射：
 - `overview` ← `time_comparison.overview`（无则用 `dimension_attribution.overview`）
-- `top_dimension` ← `dimensionRanking[0]` 的 dimension + Adtributor 分数（不含完整贡献列表）
-- `top_contributors` ← 该维 Top3 贡献项
+- `top_dimension` ← `dimensionRanking[0]` 的 dimension + Adtributor 分数 + 方向组汇总、各方向最大项及各方向 Top5（`top_increases/top_decreases`）
+- `top_contributors` ← 该维按绝对变化混排的 Top3 变化项，含 `direction` 与非负 `direction_share`
 - `top_drill_path` ← `drillPaths[0]`
 - `structured` ← 精简 `structured_attribution`
 - `conclusion` ← 短结论
 - `drill_query_hint` ← 原 `next_steps[0]` 的 filter/sql_hint/action（**不返回完整 next_steps[]**）
+
+变化归因不输出“贡献率/贡献度”或有符号占比：`changeRate` 表示项目自身变化率，`direction_share` 表示方向内影响占比。增加项和减少项分别以全量方向组合计为分母；应直接使用 `increase_total/decrease_total`，不得将截断后的 Top3 自行加总或重新归一化。维度归因在全量计算后返回 `top_increases` 与 `top_decreases`，分别按变化金额及绝对减少金额降序取最多 5 项；方向不足 5 项时返回实际数量，无该方向时返回空数组。原有 `top_contributors/top_increase/top_decrease` 保持兼容。加法型 `structured` 返回 `increase_total/decrease_total/top_increase/top_decrease`；乘法型返回 `top_driver.drive_impact`；除法型返回 `numerator_impact/denominator_impact`，后两者不使用方向内影响占比。
 
 ## 输入参数（关键）
 

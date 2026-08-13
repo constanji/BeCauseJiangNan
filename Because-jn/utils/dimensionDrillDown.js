@@ -10,6 +10,7 @@
  */
 
 const StatisticsEngine = require('./statisticsEngine');
+const { projectDirectionalImpacts } = require('./directionalImpact');
 
 class DimensionDrillDown {
   /** 下钻搜索时允许探索/收集的路径数上限（算法内部预算，不直接影响返回体积） */
@@ -81,9 +82,33 @@ class DimensionDrillDown {
       ? StatisticsEngine.jsDivergence(baseDist, currentDist)
       : 0;
 
-    const significantContributions = contributions.filter(
-      (c) => Math.abs(c.contributionRate) >= this.MIN_CONTRIBUTION_THRESHOLD,
+    const significantContributions = contributions.filter((c) =>
+      totalChange === 0
+        ? c.change !== 0
+        : Math.abs(c.contributionRate) >= this.MIN_CONTRIBUTION_THRESHOLD,
     );
+    const directional = projectDirectionalImpacts(contributions);
+    const projectedByValue = new Map(
+      directional.items.map((item) => [item.dimensionValue, item]),
+    );
+    const toPublicItem = (item) => {
+      if (!item) return null;
+      const projected = projectedByValue.get(item.dimensionValue) || {};
+      return {
+        value: item.dimensionValue,
+        baseValue: item.baseValue,
+        currentValue: item.currentValue,
+        change: item.change,
+        changeRate:
+          item.changeRate === Infinity
+            ? 'new'
+            : `${(item.changeRate * 100).toFixed(2)}%`,
+        direction: projected.direction,
+        ...(projected.direction_share == null
+          ? {}
+          : { direction_share: projected.direction_share }),
+      };
+    };
 
     const explainedChange = significantContributions.reduce((s, c) => s + c.change, 0);
     const ep = StatisticsEngine.explanatoryPower(totalChange, explainedChange);
@@ -96,14 +121,13 @@ class DimensionDrillDown {
       surprise: Number(surpriseScore.toFixed(6)),
       parsimony: Number(pars.toFixed(4)),
       adtributorScore: Number(score.toFixed(4)),
-      topContributors: significantContributions.slice(0, 3).map((c) => ({
-        value: c.dimensionValue,
-        baseValue: c.baseValue,
-        currentValue: c.currentValue,
-        change: c.change,
-        changeRate: c.changeRate === Infinity ? 'new' : (c.changeRate * 100).toFixed(2) + '%',
-        占比: (c.contributionRate * 100).toFixed(2) + '%',
-      })),
+      topContributors: contributions.slice(0, 3).map(toPublicItem),
+      increase_total: directional.increase_total,
+      decrease_total: directional.decrease_total,
+      top_increase: toPublicItem(directional.top_increase),
+      top_decrease: toPublicItem(directional.top_decrease),
+      top_increases: directional.top_increases.map(toPublicItem),
+      top_decreases: directional.top_decreases.map(toPublicItem),
       totalContributors: contributions.length,
       significantContributors: significantContributions.length,
     };
@@ -142,9 +166,11 @@ class DimensionDrillDown {
           dimension: dimensionFields[0],
           value: topVal.value,
           change: topVal.change,
-          占比: topVal.占比,
+          direction: topVal.direction,
+          ...(topVal.direction_share == null ? {} : { direction_share: topVal.direction_share }),
         }],
-        cumulativeExplanation: Number(String(topVal.占比).replace('%', '')),
+        direction: topVal.direction,
+        direction_share: topVal.direction_share,
       };
 
       this._drillDeeper(
@@ -157,7 +183,11 @@ class DimensionDrillDown {
       }
     }
 
-    paths.sort((a, b) => Math.abs(b.cumulativeExplanation) - Math.abs(a.cumulativeExplanation));
+    paths.sort(
+      (a, b) =>
+        Math.abs(Number(b.steps?.[0]?.change) || 0) -
+        Math.abs(Number(a.steps?.[0]?.change) || 0),
+    );
     return paths;
   }
 
@@ -185,14 +215,18 @@ class DimensionDrillDown {
       dimension: nextDim,
       value: topContributor.value,
       change: topContributor.change,
-      占比: topContributor.占比,
+      direction: topContributor.direction,
+      ...(topContributor.direction_share == null
+        ? {}
+        : { direction_share: topContributor.direction_share }),
       explanatoryPower: analysis.explanatoryPower,
       surprise: analysis.surprise,
     };
 
     const newPath = {
       steps: [...currentPath.steps, newStep],
-      cumulativeExplanation: currentPath.cumulativeExplanation,
+      direction: currentPath.direction,
+      direction_share: currentPath.direction_share,
     };
 
     const filteredBase = baseData.filter(
@@ -258,8 +292,12 @@ class DimensionDrillDown {
 
       if (top.topContributors.length > 0) {
         const topC = top.topContributors[0];
-        summary += `\n其中"${topC.value}"的贡献最大，变化幅度为${topC.changeRate}，`;
-        summary += `对整体变化的占比为${topC.占比 ?? topC.contributionRate}。`;
+        const directionLabel = topC.direction === 'increase' ? '增加' : topC.direction === 'decrease' ? '减少' : '不变';
+        summary += `\n其中"${topC.value}"变化金额绝对值最大，${directionLabel} ${Math.abs(topC.change)}，自身变化率为${topC.changeRate}`;
+        if (topC.direction_share != null) {
+          summary += `，占全部${directionLabel}项的 ${(topC.direction_share * 100).toFixed(2)}%`;
+        }
+        summary += '。';
       }
 
       if (top.surprise > 0.05) {

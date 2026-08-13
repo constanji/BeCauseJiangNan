@@ -1,10 +1,11 @@
 /**
- * 加法型指标归因：贡献度分解 + 掩盖效应检测
+ * 加法型指标归因：方向影响分解 + 掩盖效应检测
  */
 
 const StatisticsEngine = require('./statisticsEngine');
 const { detectMaskingEffect, appendWarnings } = require('./methodologyWarnings');
 const { capComponentsWithSummary } = require('./capComponents');
+const { projectDirectionalImpacts } = require('./directionalImpact');
 
 /** 默认返回的最大子项数（按 |change| 降序），避免高基数维度（机构/客户）把整段 JSON 撑爆 */
 const MAX_COMPONENTS = 10;
@@ -15,15 +16,14 @@ function sumMetric(data, metricKey) {
 
 /**
  * 按 |change| 降序排序后截断，返回值附带 total/omitted 计数 + 被省略部分的
- * 正负贡献聚合摘要（omittedSummary），避免模型因看不到被截断的尾部而误判
- * 整体方向（例如省略的机构里其实正负贡献集中在一侧）。
+ * 增减聚合摘要（omittedSummary），避免模型因看不到被截断的尾部而误判整体方向。
  */
 function sortAndCapComponents(components, maxComponents) {
   return capComponentsWithSummary(components, { maxComponents, changeField: 'change' });
 }
 
 /**
- * 对 component_metrics 或单行汇总做加法贡献度
+ * 对 component_metrics 或单行汇总做加法方向影响分解
  */
 function analyzeAdditiveFromComponents({
   baseData,
@@ -52,7 +52,6 @@ function analyzeAdditiveFromComponents({
         currentValue: currentVal,
         change,
         changeRate: baseVal !== 0 ? change / baseVal : currentVal !== 0 ? Infinity : 0,
-        contributionRate: deltaTotal !== 0 ? change / deltaTotal : 0,
       };
     });
   } else if (dimensionFields.length > 0) {
@@ -71,7 +70,6 @@ function analyzeAdditiveFromComponents({
       currentValue: c.currentValue,
       change: c.change,
       changeRate: c.changeRate,
-      contributionRate: c.contributionRate,
       unexpectedChange: c.unexpectedChange,
     }));
   }
@@ -80,14 +78,15 @@ function analyzeAdditiveFromComponents({
   const masking = detectMaskingEffect(deltaTotal, components);
   if (masking) warnings.push(masking);
 
+  const directional = projectDirectionalImpacts(components);
   const { output, totalComponents, omittedComponents, omittedSummary } = sortAndCapComponents(
-    components,
+    directional.items,
     maxComponents,
   );
 
   return {
     type: 'additive',
-    method: 'contribution',
+    method: 'directional_impact',
     targetMetric,
     baseValue: baseTotal,
     currentValue: currentTotal,
@@ -96,14 +95,17 @@ function analyzeAdditiveFromComponents({
     components: output,
     total_components: totalComponents,
     omitted_components: omittedComponents,
+    increase_total: directional.increase_total,
+    decrease_total: directional.decrease_total,
+    top_increase: directional.top_increase,
+    top_decrease: directional.top_decrease,
     ...(omittedSummary ? { omitted_summary: omittedSummary } : {}),
-    topContributor: output[0] || null,
     methodology_warnings: warnings,
   };
 }
 
 /**
- * 多维度分别做贡献度（套餐案例）
+ * 多维度分别做方向影响分解（套餐案例）
  */
 function analyzeAdditiveByDimensions({
   baseData,
@@ -127,11 +129,11 @@ function analyzeAdditiveByDimensions({
     const components = contribs.map((c) => ({
       ...c,
       label: c.dimensionValue,
-      contributionRate: deltaTotal !== 0 ? c.change / deltaTotal : 0,
     }));
+    const directional = projectDirectionalImpacts(components);
     const masking = detectMaskingEffect(deltaTotal, components);
     const { output, totalComponents, omittedComponents, omittedSummary } = sortAndCapComponents(
-      components,
+      directional.items,
       maxComponents,
     );
     byDimension[dim] = {
@@ -139,6 +141,10 @@ function analyzeAdditiveByDimensions({
       components: output,
       total_components: totalComponents,
       omitted_components: omittedComponents,
+      increase_total: directional.increase_total,
+      decrease_total: directional.decrease_total,
+      top_increase: directional.top_increase,
+      top_decrease: directional.top_decrease,
       ...(omittedSummary ? { omitted_summary: omittedSummary } : {}),
       methodology_warnings: masking ? [masking] : [],
     };
@@ -148,7 +154,7 @@ function analyzeAdditiveByDimensions({
   const primaryResult = byDimension[primary];
   return {
     type: 'additive',
-    method: 'contribution',
+    method: 'directional_impact',
     targetMetric,
     ...primaryResult,
     by_dimension: byDimension,

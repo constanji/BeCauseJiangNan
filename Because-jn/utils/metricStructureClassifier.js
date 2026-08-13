@@ -97,7 +97,7 @@ function classifyMetricStructure({
     return {
       structure: 'additive',
       confidence: 0.75,
-      reason: '仅有维度字段，走加法型维度贡献度分析',
+      reason: '仅有维度字段，走加法型维度方向影响分析',
       warnings: [],
     };
   }

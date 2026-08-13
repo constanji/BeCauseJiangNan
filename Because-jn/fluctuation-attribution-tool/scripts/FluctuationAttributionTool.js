@@ -32,7 +32,7 @@ const {
  * - 时间对比：基期/现期对比，支持同比/环比/自定义
  * - 维度下钻：沿维度层级逐层下钻（最多10条路径）
  * - 量化指标：解释力、简洁性、惊喜度（JS散度）
- * - [新增] 三类公式归因：加法（贡献度）/ 乘法（链式分解）/ 除法（差分分解+情景模拟）
+ * - [新增] 三类公式归因：加法（方向影响）/ 乘法（链式分解）/ 除法（差分分解+情景模拟）
  * - [新增] 方法论警示：掩盖效应、放大效应、稀释效应、伪加法陷阱
  * - [新增] sql_hint 下钻闭环：每条 next_steps 携带可执行 SQL 提示
  */
@@ -135,7 +135,7 @@ class FluctuationAttributionTool extends Tool {
       .optional()
       .describe(
         '乘法型链式分解的因子顺序（如 [dau, conversion_rate, arpu]），' +
-        '应按业务漏斗逻辑排序，顺序影响各因子贡献值',
+        '应按业务漏斗逻辑排序，顺序影响各因子驱动影响值',
       ),
     compact: z
       .boolean()
@@ -529,19 +529,25 @@ class FluctuationAttributionTool extends Tool {
     // 结构化归因结论
     if (result.structured_attribution) {
       const sa = result.structured_attribution;
-      if (sa.type === 'additive' && sa.topContributor) {
-        const tc = sa.topContributor;
-        const label = tc.label || tc.metric || tc.dimensionValue;
-        lines.push(`【加法归因】最大贡献子项: ${label}（变化 ${tc.change?.toFixed ? tc.change.toFixed(2) : tc.change}，占比 ${typeof tc.contributionRate === 'number' ? (tc.contributionRate * 100).toFixed(1) : tc.contributionRate}%）`);
-      } else if (sa.type === 'multiplicative' && sa.topContributor) {
-        const tc = sa.topContributor;
-        lines.push(`【乘法链式归因】最大驱动因子: ${tc.metric}（贡献值 ${typeof tc.contribution === 'number' ? tc.contribution.toFixed(2) : tc.contribution}，变化率 ${typeof tc.pct_change === 'number' ? (tc.pct_change * 100).toFixed(1) : tc.pct_change}%）`);
+      if (sa.type === 'additive') {
+        for (const [key, label] of [['top_increase', '主要增加项'], ['top_decrease', '主要减少项']]) {
+          const item = sa[key];
+          if (!item) continue;
+          const name = item.label || item.metric || item.dimensionValue;
+          const share = item.direction_share == null
+            ? ''
+            : `，占全部${item.direction === 'increase' ? '增加' : '减少'}项的 ${(item.direction_share * 100).toFixed(2)}%`;
+          lines.push(`【加法归因】${label}: ${name}（变化 ${item.change?.toFixed ? item.change.toFixed(2) : item.change}${share}）`);
+        }
+      } else if (sa.type === 'multiplicative' && sa.top_driver) {
+        const tc = sa.top_driver;
+        lines.push(`【乘法链式归因】最大驱动因子: ${tc.metric}（驱动影响值 ${typeof tc.drive_impact === 'number' ? tc.drive_impact.toFixed(2) : tc.drive_impact}，变化率 ${typeof tc.pct_change === 'number' ? (tc.pct_change * 100).toFixed(1) : tc.pct_change}%）`);
         if (sa.reconstruction?.error_rate < 0.01) {
           lines.push(`【分解验证】链式分解重建误差 ${(sa.reconstruction.error_rate * 100).toFixed(2)}%，精度良好`);
         }
       } else if (sa.type === 'divisive') {
         const driver = sa.primary_driver === 'denominator' ? '分母扩张（稀释效应）' : '分子变化';
-        lines.push(`【除法差分归因】主要驱动: ${driver}，分子贡献 ${sa.decomposition?.numerator_contrib?.toFixed(4)}，分母贡献 ${sa.decomposition?.denominator_contrib?.toFixed(4)}`);
+        lines.push(`【除法差分归因】主要驱动: ${driver}，分子影响 ${sa.decomposition?.numerator_impact?.toFixed(4)}，分母影响 ${sa.decomposition?.denominator_impact?.toFixed(4)}`);
       }
 
       // 方法论警示
@@ -658,6 +664,12 @@ class FluctuationAttributionTool extends Tool {
         surprise: topDim.surprise,
         parsimony: topDim.parsimony,
         adtributorScore: topDim.adtributorScore,
+        increase_total: topDim.increase_total,
+        decrease_total: topDim.decrease_total,
+        top_increase: topDim.top_increase || null,
+        top_decrease: topDim.top_decrease || null,
+        top_increases: topDim.top_increases || [],
+        top_decreases: topDim.top_decreases || [],
       };
       top_contributors = (topDim.topContributors || []).slice(0, 3);
     }
@@ -665,26 +677,34 @@ class FluctuationAttributionTool extends Tool {
     const top_drill_path = result.dimension_attribution?.drillPaths?.[0] || null;
 
     const sa = result.structured_attribution;
-    let structuredTop = sa?.topContributor || null;
-    if (structuredTop && structuredTop.contributionRate != null && structuredTop.占比 == null) {
-      const { contributionRate, ...rest } = structuredTop;
-      structuredTop = {
-        ...rest,
-        占比: typeof contributionRate === 'number'
-          ? `${(contributionRate * 100).toFixed(2)}%`
-          : contributionRate,
+    let structured = null;
+    if (sa) {
+      structured = {
+        type: sa.type,
+        warnings: (sa.methodology_warnings || []).map((w) => ({
+          code: w.code,
+          title: w.title,
+        })),
       };
+      if (sa.type === 'additive') {
+        structured = {
+          ...structured,
+          increase_total: sa.increase_total,
+          decrease_total: sa.decrease_total,
+          top_increase: sa.top_increase || null,
+          top_decrease: sa.top_decrease || null,
+        };
+      } else if (sa.type === 'multiplicative') {
+        structured = { ...structured, top_driver: sa.top_driver || null };
+      } else if (sa.type === 'divisive') {
+        structured = {
+          ...structured,
+          primary_driver: sa.primary_driver,
+          numerator_impact: sa.decomposition?.numerator_impact,
+          denominator_impact: sa.decomposition?.denominator_impact,
+        };
+      }
     }
-    const structured = sa
-      ? {
-          type: sa.type,
-          topContributor: structuredTop,
-          warnings: (sa.methodology_warnings || []).map((w) => ({
-            code: w.code,
-            title: w.title,
-          })),
-        }
-      : null;
 
     const firstStep = result.next_steps?.[0];
     const drill_query_hint = firstStep

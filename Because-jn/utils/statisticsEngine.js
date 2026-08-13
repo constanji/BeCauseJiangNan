@@ -119,14 +119,14 @@ class StatisticsEngine {
   }
 
   /**
-   * 计算贡献度分解
-   * 将整体变化按维度值分解为各维度值的贡献
+   * 计算维度变化分解
+   * 内部保留有符号比率供 Adtributor 评分，对外由 directionalImpact 投影。
    *
    * @param {Object[]} baseData - 基期数据 [{dimension: 'A', metric: 100}, ...]
    * @param {Object[]} currentData - 现期数据
    * @param {string} dimensionKey - 维度字段名
    * @param {string} metricKey - 指标字段名
-   * @returns {Object[]} 各维度值的贡献分解
+   * @returns {Object[]} 各维度值的变化分解
    */
   static contributionDecomposition(baseData, currentData, dimensionKey, metricKey) {
     const baseMap = new Map();
@@ -159,7 +159,7 @@ class StatisticsEngine {
       const expectedChange = baseProportion * totalChange;
       const unexpectedChange = change - expectedChange;
 
-      contributions.push({
+      const item = {
         dimensionValue: key,
         baseValue: baseVal,
         currentValue: currentVal,
@@ -169,8 +169,15 @@ class StatisticsEngine {
         currentProportion,
         expectedChange,
         unexpectedChange,
-        contributionRate: totalChange !== 0 ? change / totalChange : 0,
+      };
+      // Internal-only signed ratio for Adtributor scoring. Keeping it
+      // non-enumerable prevents compact/verbose JSON from exposing it as a
+      // misleading user-facing percentage.
+      Object.defineProperty(item, 'contributionRate', {
+        value: totalChange !== 0 ? change / totalChange : 0,
+        enumerable: false,
       });
+      contributions.push(item);
     }
 
     return contributions.sort((a, b) => Math.abs(b.change) - Math.abs(a.change));

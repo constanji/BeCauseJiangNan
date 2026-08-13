@@ -23,8 +23,8 @@ function runDivisiveAttribution({
   const deltaN = N1 - N0;
   const deltaD = D1 - D0;
 
-  const numeratorContrib = D0 !== 0 ? deltaN / D0 : 0;
-  const denominatorContrib = D0 !== 0 ? -(N0 / (D0 * D0)) * deltaD : 0;
+  const numeratorImpact = D0 !== 0 ? deltaN / D0 : 0;
+  const denominatorImpact = D0 !== 0 ? -(N0 / (D0 * D0)) * deltaD : 0;
 
   const scenarioA = D0 !== 0 ? N1 / D0 : 0;
   const scenarioB = D1 !== 0 ? N0 / D1 : 0;
@@ -33,13 +33,13 @@ function runDivisiveAttribution({
   const dilution = detectDilutionEffect({
     deltaR,
     deltaN,
-    numeratorContrib,
-    denominatorContrib,
+    numeratorImpact,
+    denominatorImpact,
   });
   if (dilution) warnings.push(dilution);
 
   const primaryDriver =
-    Math.abs(denominatorContrib) > Math.abs(numeratorContrib)
+    Math.abs(denominatorImpact) > Math.abs(numeratorImpact)
       ? 'denominator'
       : 'numerator';
 
@@ -58,9 +58,9 @@ function runDivisiveAttribution({
       denominator: deltaD,
     },
     decomposition: {
-      numerator_contrib: numeratorContrib,
-      denominator_contrib: denominatorContrib,
-      approx_sum: numeratorContrib + denominatorContrib,
+      numerator_impact: numeratorImpact,
+      denominator_impact: denominatorImpact,
+      approx_sum: numeratorImpact + denominatorImpact,
     },
     scenarios: {
       A_hold_denominator: {

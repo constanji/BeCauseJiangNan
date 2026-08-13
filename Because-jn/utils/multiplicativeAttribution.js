@@ -103,13 +103,11 @@ function runMultiplicativeAttribution({
     );
   }
 
-  const top = chain.factors[0];
-  const contributionRates = {};
-  const totalAbs = chain.factors.reduce((s, f) => s + Math.abs(f.contribution), 0);
-  for (const f of chain.factors) {
-    f.contributionRate = totalAbs > 0 ? f.contribution / chain.actualDelta : 0;
-    contributionRates[f.metric] = f.contributionRate;
-  }
+  const factors = chain.factors.map(({ contribution, ...factor }) => ({
+    ...factor,
+    drive_impact: contribution,
+  }));
+  const topDriver = factors[0] || null;
 
   return {
     type: 'multiplicative',
@@ -120,8 +118,8 @@ function runMultiplicativeAttribution({
     currentValue: currentTarget,
     deltaTotal: chain.actualDelta,
     changeRate: totalPctChange,
-    factors: chain.factors,
-    topContributor: top,
+    factors,
+    top_driver: topDriver,
     reconstruction: {
       reconstructed_delta: chain.reconstructedDelta,
       actual_delta: chain.actualDelta,

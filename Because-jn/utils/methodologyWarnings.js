@@ -7,7 +7,7 @@ const WARNING_DEFINITIONS = {
     severity: 'high',
     title: '掩盖效应',
     template: (ctx) =>
-      `整体${ctx.direction}，但子项「${ctx.items}」绝对贡献为负，高增长子项可能掩盖结构恶化，需同时关注绝对值变动。`,
+      `整体${ctx.direction}，但子项「${ctx.items}」为减少项，其他增加项可能掩盖结构恶化，需同时关注绝对变化金额。`,
   },
   amplification_effect: {
     severity: 'high',
@@ -19,7 +19,7 @@ const WARNING_DEFINITIONS = {
     severity: 'high',
     title: '稀释效应',
     template: (ctx) =>
-      `比率下降主要由分母扩张驱动（分母贡献 ${ctx.denominatorContrib}），分子${ctx.numeratorChange}，可能是用户结构稀释而非转化能力变差。`,
+      `比率下降主要由分母扩张驱动（分母影响 ${ctx.denominatorImpact}），分子${ctx.numeratorChange}，可能是用户结构稀释而非转化能力变差。`,
   },
   pseudo_additive_risk: {
     severity: 'medium',
@@ -37,7 +37,7 @@ const WARNING_DEFINITIONS = {
     severity: 'low',
     title: '链式分解顺序',
     template: (ctx) =>
-      `乘法链式分解按顺序 [${ctx.order.join(' → ')}] 计算，顺序会影响各因子贡献值，建议按业务漏斗逻辑排序 factor_order。`,
+      `乘法链式分解按顺序 [${ctx.order.join(' → ')}] 计算，顺序会影响各因子驱动影响值，建议按业务漏斗逻辑排序 factor_order。`,
   },
 };
 
@@ -90,8 +90,8 @@ function detectAmplificationEffect(factors, totalPctChange) {
     if (factorAbs > 0 && factorAbs < totalAbs * 0.9 && Math.sign(f.pct_change) === Math.sign(totalPctChange)) {
       return buildWarning('amplification_effect', {
         factor: f.name || f.metric,
-        factorPct: `${(f.pct_change * 100).toFixed(1)}%`,
-        totalPct: `${(totalPctChange * 100).toFixed(1)}%`,
+        factorPct: (f.pct_change * 100).toFixed(1),
+        totalPct: (totalPctChange * 100).toFixed(1),
       });
     }
   }
@@ -101,17 +101,17 @@ function detectAmplificationEffect(factors, totalPctChange) {
 /**
  * 除法型：稀释效应
  */
-function detectDilutionEffect({ deltaR, deltaN, numeratorContrib, denominatorContrib }) {
+function detectDilutionEffect({ deltaR, deltaN, numeratorImpact, denominatorImpact }) {
   if (deltaR >= 0 || deltaN <= 0) return null;
 
-  const numAbs = Math.abs(numeratorContrib ?? 0);
-  const denAbs = Math.abs(denominatorContrib ?? 0);
+  const numAbs = Math.abs(numeratorImpact ?? 0);
+  const denAbs = Math.abs(denominatorImpact ?? 0);
   if (denAbs <= numAbs) return null;
 
   return buildWarning('dilution_effect', {
-    denominatorContrib: typeof denominatorContrib === 'number'
-      ? denominatorContrib.toFixed(4)
-      : String(denominatorContrib),
+    denominatorImpact: typeof denominatorImpact === 'number'
+      ? denominatorImpact.toFixed(4)
+      : String(denominatorImpact),
     numeratorChange: deltaN > 0 ? '仍增长' : '下降',
   });
 }

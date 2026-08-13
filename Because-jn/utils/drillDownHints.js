@@ -77,8 +77,10 @@ function buildDrillDownNextSteps(dimensionAttribution, metricField, options = {}
 
     steps.push({
       action: '沿最显著归因路径进一步下钻',
-      question: `路径 ${pathLabel} 对指标变化的贡献原因是什么？`,
-      reason: `累计解释力约 ${topPath.cumulativeExplanation}%，共发现 ${dimensionAttribution.drillPaths.length} 条归因路径`,
+      question: `路径 ${pathLabel} 为何出现该方向的变化？`,
+      reason: topPath.direction_share == null
+        ? `共发现 ${dimensionAttribution.drillPaths.length} 条归因路径`
+        : `首层项目占全部${topPath.direction === 'increase' ? '增加' : '减少'}项的 ${(topPath.direction_share * 100).toFixed(2)}%，共发现 ${dimensionAttribution.drillPaths.length} 条归因路径`,
       sql_hint: sqlHint,
       filter,
       priority: 'high',
@@ -91,9 +93,9 @@ function buildDrillDownNextSteps(dimensionAttribution, metricField, options = {}
     if (!existing && top.topContributors?.length > 0) {
       const topVal = top.topContributors[0].value;
       steps.push({
-        action: `查看"${top.dimension}"维度中贡献最大的取值`,
-        question: `为何 "${topVal}" 在 "${top.dimension}" 维度贡献最大？`,
-        reason: `Adtributor评分 ${top.adtributorScore}，占比 ${top.topContributors[0].占比 ?? top.topContributors[0].contributionRate}`,
+        action: `查看"${top.dimension}"维度中变化金额绝对值最大的取值`,
+        question: `为何 "${topVal}" 在 "${top.dimension}" 维度变化最大？`,
+        reason: `Adtributor评分 ${top.adtributorScore}，自身变化率 ${top.topContributors[0].changeRate}`,
         sql_hint: `SELECT * FROM ${table || '<表名>'} WHERE ${top.dimension} = ${escapeSqlValue(topVal)}`,
         filter: `${top.dimension} = ${escapeSqlValue(topVal)}`,
         priority: 'medium',
@@ -160,8 +162,8 @@ function generateKeyInsights(report, columnTypes, results) {
       insights.push({
         type: 'attribution_detail',
         dimension: `${top.dimension}=${tc.value}`,
-        value: `占比 ${tc.占比 ?? tc.contributionRate}，变化 ${tc.changeRate || tc.change}`,
-        impact: '该维度取值对整体波动贡献最大',
+        value: `方向内影响占比 ${tc.direction_share == null ? '无' : `${(tc.direction_share * 100).toFixed(2)}%`}，自身变化率 ${tc.changeRate || tc.change}`,
+        impact: '该维度取值的变化金额绝对值最大',
         importance: 'high',
       });
     }
@@ -173,7 +175,9 @@ function generateKeyInsights(report, columnTypes, results) {
       type: 'drill_path',
       dimension: path.steps.map((s) => s.dimension).join(' → '),
       value: path.steps.map((s) => `${s.dimension}="${s.value}"`).join(' → '),
-      impact: `累计解释力约 ${path.cumulativeExplanation}%`,
+      impact: path.direction_share == null
+        ? '已识别显著下钻路径'
+        : `首层方向内影响占比 ${(path.direction_share * 100).toFixed(2)}%`,
       importance: 'high',
     });
   }
@@ -258,12 +262,12 @@ function buildStructuredAttributionNextSteps(structuredAttribution, metricField)
   const steps = [];
   if (!structuredAttribution) return steps;
 
-  if (structuredAttribution.type === 'multiplicative' && structuredAttribution.topContributor) {
-    const factor = structuredAttribution.topContributor.metric;
+  if (structuredAttribution.type === 'multiplicative' && structuredAttribution.top_driver) {
+    const factor = structuredAttribution.top_driver.metric;
     steps.push({
       action: `下钻分析乘法因子「${factor}」的构成变化`,
-      question: `为何 ${factor} 对 ${structuredAttribution.targetMetric || metricField} 贡献最大？`,
-      reason: `链式分解显示 ${factor} 贡献 ${structuredAttribution.topContributor.contribution}`,
+      question: `为何 ${factor} 对 ${structuredAttribution.targetMetric || metricField} 的驱动影响最大？`,
+      reason: `链式分解显示 ${factor} 的驱动影响值为 ${structuredAttribution.top_driver.drive_impact}`,
       sql_hint: `SELECT <时间维度>, ${factor}, SUM(${metricField}) AS ${metricField} FROM <表名> GROUP BY <时间维度>, ${factor}`,
       filter: null,
       priority: 'high',
@@ -285,15 +289,22 @@ function buildStructuredAttributionNextSteps(structuredAttribution, metricField)
     });
   }
 
-  if (structuredAttribution.type === 'additive' && structuredAttribution.topContributor) {
-    const tc = structuredAttribution.topContributor;
+  if (structuredAttribution.type === 'additive') {
+    const candidates = [
+      structuredAttribution.top_increase,
+      structuredAttribution.top_decrease,
+    ].filter(Boolean);
+    const tc = candidates.sort(
+      (a, b) => Math.abs(Number(b.change) || 0) - Math.abs(Number(a.change) || 0),
+    )[0];
+    if (!tc) return steps;
     const dimKey = tc.metric || 'dimension';
     const val = tc.label || tc.dimensionValue;
     if (val) {
       steps.push({
-        action: `深挖负贡献或最大贡献子项「${val}」`,
-        question: `子项 ${val} 为何对整体变化贡献 ${tc.change}？`,
-        reason: '加法型需关注绝对贡献，警惕掩盖效应',
+        action: `深挖变化子项「${val}」`,
+        question: `子项 ${val} 为何${tc.direction === 'decrease' ? '减少' : '增加'} ${Math.abs(tc.change)}？`,
+        reason: '加法型需同时关注增加项和减少项，警惕掩盖效应',
         sql_hint: `SELECT * FROM <表名> WHERE ${dimKey} = ${escapeSqlValue(val)}`,
         filter: `${dimKey} = ${escapeSqlValue(val)}`,
         priority: 'medium',

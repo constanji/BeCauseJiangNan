@@ -9,6 +9,7 @@
  */
 
 const StatisticsEngine = require('./statisticsEngine');
+const { projectDirectionalImpacts } = require('./directionalImpact');
 
 class TimeComparison {
   /**
@@ -301,10 +302,13 @@ class TimeComparison {
     }
 
     // 原先未排序直接 slice，截断结果可能不是真正的 Top N；这里先按 |change| 降序排好再截断
-    const sorted = [...contributions].sort((a, b) => Math.abs(b.change) - Math.abs(a.change));
+    const directional = projectDirectionalImpacts(contributions);
+    const sorted = [...directional.items].sort((a, b) => Math.abs(b.change) - Math.abs(a.change));
 
     return {
       contributions: sorted.slice(0, maxContributors),
+      increase_total: directional.increase_total,
+      decrease_total: directional.decrease_total,
       total_contributors: contributions.length,
       jsDivergence: Number(jsDivergence.toFixed(6)),
       distributionShift: jsDivergence > 0.1 ? 'significant' : jsDivergence > 0.01 ? 'moderate' : 'minimal',
