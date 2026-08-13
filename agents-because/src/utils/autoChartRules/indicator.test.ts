@@ -119,6 +119,8 @@ describe('buildAttributionCharts', () => {
     expect(roles).toContain('indicator');
     expect(roles).toContain('contribution');
     expect(roles).toContain('drag');
+    expect(charts.find((chart) => chart.role === 'contribution')?.title).toContain('主要增加项');
+    expect(charts.find((chart) => chart.role === 'drag')?.title).toContain('主要减少项');
   });
 
   it('prefers current_data from attribution args', () => {

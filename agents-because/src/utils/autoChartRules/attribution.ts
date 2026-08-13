@@ -143,7 +143,7 @@ export function buildAttributionCharts(
       xField: dim,
       yFields: ['change'],
       unit: '万元',
-      title: `${titleBase}主要贡献`,
+      title: `${titleBase}主要增加项`,
     });
   }
 
@@ -159,7 +159,7 @@ export function buildAttributionCharts(
       xField: dim,
       yFields: ['change'],
       unit: '万元',
-      title: `${titleBase}主要拖累`,
+      title: `${titleBase}主要减少项`,
     });
   }
 

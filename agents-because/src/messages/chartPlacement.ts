@@ -57,8 +57,8 @@ export function placePrepend(
 
 const SECTION_HINTS: Record<ChartRole, string[]> = {
   indicator: ['总体变化', '总体情况', '指标变化', '整体变化'],
-  contribution: ['主要贡献', '正向贡献', '贡献因素', '贡献分析'],
-  drag: ['主要拖累', '负向拖累', '拖累因素', '拖累分析'],
+  contribution: ['主要增加项', '增加项', '主要贡献', '正向贡献', '贡献因素', '贡献分析'],
+  drag: ['主要减少项', '减少项', '主要拖累', '负向拖累', '拖累因素', '拖累分析'],
   general: [],
 };
 

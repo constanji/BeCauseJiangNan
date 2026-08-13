@@ -18,10 +18,10 @@ describe('chartPlacement', () => {
   });
 
   it('placeSemantic inserts near section headings', () => {
-    const text = '## 主要贡献\n说明文字';
+    const text = '## 主要增加项\n说明文字';
     const out = placeSemantic(text, '@ec@bar:c2@ec@', 'contribution');
     expect(out.indexOf('@ec@bar:c2@ec@')).toBeGreaterThan(
-      out.indexOf('主要贡献'),
+      out.indexOf('主要增加项'),
     );
   });
 
