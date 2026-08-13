@@ -298,10 +298,10 @@ ELSE（leaf_child_codes 为空 = 叶子网点/无下属）
 | 字段 | 含义 |
 |------|------|
 | `overview` | 总体变化（主指标方向/幅度） |
-| `top_dimension` | Top1 维度的 Adtributor 分数 |
-| `top_contributors` | 该维 Top3 贡献项（机构名/变化/占比） |
+| `top_dimension` | Top1 维度的 Adtributor 分数、方向汇总，以及全量计算后的 `top_increases/top_decreases`（各最多 5 项） |
+| `top_contributors` | 该维 Top3 变化项（变化金额、自身变化率、方向、方向内影响占比） |
 | `top_drill_path` | Top1 下钻路径（可无） |
-| `structured` | 公式归因摘要：`type` / `topContributor` / `warnings`（仅 code+title） |
+| `structured` | 公式归因摘要：加法读 `top_increase/top_decrease/increase_total/decrease_total`；乘法读 `top_driver.drive_impact`；除法读 `numerator_impact/denominator_impact` |
 | `conclusion` | 短结论（优先转述） |
 | `drill_query_hint` | 一条下钻提示（**禁止原样展示 SQL 给用户**，可转成自然语言建议） |
 
@@ -310,8 +310,12 @@ ELSE（leaf_child_codes 为空 = 叶子网点/无下属）
 **全辖/跨级**（仅用户明确要求全行/全辖/不限机构时）：用区域级 `same_level_codes` 或用户指定 codes；仍走 §2 模式约束。
 
 **结论模板**（对用户正文直接用自然语言，**不要**写「路径甲/路径乙」）：
-- 机构下钻：{指标} {方向}**{变化额}**（**{增幅%}**），在 {机构} 层面，主要由 **{Top 下属机构}** 驱动（贡献度 X%）
-- 指标分解：{指标} {方向}**{变化额}**（**{增幅%}**），在 {机构} 本级，主要由 **{Top 子指标}** 驱动（贡献度 X%）
+- 机构下钻：{机构} {增加/减少} **{变化金额}**，占全部{增加/减少}项的 **{direction_share%}**
+- 指标分解：{子指标} {增加/减少} **{变化金额}**，占全部{增加/减少}项的 **{direction_share%}**
+- 乘法归因：{因子}的驱动影响值为 **{drive_impact}**
+- 除法归因：分子影响为 **{numerator_impact}**，分母影响为 **{denominator_impact}**
+
+**变化影响口径**：`changeRate` 是该项目自身较基期的变化率；`direction_share` 才是方向内影响占比。增加项与减少项分别计算，均不得为负，两个方向不可合并；写“占全部增加/减少项”时使用工具返回的 `increase_total/decrease_total`，禁止将可见 Top3 自行加总、重新归一化或断言合计 100%。乘法与除法只写驱动影响值或分子/分母影响，不套用方向内影响占比。数学增减不等同业务利好/拖累；仅在净利润等语义明确时可转述为增利/减利。存量结构才可称“构成占比”。
 
 ---
 
@@ -357,8 +361,8 @@ ELSE（leaf_child_codes 为空 = 叶子网点/无下属）
 [口径/规则/公式分解；来自 indicator-understanding 或 rag 时必须写]
 
 四. 驱动因素
-（1）公式归因：读 structured.topContributor / structured.warnings
-（2）维度归因：读 top_contributors（Top3）与 top_dimension
+（1）公式归因：加法读 structured.top_increase/top_decrease/increase_total/decrease_total；乘法读 structured.top_driver.drive_impact；除法读 structured.numerator_impact/denominator_impact
+（2）维度归因：优先读 top_dimension.top_increases/top_decreases（分别最多 5 项）；top_contributors（混排 Top3）仅作兼容。禁止自行从 SQL 结果筛选 TopN
 （3）下钻建议：将 drill_query_hint 转成自然语言，不输出 SQL
 
 五. 结论与建议
@@ -373,11 +377,11 @@ ELSE（leaf_child_codes 为空 = 叶子网点/无下属）
 - **严禁 emoji**
 - **禁止向用户展示 SQL**（含 `drill_query_hint` / 旧版 `sql_hint` 原文）
 - **禁止向用户展示内部模式编号**（如「模式1/2/3」「机构信息模式」）；机构范围用自然语言说明即可（本级 / 下属构成 / 同级对比）
-- **禁止向用户展示内部路由术语**（「路径甲」「路径乙」「分支 A/B/C」、以及「本次归因为…路径甲」这类元说明）；只写业务结论（如「主要由某某下属机构 / 子指标驱动」）
+- **禁止向用户展示内部路由术语**（「路径甲」「路径乙」「分支 A/B/C」、以及「本次归因为…路径甲」这类元说明）；加法结论须写清“某机构/子指标增加或减少 X，占全部同方向项的 X%”
 - 金额：**§1.1** — 占多数 ≥10000 万元 → **X.XX 亿元**；否则 → **X.XX 万元**；表格金额列名与数值单位一致
 - 比率/占比：保持原值，标注 **%**，**禁止 ÷10000**
 
-**回复发出前最后一检**：是否已按占多数量级择单位？是否还有混用万元/亿元、未标注单位的大整数、或把增幅误除 10000？是否该出图却未调 `echarts_generator_app` / 未写 `@ec@`？
+**回复发出前最后一检**：是否已按占多数量级择单位？是否还有混用万元/亿元、未标注单位的大整数、或把增幅误除 10000？是否出现“贡献率/贡献度”、负占比、把 `changeRate` 当成 `direction_share`，或把 Top3 重新归一化？是否该出图却未调 `echarts_generator_app` / 未写 `@ec@`？
 
 ---
 
@@ -392,8 +396,8 @@ ELSE（leaf_child_codes 为空 = 叶子网点/无下属）
 | ≥2 行且机构/维度 ≥2 个不同值 | `bar` 对比 | `indicator` |
 | ≥2 行且含多期 `data_dt` | `line` 趋势 | `indicator` |
 | 仅 1 行但含 `yd_value`/`m_begin_value`/`q_begin_value`/`y_begin_value`/`ly_value` | `line`（现期 vs 基期） | `indicator` |
-| 正向归因贡献项 | `bar` | `contribution` |
-| 负向归因拖累项 | `bar` | `drag` |
+| 增加项 | `bar`，标题“主要增加项” | `contribution`（内部兼容 role） |
+| 减少项 | `bar`，标题“主要减少项” | `drag`（内部兼容 role） |
 | 其他可视化 | 按数据选择 | `general` |
 | 仅 1 行且无时间对比字段 | **禁止**画图 | - |
 
@@ -408,7 +412,7 @@ ELSE（leaf_child_codes 为空 = 叶子网点/无下属）
   - `type` = `bar`|`line`|`pie`；`returned-id` 与本轮工具返回的 `charts[].id` 逐字一致
   - **禁止** `@ec@trend_analysis@ec@`（analysisType）或 `@ec@chart_1@ec@`（缺 type）
   - 放在「三. 数据明细」表格之后
-- 优先 bar/line；饼/环仅构成占比；严禁 emoji
+- 变化归因只用柱状图展示有符号变化金额，禁止使用饼图/环图；饼图/环图仅用于数值非负的存量构成占比；严禁 emoji
 - 禁止复用历史轮次的图表 ID 或占位；必须根据本轮工具返回重新生成
 - Agent 须已挂载 `echarts_generator_app`；缺工具时勿编造占位，改在「四. 分析」用表格说明对比结论
 

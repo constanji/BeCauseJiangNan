@@ -131,8 +131,9 @@ leaf_child_codes 空   → 【路径乙】拆计算口径一层子指标 → 各
 **fluctuation-attribution**：须整理后的 `base_data`/`current_data`（按 org 对齐）+ `metric_fields`；默认 `analysis_type:"comprehensive"` + `compact:true`。
 
 - 基期映射：较上月末→`m_begin_value` | 季末→`q_begin_value` | 年末→`y_begin_value` | 上日→`yd_value` | 同比→`ly_value`；现期用 `index_value`
-- 读：`overview` / `top_dimension` / `top_contributors` / `structured` / `conclusion` / `drill_query_hint`（hint 转自然语言，不展示 SQL）
-- 结论（勿写「路径甲/乙」）：机构下钻「主要由 **{下属机构}** 驱动」；指标分解「主要由 **{子指标}** 驱动」
+- 读：维度归因优先用 `top_dimension.top_increases/top_decreases`（全量计算后各最多 5 项），`top_contributors` 混排 Top3 仅作兼容；公式归因用 `structured`；hint 转自然语言，不展示 SQL。禁止自行从 SQL 结果筛选 TopN
+- 变化项按 `|change|` 混排；`changeRate` 是自身变化率，`direction_share` 是非负的方向内影响占比。增加/减少分别计算；写“占全部增加/减少项”时读 `increase_total/decrease_total`，禁止自行加总或重新归一化 Top3、负占比及“贡献率/贡献度”措辞
+- 加法读 `structured.top_increase/top_decrease/increase_total/decrease_total`，写“{机构/子指标}增加/减少 X，占全部增加/减少项的 X%”；乘法读 `top_driver.drive_impact`，写“{因子}的驱动影响值为 X”；除法读 `numerator_impact/denominator_impact`，写“分子影响为 X，分母影响为 Y”。乘法/除法禁止套用方向内影响占比
 
 ---
 
@@ -144,7 +145,7 @@ leaf_child_codes 空   → 【路径乙】拆计算口径一层子指标 → 各
 
 - 节标题必须「一.」「二.」…；**严禁 emoji**；禁止展示 SQL/表名
 - **禁止**对用户写出「路径甲」「路径乙」「分支 A/B/C」「模式1/2/3」等内部术语；只写业务结论
-- 发出前自检：单位是否统一、增幅是否误 ÷10000、该出图是否已调工具并写占位
+- 发出前自检：单位是否统一、增幅是否误 ÷10000；是否出现贡献率/贡献度、负占比、混读 `changeRate`/`direction_share` 或 Top3 重新归一化；该出图是否已调工具并写占位
 
 ---
 
@@ -155,9 +156,12 @@ leaf_child_codes 空   → 【路径乙】拆计算口径一层子指标 → 各
 | ≥2 行且机构/维度 ≥2 | 柱 |
 | ≥2 行且多期 `data_dt` | 折 |
 | 1 行但有基期字段 | 折（现 vs 基） |
+| 变化归因增加项 | 柱，标题“主要增加项” |
+| 变化归因减少项 | 柱，标题“主要减少项” |
 | 1 行无对比字段 | **禁止** |
 
 - `charts` 为 JSON 数组；数值来自本次 SQL 万元原值；`yAxis.name`=「万元」
+- 变化归因只用柱状图展示有符号变化金额，禁止饼图/环图；饼图/环图仅用于数值非负的存量构成占比
 - 占位必须 `@ec@<bar|line|pie>:<id>@ec@`，放在「三.数据明细」表后；禁止缺 type 或用 analysisType
 
 ---

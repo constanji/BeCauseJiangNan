@@ -1,10 +1,5 @@
 [
   {
-    "id": "instructions",
-    "label": "BeCause江南 · 系统指令（简版）",
-    "file": "instructions.md"
-  },
-  {
     "id": "kpi",
     "label": "指标归因提示词（含图表）",
     "file": "prompt-kpi-jn.md"
