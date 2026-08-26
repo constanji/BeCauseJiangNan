@@ -18,6 +18,24 @@ describe('buildIndicatorCharts', () => {
     expect(charts[0].data.length).toBeGreaterThanOrEqual(3);
   });
 
+  it('does not pass null baseline values to the chart tool', () => {
+    const charts = buildIndicatorCharts([
+      {
+        index_name: '各项存款余额',
+        index_value: 4673.12,
+        ly_value: 4641.68,
+        m_begin_value: 4593.12,
+        yd_value: null,
+      },
+    ]);
+    expect(charts).toHaveLength(1);
+    expect(charts[0].data).toEqual([
+      { label: '上年同期', value: 4641.68 },
+      { label: '上月末', value: 4593.12 },
+      { label: '当前值', value: 4673.12 },
+    ]);
+  });
+
   it('builds org bar for multi-row index_value by default', () => {
     const charts = buildIndicatorCharts([
       { org_name: 'A', index_value: 10 },
@@ -34,7 +52,7 @@ describe('buildIndicatorCharts', () => {
         { org_name: '武进分行', standard_name: '存款余额', index_value: 82030 },
         { org_name: '金坛分行', standard_name: '存款余额', index_value: 69320 },
       ],
-      { userQuestion: '各机构存款余额占比情况' },
+      { userQuestion: '各机构存款余额占比情况' }
     );
 
     expect(charts).toHaveLength(1);
@@ -63,7 +81,7 @@ describe('buildIndicatorCharts', () => {
           index_value: 82030,
         },
       ],
-      { userQuestion: '各机构存款余额占比' },
+      { userQuestion: '各机构存款余额占比' }
     );
     expect(charts[0]).toMatchObject({
       type: 'bar',
@@ -78,15 +96,13 @@ describe('buildIndicatorCharts', () => {
         { data_dt: '2026-05-30', org_name: '总行', index_value: 100 },
         { data_dt: '2026-05-31', org_name: '总行', index_value: 120 },
       ],
-      { userQuestion: '总行存款占比趋势' },
+      { userQuestion: '总行存款占比趋势' }
     );
     expect(charts[0]?.type).toBe('line');
   });
 
   it('skips when index_value missing', () => {
-    expect(
-      buildIndicatorCharts([{ org_name: 'A', value: 10 }]),
-    ).toEqual([]);
+    expect(buildIndicatorCharts([{ org_name: 'A', value: 10 }])).toEqual([]);
   });
 });
 
@@ -119,8 +135,12 @@ describe('buildAttributionCharts', () => {
     expect(roles).toContain('indicator');
     expect(roles).toContain('contribution');
     expect(roles).toContain('drag');
-    expect(charts.find((chart) => chart.role === 'contribution')?.title).toContain('主要增加项');
-    expect(charts.find((chart) => chart.role === 'drag')?.title).toContain('主要减少项');
+    expect(
+      charts.find((chart) => chart.role === 'contribution')?.title
+    ).toContain('主要增加项');
+    expect(charts.find((chart) => chart.role === 'drag')?.title).toContain(
+      '主要减少项'
+    );
   });
 
   it('prefers current_data from attribution args', () => {
@@ -136,8 +156,8 @@ describe('buildAttributionCharts', () => {
       ],
       userQuestion: '月初',
     });
-    expect(charts.some((c) => c.title.includes('总体') || c.role === 'indicator')).toBe(
-      true,
-    );
+    expect(
+      charts.some((c) => c.title.includes('总体') || c.role === 'indicator')
+    ).toBe(true);
   });
 });

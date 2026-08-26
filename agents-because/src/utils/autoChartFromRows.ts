@@ -13,7 +13,10 @@ import {
   isIndexValueField,
 } from './kpiFieldDictionary';
 import type { RowRecord } from './kpiFieldDictionary';
-import { resolveChartMatchRules, type ChartMatchRules } from './autoChartRules/types';
+import {
+  resolveChartMatchRules,
+  type ChartMatchRules,
+} from './autoChartRules/types';
 
 export { TIME_COMPARE_FIELDS } from './kpiFieldDictionary';
 export type { RowRecord } from './kpiFieldDictionary';
@@ -268,7 +271,10 @@ function classifyColumns(rows: RowRecord[], columns: string[]) {
   return { dimensions, measures, dateCols, timeCompareCols, indexValueCol };
 }
 
-function pickTitleHint(rows: RowRecord[], columns: string[]): string | undefined {
+function pickTitleHint(
+  rows: RowRecord[],
+  columns: string[]
+): string | undefined {
   const preferred = [
     'standard_name',
     'index_name',
@@ -280,13 +286,13 @@ function pickTitleHint(rows: RowRecord[], columns: string[]): string | undefined
   const nameCols = [
     ...preferred.flatMap((candidate) =>
       columns.filter(
-        (column) => column === candidate || column.toLowerCase() === candidate,
-      ),
+        (column) => column === candidate || column.toLowerCase() === candidate
+      )
     ),
     ...columns.filter(
       (column) =>
         /name|指标|名称|kpi|title/i.test(column) &&
-        !/code|number|编号|编码/i.test(column),
+        !/code|number|编号|编码/i.test(column)
     ),
   ];
   for (const col of nameCols) {
@@ -300,7 +306,7 @@ function pickTitleHint(rows: RowRecord[], columns: string[]): string | undefined
 
 function orderedDimensionFields(dimensions: string[]): string[] {
   const priority = new Map(
-    DIMENSION_FIELD_PRIORITY.map((field, index) => [field.toLowerCase(), index]),
+    DIMENSION_FIELD_PRIORITY.map((field, index) => [field.toLowerCase(), index])
   );
   return [...dimensions].sort((a, b) => {
     const aRank = priority.get(a.toLowerCase()) ?? Number.MAX_SAFE_INTEGER;
@@ -317,7 +323,7 @@ export function detectChartability(
   rows: RowRecord[],
   columns?: string[],
   userQuestion?: string,
-  matchRules?: ChartMatchRules,
+  matchRules?: ChartMatchRules
 ): Chartability | null {
   const result = matchAutoChartData(rows, columns, userQuestion, matchRules);
   return result.status === 'matched' ? result.chartability : null;
@@ -326,7 +332,7 @@ export function detectChartability(
 function sortRows(
   rows: RowRecord[],
   field: string,
-  mode: 'value_desc' | 'value_asc' | 'dimension_asc' | 'source',
+  mode: 'value_desc' | 'value_asc' | 'dimension_asc' | 'source'
 ): RowRecord[] {
   if (mode === 'source') {
     return [...rows];
@@ -351,17 +357,27 @@ function sortableDateValue(value: unknown): string {
   return String(value ?? '');
 }
 
+function hasDimensionValue(value: unknown): boolean {
+  return value != null && String(value).trim() !== '';
+}
+
+function hasFiniteMeasures(row: RowRecord, fields: string[]): boolean {
+  return (
+    fields.length > 0 && fields.every((field) => toNumber(row[field]) != null)
+  );
+}
+
 function preparePieRows(
   rows: RowRecord[],
   dimCol: string,
   measureCol: string,
   topN: number,
-  sort: 'value_desc' | 'value_asc' | 'dimension_asc' | 'source',
+  sort: 'value_desc' | 'value_asc' | 'dimension_asc' | 'source'
 ): RowRecord[] {
   const sorted = sortRows(
     rows,
     sort === 'dimension_asc' ? dimCol : measureCol,
-    sort,
+    sort
   );
   if (sorted.length <= topN) {
     return sorted;
@@ -378,10 +394,16 @@ export function matchAutoChartData(
   rows: RowRecord[],
   columns?: string[],
   userQuestion?: string,
-  matchRules?: ChartMatchRules,
+  matchRules?: ChartMatchRules
 ): AutoChartMatchResult {
   if (!Array.isArray(rows) || rows.length === 0) {
-    return { status: 'no_match', rows: [], columns: [], rowCount: 0, categoryCount: 0 };
+    return {
+      status: 'no_match',
+      rows: [],
+      columns: [],
+      rowCount: 0,
+      categoryCount: 0,
+    };
   }
 
   const cols =
@@ -389,7 +411,13 @@ export function matchAutoChartData(
       ? columns
       : Object.keys(rows[0] ?? {});
   if (cols.length === 0) {
-    return { status: 'no_match', rows, columns: [], rowCount: rows.length, categoryCount: 0 };
+    return {
+      status: 'no_match',
+      rows,
+      columns: [],
+      rowCount: rows.length,
+      categoryCount: 0,
+    };
   }
 
   const classified = classifyColumns(rows, cols);
@@ -400,12 +428,17 @@ export function matchAutoChartData(
   const preferredMeasures = classified.indexValueCol
     ? [classified.indexValueCol]
     : classified.measures.filter((c) => !isBaselineField(c));
+  const trendMeasures = preferredMeasures.slice(0, 3);
 
   // Priority 1: multi-period date trend.
   if (rows.length >= 2 && classified.dateCols.length > 0) {
     const dateCol = classified.dateCols[0];
+    const validTrendRows = rows.filter(
+      (row) =>
+        hasDimensionValue(row[dateCol]) && hasFiniteMeasures(row, trendMeasures)
+    );
     const distinctDates = new Set(
-      rows.map((r) => String(r[dateCol] ?? '')).filter(Boolean),
+      validTrendRows.map((r) => sortableDateValue(r[dateCol])).filter(Boolean)
     );
     if (
       distinctDates.size >= rules.time_series.min_periods &&
@@ -413,31 +446,65 @@ export function matchAutoChartData(
     ) {
       if (!rules.time_series.enabled) {
         return {
-          status: 'disabled', rule: 'time_series', rows, columns: cols,
-          rowCount: rows.length, categoryCount: distinctDates.size,
+          status: 'disabled',
+          rule: 'time_series',
+          rows: validTrendRows,
+          columns: cols,
+          rowCount: validTrendRows.length,
+          categoryCount: distinctDates.size,
         };
       }
-      let prepared = [...rows].sort((a, b) =>
-        sortableDateValue(a[dateCol]).localeCompare(sortableDateValue(b[dateCol])),
+      let prepared = [...validTrendRows].sort((a, b) =>
+        sortableDateValue(a[dateCol]).localeCompare(
+          sortableDateValue(b[dateCol])
+        )
       );
       if (rules.time_series.sort === 'time_desc') prepared.reverse();
-      if (rules.time_series.max_points) prepared = prepared.slice(0, rules.time_series.max_points);
+      if (rules.time_series.max_points)
+        prepared = prepared.slice(0, rules.time_series.max_points);
       const type = rules.time_series.chart_type;
       return {
-        status: 'matched', rule: 'time_series', rows: prepared, columns: cols,
-        rowCount: rows.length, categoryCount: distinctDates.size,
-        chartability: type === 'bar'
-          ? { type: 'bar', analysisType: 'trend_analysis', dimCol: dateCol, measureCols: preferredMeasures.slice(0, 3), titleHint }
-          : { type: 'line', analysisType: 'trend_analysis', dateCol, measureCols: preferredMeasures.slice(0, 3), titleHint },
+        status: 'matched',
+        rule: 'time_series',
+        rows: prepared,
+        columns: cols,
+        rowCount: validTrendRows.length,
+        categoryCount: distinctDates.size,
+        chartability:
+          type === 'bar'
+            ? {
+                type: 'bar',
+                analysisType: 'trend_analysis',
+                dimCol: dateCol,
+                measureCols: trendMeasures,
+                titleHint,
+              }
+            : {
+                type: 'line',
+                analysisType: 'trend_analysis',
+                dateCol,
+                measureCols: trendMeasures,
+                titleHint,
+              },
       };
     }
   }
 
   // Only institution and metric dimensions are valid for KPI comparisons.
+  const comparisonMeasure = preferredMeasures[0];
   let dimension: string | undefined;
   let categoryCount = 0;
   for (const dim of orderedDimensionFields(classified.dimensions)) {
-    const distinct = new Set(rows.map((r) => String(r[dim] ?? '')).filter(Boolean));
+    const distinct = new Set(
+      rows
+        .filter(
+          (row) =>
+            hasDimensionValue(row[dim]) &&
+            comparisonMeasure != null &&
+            toNumber(row[comparisonMeasure]) != null
+        )
+        .map((r) => String(r[dim]).trim())
+    );
     if (distinct.size > categoryCount) {
       dimension = dim;
       categoryCount = distinct.size;
@@ -447,26 +514,87 @@ export function matchAutoChartData(
 
   // Priority 2: multi-institution or multi-metric comparison (bar by default).
   if (
-    rows.length >= 2 && preferredMeasures.length >= 1 && dimension &&
+    rows.length >= 2 &&
+    comparisonMeasure &&
+    dimension &&
     categoryCount >= rules.dimension_compare.min_categories
   ) {
-    if (!rules.dimension_compare.enabled) {
-      return { status: 'disabled', rule: 'dimension_compare', rows, columns: cols, rowCount: rows.length, categoryCount };
+    const validComparisonRows = rows.filter(
+      (row) =>
+        hasDimensionValue(row[dimension!]) &&
+        hasFiniteMeasures(
+          row,
+          rules.dimension_compare.chart_type === 'bar'
+            ? preferredMeasures.slice(0, 6)
+            : [comparisonMeasure]
+        )
+    );
+    const validCategoryCount = new Set(
+      validComparisonRows.map((row) => String(row[dimension!]).trim())
+    ).size;
+    if (validCategoryCount < rules.dimension_compare.min_categories) {
+      return {
+        status: 'no_match',
+        rows: validComparisonRows,
+        columns: cols,
+        rowCount: validComparisonRows.length,
+        categoryCount: validCategoryCount,
+      };
     }
-    const measure = preferredMeasures[0];
+    if (!rules.dimension_compare.enabled) {
+      return {
+        status: 'disabled',
+        rule: 'dimension_compare',
+        rows: validComparisonRows,
+        columns: cols,
+        rowCount: validComparisonRows.length,
+        categoryCount: validCategoryCount,
+      };
+    }
+    const measure = comparisonMeasure;
     const type = rules.dimension_compare.chart_type;
-    let prepared = type === 'pie'
-      ? preparePieRows(rows, dimension, measure, rules.dimension_compare.pie_top_n, rules.dimension_compare.sort)
-      : sortRows(rows, rules.dimension_compare.sort === 'dimension_asc' ? dimension : measure, rules.dimension_compare.sort);
+    let prepared =
+      type === 'pie'
+        ? preparePieRows(
+            validComparisonRows,
+            dimension,
+            measure,
+            rules.dimension_compare.pie_top_n,
+            rules.dimension_compare.sort
+          )
+        : sortRows(
+            validComparisonRows,
+            rules.dimension_compare.sort === 'dimension_asc'
+              ? dimension
+              : measure,
+            rules.dimension_compare.sort
+          );
     if (type === 'bar' && rules.dimension_compare.bar_max_items) {
       prepared = prepared.slice(0, rules.dimension_compare.bar_max_items);
     }
     return {
-      status: 'matched', rule: 'dimension_compare', rows: prepared, columns: cols,
-      rowCount: rows.length, categoryCount,
-      chartability: type === 'bar'
-        ? { type: 'bar', analysisType: 'dimension_compare', dimCol: dimension, measureCols: preferredMeasures.slice(0, 6), titleHint }
-        : { type: 'pie', analysisType: 'dimension_compare', dimCol: dimension, measureCol: measure, titleHint },
+      status: 'matched',
+      rule: 'dimension_compare',
+      rows: prepared,
+      columns: cols,
+      rowCount: validComparisonRows.length,
+      categoryCount: validCategoryCount,
+      chartability:
+        type === 'bar'
+          ? {
+              type: 'bar',
+              analysisType: 'dimension_compare',
+              dimCol: dimension,
+              measureCols: preferredMeasures.slice(0, 6),
+              titleHint,
+            }
+          : {
+              type: 'pie',
+              analysisType: 'dimension_compare',
+              dimCol: dimension,
+              measureCol: measure,
+              titleHint,
+            },
     };
   }
 
@@ -474,49 +602,102 @@ export function matchAutoChartData(
   if (rows.length === 1 && classified.timeCompareCols.length >= 1) {
     const currentValueCol = classified.indexValueCol;
     if (!currentValueCol) {
-      return { status: 'no_match', rows, columns: cols, rowCount: 1, categoryCount: 0 };
+      return {
+        status: 'no_match',
+        rows,
+        columns: cols,
+        rowCount: 1,
+        categoryCount: 0,
+      };
     }
-    const baselinePoints = BASELINE_GROUPS
-      .map((group) => classified.timeCompareCols.find((c) => c === group.baseline || c.toLowerCase() === group.baseline))
-      .filter((c): c is string => Boolean(c));
+    const baselinePoints = BASELINE_GROUPS.map((group) =>
+      classified.timeCompareCols.find(
+        (c) => c === group.baseline || c.toLowerCase() === group.baseline
+      )
+    ).filter(
+      (c): c is string => Boolean(c) && toNumber(rows[0][c as string]) != null
+    );
+    if (toNumber(rows[0][currentValueCol]) == null) {
+      return {
+        status: 'no_match',
+        rows,
+        columns: cols,
+        rowCount: 1,
+        categoryCount: baselinePoints.length,
+      };
+    }
     const pointCount = baselinePoints.length + 1;
     if (pointCount < rules.baseline_compare.min_points) {
-      return { status: 'no_match', rows, columns: cols, rowCount: 1, categoryCount: pointCount };
+      return {
+        status: 'no_match',
+        rows,
+        columns: cols,
+        rowCount: 1,
+        categoryCount: pointCount,
+      };
     }
     if (!rules.baseline_compare.enabled) {
-      return { status: 'disabled', rule: 'baseline_compare', rows, columns: cols, rowCount: 1, categoryCount: pointCount };
+      return {
+        status: 'disabled',
+        rule: 'baseline_compare',
+        rows,
+        columns: cols,
+        rowCount: 1,
+        categoryCount: pointCount,
+      };
     }
     let pointRows: RowRecord[] = baselinePoints.map((c) => ({
       label: TIME_COMPARE_LABELS[c.toLowerCase()] ?? c,
       value: toNumber(rows[0][c]),
     }));
-    pointRows.push({ label: '当前值', value: toNumber(rows[0][currentValueCol]) });
-    if (rules.baseline_compare.order === 'current_to_history') pointRows = pointRows.reverse();
+    pointRows.push({
+      label: '当前值',
+      value: toNumber(rows[0][currentValueCol]),
+    });
+    if (rules.baseline_compare.order === 'current_to_history')
+      pointRows = pointRows.reverse();
     const type = rules.baseline_compare.chart_type;
     return {
-      status: 'matched', rule: 'baseline_compare', rows: pointRows, columns: ['label', 'value'],
-      rowCount: 1, categoryCount: pointCount,
-      chartability: type === 'bar'
-        ? { type: 'bar', analysisType: 'trend_analysis', dimCol: 'label', measureCols: ['value'], titleHint }
-        : {
-            type: 'line',
-            analysisType: 'trend_analysis',
-            dateCol: 'label',
-            measureCols: ['value'],
-            timeCompareCols: baselinePoints,
-            currentValueCol,
-            titleHint,
-          },
+      status: 'matched',
+      rule: 'baseline_compare',
+      rows: pointRows,
+      columns: ['label', 'value'],
+      rowCount: 1,
+      categoryCount: pointCount,
+      chartability:
+        type === 'bar'
+          ? {
+              type: 'bar',
+              analysisType: 'trend_analysis',
+              dimCol: 'label',
+              measureCols: ['value'],
+              titleHint,
+            }
+          : {
+              type: 'line',
+              analysisType: 'trend_analysis',
+              dateCol: 'label',
+              measureCols: ['value'],
+              timeCompareCols: baselinePoints,
+              currentValueCol,
+              titleHint,
+            },
     };
   }
 
-  return { status: 'no_match', rows, columns: cols, rowCount: rows.length, categoryCount };
+  return {
+    status: 'no_match',
+    rows,
+    columns: cols,
+    rowCount: rows.length,
+    categoryCount,
+  };
 }
 
 function buildPieOption(
   rows: RowRecord[],
   chartability: Extract<Chartability, { type: 'pie' }>,
-  title: string,
+  title: string
 ): Record<string, unknown> {
   const { dimCol, measureCol } = chartability;
   return {
@@ -541,7 +722,7 @@ function buildPieOption(
 function buildBarOption(
   rows: RowRecord[],
   chartability: Extract<Chartability, { type: 'bar' }>,
-  title: string,
+  title: string
 ): Record<string, unknown> {
   const { dimCol, measureCols } = chartability;
   const categories = rows.map((r) => String(r[dimCol] ?? ''));
@@ -551,7 +732,11 @@ function buildBarOption(
     const m = measureCols[0];
     return {
       title: { left: 'center', text: title },
-      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, confine: true },
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'shadow' },
+        confine: true,
+      },
       legend: { data: [m], top: '10%' },
       grid: {
         left: '3%',
@@ -576,7 +761,11 @@ function buildBarOption(
   // Multi measure: x = measure names, series = each dimension row (org)
   return {
     title: { left: 'center', text: title },
-    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, confine: true },
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'shadow' },
+      confine: true,
+    },
     legend: { data: categories, top: '10%' },
     grid: {
       left: '3%',
@@ -599,7 +788,7 @@ function buildBarOption(
 function buildLineOption(
   rows: RowRecord[],
   chartability: Extract<Chartability, { type: 'line' }>,
-  title: string,
+  title: string
 ): Record<string, unknown> {
   // Single-row time-compare sparkline
   if (
@@ -611,16 +800,15 @@ function buildLineOption(
     // Display order: 上年同期 → 上年末 → 上季末 → 上月末 → 上一日
     const orderedCanonical = BASELINE_GROUPS.map((g) => g.baseline);
     const colsInOrder = orderedCanonical
-      .map(
-        (canonical) =>
-          chartability.timeCompareCols!.find(
-            (c) => c === canonical || c.toLowerCase() === canonical,
-          ),
+      .map((canonical) =>
+        chartability.timeCompareCols!.find(
+          (c) => c === canonical || c.toLowerCase() === canonical
+        )
       )
       .filter((c): c is string => Boolean(c));
 
     const xData = colsInOrder.map(
-      (c) => TIME_COMPARE_LABELS[c.toLowerCase()] ?? TIME_COMPARE_LABELS[c] ?? c,
+      (c) => TIME_COMPARE_LABELS[c.toLowerCase()] ?? TIME_COMPARE_LABELS[c] ?? c
     );
     const yData = colsInOrder.map((c) => toNumber(row[c]));
 
@@ -658,7 +846,7 @@ function buildLineOption(
   const dateCol = chartability.dateCol!;
   const measureCols = chartability.measureCols;
   const sorted = [...rows].sort((a, b) =>
-    String(a[dateCol] ?? '').localeCompare(String(b[dateCol] ?? '')),
+    String(a[dateCol] ?? '').localeCompare(String(b[dateCol] ?? ''))
   );
   const xData = sorted.map((r) => String(r[dateCol] ?? ''));
 
@@ -690,7 +878,7 @@ function buildLineOption(
 export function buildAutoChartOption(
   rows: RowRecord[],
   chartability: Chartability,
-  title: string,
+  title: string
 ): Record<string, unknown> {
   if (chartability.type === 'bar') {
     return buildBarOption(rows, chartability, title);
@@ -706,7 +894,7 @@ export function buildAutoCharts(
   columns: string[] | undefined,
   chartId: string,
   userQuestion?: string,
-  matchRules?: ChartMatchRules,
+  matchRules?: ChartMatchRules
 ): AutoChartItem[] | null {
   const match = matchAutoChartData(rows, columns, userQuestion, matchRules);
   if (match.status !== 'matched') {
@@ -825,7 +1013,7 @@ export function unwrapJsonEncodedText(text: string): string {
 export function extractFromBecauseJn(
   toolName: string,
   args: Record<string, unknown> | undefined,
-  content: string,
+  content: string
 ): ExtractedTable | null {
   if (toolName !== 'because_jn') {
     return null;
@@ -839,13 +1027,17 @@ export function extractFromBecauseJn(
       rows?: RowRecord[];
       columns?: string[] | Array<{ name?: string; field?: string }>;
     };
-    if (!parsed?.success || !Array.isArray(parsed.rows) || parsed.rows.length === 0) {
+    if (
+      !parsed?.success ||
+      !Array.isArray(parsed.rows) ||
+      parsed.rows.length === 0
+    ) {
       return null;
     }
     let columns: string[] = [];
     if (Array.isArray(parsed.columns) && parsed.columns.length > 0) {
       columns = parsed.columns.map((c) =>
-        typeof c === 'string' ? c : (c?.name || c?.field || String(c)),
+        typeof c === 'string' ? c : c?.name || c?.field || String(c)
       );
     } else {
       columns = Object.keys(parsed.rows[0] ?? {});
@@ -862,7 +1054,7 @@ export function extractFromBecauseJn(
 export function extractFromAskData(
   toolName: string,
   _args: Record<string, unknown> | undefined,
-  content: string,
+  content: string
 ): ExtractedTable | null {
   if (!/^ask_data(_mcp_.+)?$/i.test(toolName)) {
     return null;
@@ -896,7 +1088,7 @@ export function extractFromAskData(
 export function extractTableFromToolOutput(
   toolName: string,
   args: Record<string, unknown> | undefined,
-  content: string,
+  content: string
 ): ExtractedTable | null {
   return (
     extractFromBecauseJn(toolName, args, content) ??

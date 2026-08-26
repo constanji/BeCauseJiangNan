@@ -32,14 +32,14 @@ describe('autoChartFromRows', () => {
       rows,
       undefined,
       'chart_1',
-      '各机构存款余额占比',
+      '各机构存款余额占比'
     );
     expect(charts?.[0]).toMatchObject({
       analysisType: 'dimension_compare',
     });
     expect(
       (charts?.[0].echartsOption.series as Array<Record<string, unknown>>)[0]
-        .type,
+        .type
     ).toBe('bar');
   });
 
@@ -49,9 +49,12 @@ describe('autoChartFromRows', () => {
         { org_code: 'A0008', brchna: '金坛支行', index_value: 4558628.599004 },
         { org_code: 'A0009', brchna: '溧阳支行', index_value: 7852121.095636 },
       ],
-      ['org_code', 'brchna', 'index_value'],
+      ['org_code', 'brchna', 'index_value']
     );
-    expect(result).toMatchObject({ status: 'matched', rule: 'dimension_compare' });
+    expect(result).toMatchObject({
+      status: 'matched',
+      rule: 'dimension_compare',
+    });
     if (result.status === 'matched') {
       expect(result.chartability.type).toBe('bar');
       if (result.chartability.type === 'bar') {
@@ -63,12 +66,18 @@ describe('autoChartFromRows', () => {
 
   it('honors a disabled matching rule without treating it as parse failure', () => {
     const result = matchAutoChartData(
-      [{ org_name: 'A', index_value: 10 }, { org_name: 'B', index_value: 20 }],
+      [
+        { org_name: 'A', index_value: 10 },
+        { org_name: 'B', index_value: 20 },
+      ],
       undefined,
       undefined,
-      { dimension_compare: { enabled: false } },
+      { dimension_compare: { enabled: false } }
     );
-    expect(result).toMatchObject({ status: 'disabled', rule: 'dimension_compare' });
+    expect(result).toMatchObject({
+      status: 'disabled',
+      rule: 'dimension_compare',
+    });
   });
 
   it('prefers DAT institution names over org codes in legacy pie output', () => {
@@ -93,9 +102,11 @@ describe('autoChartFromRows', () => {
       undefined,
       'chart_1',
       '各机构存款余额占比',
-      { dimension_compare: { chart_type: 'pie' } },
+      { dimension_compare: { chart_type: 'pie' } }
     )?.[0];
-    const series = chart?.echartsOption.series as Array<Record<string, unknown>>;
+    const series = chart?.echartsOption.series as Array<
+      Record<string, unknown>
+    >;
     expect(chart?.title).toBe('各项存款余额(人行口径)');
     expect(series[0].data).toEqual([
       { name: '总行', value: 125050 },
@@ -129,6 +140,40 @@ describe('autoChartFromRows', () => {
     }
   });
 
+  it('omits null baseline points before generating a single-row trend', () => {
+    const result = matchAutoChartData([
+      {
+        index_name: '各项存款余额',
+        index_value: 4673.12,
+        ly_value: 4641.68,
+        y_begin_value: 4451.03,
+        q_begin_value: 4624.37,
+        m_begin_value: 4593.12,
+        yd_value: null,
+      },
+    ]);
+
+    expect(result.status).toBe('matched');
+    if (result.status === 'matched') {
+      expect(result.rule).toBe('baseline_compare');
+      expect(result.rows).toEqual([
+        { label: '上年同期', value: 4641.68 },
+        { label: '上年末', value: 4451.03 },
+        { label: '上季末', value: 4624.37 },
+        { label: '上月末', value: 4593.12 },
+        { label: '当前值', value: 4673.12 },
+      ]);
+    }
+  });
+
+  it('does not generate an incomplete trend with fewer than two finite points', () => {
+    expect(
+      matchAutoChartData([
+        { index_name: '各项存款余额', index_value: 4673.12, yd_value: null },
+      ]).status
+    ).toBe('no_match');
+  });
+
   it('skips single-row time compare when index_value is missing', () => {
     const rows = [
       {
@@ -159,14 +204,29 @@ describe('autoChartFromRows', () => {
 
   it('honors dimension sorting for dimension compare charts', () => {
     const result = matchAutoChartData(
-      [{ org_name: 'B', index_value: 10 }, { org_name: 'A', index_value: 20 }],
+      [
+        { org_name: 'B', index_value: 10 },
+        { org_name: 'A', index_value: 20 },
+      ],
       undefined,
       undefined,
-      { dimension_compare: { sort: 'dimension_asc' } },
+      { dimension_compare: { sort: 'dimension_asc' } }
     );
     expect(result.status).toBe('matched');
     if (result.status === 'matched') {
       expect(result.rows.map((row) => row.org_name)).toEqual(['A', 'B']);
+    }
+  });
+
+  it('removes rows with null measures from dimension comparisons', () => {
+    const result = matchAutoChartData([
+      { org_name: 'A', index_value: 10 },
+      { org_name: 'B', index_value: null },
+      { org_name: 'C', index_value: 30 },
+    ]);
+    expect(result.status).toBe('matched');
+    if (result.status === 'matched') {
+      expect(result.rows.map((row) => row.org_name).sort()).toEqual(['A', 'C']);
     }
   });
 
@@ -186,17 +246,22 @@ describe('autoChartFromRows', () => {
   });
 
   it('does not chart arbitrary text dimensions outside institution and KPI fields', () => {
-    expect(matchAutoChartData([
-      { product: 'A', index_value: 10 },
-      { product: 'B', index_value: 20 },
-    ]).status).toBe('no_match');
+    expect(
+      matchAutoChartData([
+        { product: 'A', index_value: 10 },
+        { product: 'B', index_value: 20 },
+      ]).status
+    ).toBe('no_match');
   });
 
   it('ignores question wording when matching KPI dimensions', () => {
     const result = matchAutoChartData(
-      [{ org_name: 'A', index_value: 10 }, { org_name: 'B', index_value: 20 }],
+      [
+        { org_name: 'A', index_value: 10 },
+        { org_name: 'B', index_value: 20 },
+      ],
       undefined,
-      '各机构占比',
+      '各机构占比'
     );
     expect(result.status).toBe('matched');
     if (result.status === 'matched') {
@@ -211,7 +276,7 @@ describe('autoChartFromRows', () => {
         { org_name: 'B', value: 20 },
       ],
       undefined,
-      'auto_1',
+      'auto_1'
     );
     expect(charts?.[0].echartsOption.series).toBeDefined();
     expect(charts?.[0].id).toBe('auto_1');
@@ -225,7 +290,7 @@ describe('autoChartFromRows', () => {
         success: true,
         rows: [{ a: 1 }, { a: 2 }],
         columns: ['a'],
-      }),
+      })
     );
     expect(table?.rows).toHaveLength(2);
   });
@@ -235,6 +300,20 @@ describe('autoChartFromRows', () => {
       'SQL: SELECT 1\nQuery Results: [{"x":1,"data_dt":"2024-01"},{"x":2,"data_dt":"2024-02"}]\nDONE';
     const table = extractFromAskData('ask_data', {}, content);
     expect(table?.rows).toHaveLength(2);
+  });
+
+  it('uses only the latest Query Results section from the current tool output', () => {
+    const content = [
+      'Query Results: [{"org_name":"stale","index_value":999}]',
+      'intermediate log',
+      'Query Results: [{"org_name":"A","index_value":1.1793},{"org_name":"B","index_value":32.44037},{"org_name":"C","index_value":8.5}]',
+    ].join('\n');
+    const table = extractFromAskData('ask_data', {}, content);
+    expect(table?.rows).toEqual([
+      { org_name: 'A', index_value: 1.1793 },
+      { org_name: 'B', index_value: 32.44037 },
+      { org_name: 'C', index_value: 8.5 },
+    ]);
   });
 
   it('extracts JSON-stringified DAT ask_data output', () => {
@@ -249,7 +328,7 @@ describe('autoChartFromRows', () => {
     const table = extractFromAskData(
       'ask_data_mcp_becauseai-server',
       {},
-      encoded,
+      encoded
     );
     expect(table?.rows).toHaveLength(1);
     expect(table?.rows[0]?.index_number).toBe('BM10010048');
@@ -261,7 +340,7 @@ describe('autoChartFromRows', () => {
     const table = extractFromAskData(
       'ask_data_mcp_becauseai-server',
       {},
-      content,
+      content
     );
 
     expect(table?.rows).toHaveLength(1);

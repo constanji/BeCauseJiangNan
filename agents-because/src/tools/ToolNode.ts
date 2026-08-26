@@ -84,14 +84,20 @@ function safeChartPrefix(value: unknown, fallback: string): string {
 
 function chartTypeHint(chart: Record<string, unknown>): string | undefined {
   const normalize = (value: unknown): string | undefined => {
-    const type = String(value || '').trim().toLowerCase();
+    const type = String(value || '')
+      .trim()
+      .toLowerCase();
     return ['line', 'bar', 'pie'].includes(type) ? type : undefined;
   };
   const direct = normalize(chart.type);
   if (direct) return direct;
   const option = chart.echartsOption as Record<string, unknown> | undefined;
   const series = Array.isArray(option?.series) ? option.series[0] : undefined;
-  if (series && typeof series === 'object' && typeof (series as Record<string, unknown>).type === 'string') {
+  if (
+    series &&
+    typeof series === 'object' &&
+    typeof (series as Record<string, unknown>).type === 'string'
+  ) {
     return normalize((series as Record<string, unknown>).type);
   }
   const spec = chart.g2Spec as Record<string, unknown> | undefined;
@@ -134,6 +140,8 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
   private maxToolResultChars: number;
   /** Optional callback to register synthetic tool calls in the UI stream */
   private dispatchSyntheticToolCall?: t.ToolNodeOptions['dispatchSyntheticToolCall'];
+  /** IDs created by this ToolNode, never inferred from model-controlled args. */
+  private serverSyntheticChartCallIds = new Set<string>();
   /** Graph-owned per-run chart registry */
   private chartRunRegistry?: ChartRunRegistry;
 
@@ -346,6 +354,50 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
     return { charts: kept, rejected: kept.length === 0 && charts.length > 0 };
   }
 
+  private isServerSyntheticChartCall(call: ToolCall): boolean {
+    return Boolean(call.id && this.serverSyntheticChartCallIds.has(call.id));
+  }
+
+  private parseChartArgs(
+    args: unknown
+  ): { args: Record<string, unknown>; charts?: unknown[] } | null {
+    if (!args || typeof args !== 'object') {
+      return null;
+    }
+    const normalized = { ...(args as Record<string, unknown>) };
+    let charts = normalized.charts;
+    if (typeof charts === 'string') {
+      try {
+        const parsed = JSON.parse(charts);
+        charts = Array.isArray(parsed)
+          ? parsed
+          : parsed && typeof parsed === 'object' && Array.isArray(parsed.charts)
+            ? parsed.charts
+            : undefined;
+      } catch {
+        charts = undefined;
+      }
+    }
+    if (Array.isArray(charts)) {
+      normalized.charts = charts;
+      return { args: normalized, charts };
+    }
+    return { args: normalized };
+  }
+
+  private skippedChartMessage(call: ToolCall, reason: string): ToolMessage {
+    return new ToolMessage({
+      status: 'success',
+      name: ECHARTS_TOOL_NAME,
+      content: JSON.stringify(
+        { success: false, error: reason, skipped: true },
+        null,
+        2
+      ),
+      tool_call_id: call.id ?? '',
+    });
+  }
+
   private registerChartsFromToolOutput(
     content: string,
     config: RunnableConfig,
@@ -409,34 +461,38 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
       const stepId = this.toolCallStepIds?.get(call.id!);
 
       // Pre-invoke chart cap / role dedupe (all three generation paths)
-      if (
-        call.name === ECHARTS_TOOL_NAME &&
-        args != null &&
-        typeof args === 'object' &&
-        Array.isArray((args as { charts?: unknown }).charts)
-      ) {
-        const trimmed = this.trimChartsForRegistry(
-          (args as { charts: unknown[] }).charts,
-          config,
-          call.id
-        );
-        if (trimmed.rejected && trimmed.charts.length === 0) {
-          return new ToolMessage({
-            status: 'success',
-            name: ECHARTS_TOOL_NAME,
-            content: JSON.stringify(
-              {
-                success: false,
-                error: trimmed.reason || '已达本轮图表上限，跳过本次调用',
-                skipped: true,
-              },
-              null,
-              2
-            ),
-            tool_call_id: call.id ?? '',
-          });
+      if (call.name === ECHARTS_TOOL_NAME) {
+        const isServerAuto = this.isServerSyntheticChartCall(call);
+        const chartConfig = config.configurable?.chart_config as
+          | { hide_from_model?: boolean }
+          | undefined;
+        if (chartConfig?.hide_from_model === true && !isServerAuto) {
+          return this.skippedChartMessage(
+            call,
+            '图表工具已配置为对模型隐藏，跳过非服务端自动调用'
+          );
         }
-        args = { ...args, charts: trimmed.charts };
+        const parsedArgs = this.parseChartArgs(args);
+        if (parsedArgs) {
+          args = parsedArgs.args;
+        }
+        if (parsedArgs?.charts) {
+          const trimmed = this.trimChartsForRegistry(
+            parsedArgs.charts,
+            config,
+            call.id
+          );
+          if (trimmed.rejected && trimmed.charts.length === 0) {
+            return this.skippedChartMessage(
+              call,
+              trimmed.reason || '已达本轮图表上限，跳过本次调用'
+            );
+          }
+          args = {
+            ...(args as Record<string, unknown>),
+            charts: trimmed.charts,
+          };
+        }
       }
 
       // Build invoke params - LangChain extracts non-schema fields to config.toolCall
@@ -509,22 +565,20 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
           typeof (output as ToolMessage).content === 'string'
         ) {
           const toolMsg = output as ToolMessage;
-          const source =
-            (call.args as { _autoGenerated?: boolean } | undefined)
-              ?._autoGenerated === true
-              ? 'server_auto'
-              : Array.isArray(
-                    (
-                      call.args as {
-                        charts?: Array<{ echartsOption?: unknown }>;
-                      }
-                    )?.charts
-                  ) &&
+          const source = this.isServerSyntheticChartCall(call)
+            ? 'server_auto'
+            : Array.isArray(
                   (
-                    call.args as { charts: Array<{ echartsOption?: unknown }> }
-                  ).charts.some((c) => c && c.echartsOption != null)
-                ? 'model_legacy'
-                : 'model_simple';
+                    call.args as {
+                      charts?: Array<{ echartsOption?: unknown }>;
+                    }
+                  )?.charts
+                ) &&
+                (
+                  call.args as { charts: Array<{ echartsOption?: unknown }> }
+                ).charts.some((c) => c && c.echartsOption != null)
+              ? 'model_legacy'
+              : 'model_simple';
           const rewritten = this.registerChartsFromToolOutput(
             toolMsg.content as string,
             config,
@@ -548,11 +602,9 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
         let rawContent =
           typeof output === 'string' ? output : JSON.stringify(output);
         if (call.name === ECHARTS_TOOL_NAME) {
-          const source =
-            (call.args as { _autoGenerated?: boolean } | undefined)
-              ?._autoGenerated === true
-              ? 'server_auto'
-              : 'model_simple';
+          const source = this.isServerSyntheticChartCall(call)
+            ? 'server_auto'
+            : 'model_simple';
           rawContent = this.registerChartsFromToolOutput(
             rawContent,
             config,
@@ -841,17 +893,30 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
     const skippedById = new Map<string, ToolMessage>();
     const callsToDispatch: ToolCall[] = [];
     for (const call of toolCalls) {
-      if (
-        call.name !== ECHARTS_TOOL_NAME ||
-        !call.args ||
-        typeof call.args !== 'object' ||
-        !Array.isArray((call.args as { charts?: unknown }).charts)
-      ) {
+      if (call.name !== ECHARTS_TOOL_NAME) {
+        callsToDispatch.push(call);
+        continue;
+      }
+      const isServerAuto = this.isServerSyntheticChartCall(call);
+      const chartConfig = config.configurable?.chart_config as
+        | { hide_from_model?: boolean }
+        | undefined;
+      if (chartConfig?.hide_from_model === true && !isServerAuto) {
+        const skipped = this.skippedChartMessage(
+          call,
+          '图表工具已配置为对模型隐藏，跳过非服务端自动调用'
+        );
+        skippedById.set(call.id ?? '', skipped);
+        this.handleRunToolCompletions([call], [skipped], config);
+        continue;
+      }
+      const parsedArgs = this.parseChartArgs(call.args);
+      if (!parsedArgs?.charts) {
         callsToDispatch.push(call);
         continue;
       }
       const trimmed = this.trimChartsForRegistry(
-        (call.args as { charts: unknown[] }).charts,
+        parsedArgs.charts,
         config,
         call.id
       );
@@ -873,7 +938,7 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
       callsToDispatch.push({
         ...call,
         args: {
-          ...(call.args as Record<string, unknown>),
+          ...parsedArgs.args,
           charts: trimmed.charts,
         },
       });
@@ -964,17 +1029,21 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
                 charts?: Array<{ echartsOption?: unknown }>;
               }
             | undefined;
-          const source =
-            requestArgs?._autoGenerated === true
-              ? 'server_auto'
-              : requestArgs?.charts?.some((chart) => chart?.echartsOption != null)
-                ? 'model_legacy'
-                : 'model_simple';
+          const source = this.isServerSyntheticChartCall({
+            id: result.toolCallId,
+            name: ECHARTS_TOOL_NAME,
+            args: requestArgs ?? {},
+            type: 'tool_call',
+          })
+            ? 'server_auto'
+            : requestArgs?.charts?.some((chart) => chart?.echartsOption != null)
+              ? 'model_legacy'
+              : 'model_simple';
           registeredContent = this.registerChartsFromToolOutput(
             rawContent,
             config,
             result.toolCallId,
-            source,
+            source
           );
         }
         contentString = truncateToolResultContent(
@@ -1077,8 +1146,15 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
         return outputs;
       }
 
-      // Model already requested a chart in this batch — do not double-inject
-      if (calls.some((c) => c.name === ECHARTS_TOOL_NAME)) {
+      // When the chart tool is model-visible, a model chart owns this batch.
+      // If hidden, an attempted model call is rejected and must not suppress Auto.
+      const configuredChartConfig = config.configurable?.chart_config as
+        | { hide_from_model?: boolean }
+        | undefined;
+      if (
+        configuredChartConfig?.hide_from_model !== true &&
+        calls.some((c) => c.name === ECHARTS_TOOL_NAME)
+      ) {
         return outputs;
       }
 
@@ -1195,7 +1271,7 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
             table.rows,
             table.columns,
             userQuestion,
-            chartConfig?.match_rules,
+            chartConfig?.match_rules
           );
           if (decision.status === 'disabled') {
             continue;
@@ -1234,7 +1310,7 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
               table.columns,
               `${prefix}_0`,
               userQuestion,
-              chartConfig?.match_rules,
+              chartConfig?.match_rules
             );
             if (legacy && legacy.length > 0) {
               // Convert legacy echartsOption charts to simple when possible is complex;
@@ -1267,7 +1343,7 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
             table.columns,
             `${prefix}_0`,
             userQuestion,
-            chartConfig?.match_rules,
+            chartConfig?.match_rules
           );
           charts = legacy;
         }
@@ -1290,7 +1366,7 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
           this.chartRunRegistry?.hasAutoGenerationKey(
             chartAgentId,
             chartScopeStepId,
-            autoGenerationKey,
+            autoGenerationKey
           )
         ) {
           continue;
@@ -1300,31 +1376,35 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
         this.chartRunRegistry?.markAutoGenerationKey(
           chartAgentId,
           chartScopeStepId,
-          autoGenerationKey,
+          autoGenerationKey
         );
         const conversationToken = safeConversationToken(
-          config.configurable?.requestBody?.conversationId,
+          config.configurable?.requestBody?.conversationId
         );
         const configuredOffset = Number(
           conversationToken
             ? config.configurable?.chart_index_offset
-            : config.configurable?.chart_id_offset,
+            : config.configurable?.chart_id_offset
         );
         const chartIdOffset =
           Number.isSafeInteger(configuredOffset) && configuredOffset >= 0
             ? configuredOffset
             : 0;
-        const turnChartCount = this.chartRunRegistry?.countThisTurn(
-          chartAgentId,
-          chartScopeStepId
-        ) ?? 0;
+        const turnChartCount =
+          this.chartRunRegistry?.countThisTurn(
+            chartAgentId,
+            chartScopeStepId
+          ) ?? 0;
         const defaultPrefix =
           preset === 'indicator'
             ? 'zb'
             : preset === 'attribution'
               ? 'result'
               : 'chart';
-        const configuredPrefix = safeChartPrefix(chartConfig?.marker, defaultPrefix);
+        const configuredPrefix = safeChartPrefix(
+          chartConfig?.marker,
+          defaultPrefix
+        );
         let nextChartIndex = chartIdOffset + turnChartCount;
         charts = charts.map((c) => {
           if (c && typeof c === 'object') {
@@ -1358,17 +1438,24 @@ export class ToolNode<T = any> extends RunnableCallable<T, T> {
           },
           type: 'tool_call',
         };
+        this.serverSyntheticChartCallIds.add(syntheticId);
 
         const stepId = await this.dispatchSyntheticToolCall(
           syntheticCall,
           config
         );
         if (!stepId) {
+          this.serverSyntheticChartCallIds.delete(syntheticId);
           continue;
         }
 
         // Route through runTool so max_charts / registry apply uniformly
-        const result = await this.runTool(syntheticCall, config);
+        let result: BaseMessage | Command;
+        try {
+          result = await this.runTool(syntheticCall, config);
+        } finally {
+          this.serverSyntheticChartCallIds.delete(syntheticId);
+        }
         if (isCommand(result) || !isBaseMessage(result)) {
           continue;
         }

@@ -30,6 +30,8 @@ export declare class ToolNode<T = any> extends RunnableCallable<T, T> {
     private maxToolResultChars;
     /** Optional callback to register synthetic tool calls in the UI stream */
     private dispatchSyntheticToolCall?;
+    /** IDs created by this ToolNode, never inferred from model-controlled args. */
+    private serverSyntheticChartCallIds;
     /** Graph-owned per-run chart registry */
     private chartRunRegistry?;
     constructor({ tools, toolMap, name, tags, errorHandler, toolCallStepIds, handleToolErrors, loadRuntimeTools, toolRegistry, toolDefinitions, sessions, eventDrivenMode, agentId, directToolNames, maxContextTokens, maxToolResultChars, dispatchSyntheticToolCall, chartRunRegistry, }: t.ToolNodeConstructorParams);
@@ -50,6 +52,9 @@ export declare class ToolNode<T = any> extends RunnableCallable<T, T> {
      * three paths (legacy, simple, server auto). Counts each chart individually.
      */
     private trimChartsForRegistry;
+    private isServerSyntheticChartCall;
+    private parseChartArgs;
+    private skippedChartMessage;
     private registerChartsFromToolOutput;
     /**
      * Runs a single tool call with error handling
