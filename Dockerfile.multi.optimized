@@ -1,0 +1,298 @@
+# Safe optimized production image.
+#
+# This file intentionally keeps the same Node production dependency closure as
+# Dockerfile.multi. The size reduction comes from keeping compilers, headers,
+# the JDK, and package-manager download caches out of the final image.
+#
+# Existing builds that use Dockerfile.multi are unaffected. Build this variant
+# explicitly with: -f Dockerfile.multi.optimized
+
+ARG NODE_IMAGE=docker.m.daocloud.io/library/node:20-bookworm-slim
+
+
+# -----------------------------------------------------------------------------
+# Build-only base: native compilers and development headers never reach runtime.
+# -----------------------------------------------------------------------------
+FROM ${NODE_IMAGE} AS build-base
+WORKDIR /app
+
+RUN set -eux; \
+  export DEBIAN_FRONTEND=noninteractive; \
+  for f in /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources; do \
+    [ -f "$f" ] || continue; \
+    sed -i \
+      -e 's|https\?://deb.debian.org|http://mirrors.aliyun.com|g' \
+      -e 's|https\?://security.debian.org/debian-security|http://mirrors.aliyun.com/debian-security|g' \
+      -e 's|https\?://security.debian.org|http://mirrors.aliyun.com/debian-security|g' \
+      "$f"; \
+  done; \
+  if [ -d /etc/apt/sources.list.d ]; then \
+    for f in /etc/apt/sources.list.d/*.list; do \
+      [ -f "$f" ] || continue; \
+      sed -i \
+        -e 's|https\?://deb.debian.org|http://mirrors.aliyun.com|g' \
+        -e 's|https\?://security.debian.org/debian-security|http://mirrors.aliyun.com/debian-security|g' \
+        -e 's|https\?://security.debian.org|http://mirrors.aliyun.com/debian-security|g' \
+        "$f"; \
+    done; \
+  fi; \
+  apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::https::Timeout=120 update; \
+  apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::https::Timeout=120 install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    python3 \
+    python3-pip \
+    build-essential \
+    pkg-config \
+    libvips \
+    libvips-dev; \
+  rm -rf /var/lib/apt/lists/*
+
+ENV SHARP_FORCE_GLOBAL_LIBVIPS=1
+ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/lib/arm-linux-gnueabihf/pkgconfig
+ENV npm_config_sharp_binary_host=https://cdn.npmmirror.com/binaries/sharp
+ENV npm_config_sharp_libvips_binary_host=https://cdn.npmmirror.com/binaries/sharp-libvips
+ENV PYTHON=python3
+
+RUN npm config set registry https://registry.npmmirror.com && \
+  npm config set fetch-retry-maxtimeout 600000 && \
+  npm config set fetch-retries 5 && \
+  npm config set fetch-retry-mintimeout 15000
+
+
+# -----------------------------------------------------------------------------
+# Agent runtime bundle.
+# -----------------------------------------------------------------------------
+FROM build-base AS agents-build
+WORKDIR /app
+COPY agents-because/package.json ./agents-because/package.json
+COPY agents-because/tsconfig*.json ./agents-because/
+COPY agents-because/rollup.config.js ./agents-because/
+COPY agents-because/husky-setup.js ./agents-because/
+COPY agents-because/config ./agents-because/config
+COPY agents-because/src ./agents-because/src
+COPY agents-because/dist ./agents-because/dist
+ENV DISABLE_SOURCEMAP=true
+ENV NODE_OPTIONS=--max-old-space-size=8192
+RUN --mount=type=cache,target=/root/.npm \
+  cd agents-because && \
+  npm install --no-audit --legacy-peer-deps && \
+  DISABLE_SOURCEMAP=true npm run build:runtime
+
+
+# -----------------------------------------------------------------------------
+# Full build dependency graph. Frontend dependencies stay in this build stage.
+# -----------------------------------------------------------------------------
+FROM build-base AS build-deps
+WORKDIR /app
+COPY --from=agents-build /app/agents-because/dist ./agents-because/dist
+COPY --from=agents-build /app/agents-because/package.json ./agents-because/package.json
+COPY --from=agents-build /app/agents-because/husky-setup.js ./agents-because/husky-setup.js
+COPY package*.json ./
+COPY packages/data-provider/package*.json ./packages/data-provider/
+COPY packages/api/package*.json ./packages/api/
+COPY packages/data-schemas/package*.json ./packages/data-schemas/
+COPY packages/client/package*.json ./packages/client/
+COPY client/package*.json ./client/
+COPY api/package*.json ./api/
+ENV HUSKY=0
+ENV CI=true
+RUN --mount=type=cache,target=/root/.npm \
+  npm install --legacy-peer-deps && \
+  ROLLUP_VERSION="$(node -p "require('./node_modules/rollup/package.json').version")" && \
+  npm install --no-save "@rollup/rollup-linux-x64-gnu@${ROLLUP_VERSION}" --legacy-peer-deps
+
+FROM build-deps AS data-provider-build
+WORKDIR /app
+COPY packages/data-provider ./packages/data-provider
+ENV NODE_OPTIONS=--max-old-space-size=4096
+RUN cd packages/data-provider && npm run build
+
+FROM build-deps AS data-schemas-build
+WORKDIR /app
+COPY packages/data-schemas ./packages/data-schemas
+COPY --from=data-provider-build /app/packages/data-provider/dist /app/packages/data-provider/dist
+ENV NODE_OPTIONS=--max-old-space-size=4096
+RUN cd packages/data-schemas && npm run build
+
+FROM build-deps AS api-package-build
+WORKDIR /app
+COPY packages/api ./packages/api
+COPY --from=data-provider-build /app/packages/data-provider/dist /app/packages/data-provider/dist
+COPY --from=data-schemas-build /app/packages/data-schemas/dist /app/packages/data-schemas/dist
+ENV NODE_OPTIONS=--max-old-space-size=8192
+RUN cd packages/api && npm run build
+
+
+# -----------------------------------------------------------------------------
+# Preserve the existing production dependency closure exactly. Installation is
+# performed in a throw-away stage so npm cache and native build tools are absent
+# from the final image.
+# -----------------------------------------------------------------------------
+FROM build-base AS runtime-node-deps
+WORKDIR /app
+COPY package*.json ./
+COPY packages/data-provider/package*.json ./packages/data-provider/
+COPY packages/api/package*.json ./packages/api/
+COPY packages/data-schemas/package*.json ./packages/data-schemas/
+COPY packages/client/package*.json ./packages/client/
+COPY client/package*.json ./client/
+COPY api/package*.json ./api/
+COPY --from=agents-build /app/agents-because/dist ./agents-because/dist
+COPY --from=agents-build /app/agents-because/package.json ./agents-because/package.json
+COPY --from=agents-build /app/agents-because/husky-setup.js ./agents-because/husky-setup.js
+ENV HUSKY=0
+ENV CI=true
+RUN --mount=type=cache,target=/root/.npm \
+  env -u SHARP_FORCE_GLOBAL_LIBVIPS npm install --omit=dev --legacy-peer-deps && \
+  env -u SHARP_FORCE_GLOBAL_LIBVIPS npm install \
+    mongodb \
+    @img/sharp-linux-x64 \
+    --omit=dev \
+    --save-optional \
+    --legacy-peer-deps && \
+  { ln -s /app/node_modules/@because /app/node_modules/@Because 2>/dev/null || true; }
+ENV SHARP_FORCE_GLOBAL_LIBVIPS=
+RUN node -e "require('@xenova/transformers'); require('onnxruntime-node'); require('sharp'); console.log('Node native runtime dependencies loaded')"
+
+
+# -----------------------------------------------------------------------------
+# Compile the GaussDB bridge with a JDK; only a JRE is installed at runtime.
+# -----------------------------------------------------------------------------
+FROM build-base AS java-build
+WORKDIR /app
+RUN set -eux; \
+  apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::https::Timeout=120 update; \
+  apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::https::Timeout=120 install -y --no-install-recommends default-jdk-headless; \
+  rm -rf /var/lib/apt/lists/*
+COPY Because-2.0 ./Because-2.0
+COPY Because-3.0 ./Because-3.0
+COPY Because-jn ./Because-jn
+RUN set -eux; \
+  for app in Because-2.0 Because-3.0 Because-jn; do \
+    javac -encoding UTF-8 \
+      -cp "/app/$app/drivers/lib/gsjdbc4-1.0.jar" \
+      "/app/$app/drivers/gaussdb-jdbc/GaussJdbcQuery.java" \
+      "/app/$app/drivers/gaussdb-jdbc/GaussJdbcServer.java"; \
+  done; \
+  java -version
+
+
+# -----------------------------------------------------------------------------
+# Prebuilt browser artifacts are intentionally kept identical to the old image.
+# -----------------------------------------------------------------------------
+FROM ${NODE_IMAGE} AS client-build
+WORKDIR /app
+COPY client/dist ./client/dist
+RUN test -d /app/client/dist
+
+
+# -----------------------------------------------------------------------------
+# Runtime-only base. No compiler, development headers, or full JDK.
+# -----------------------------------------------------------------------------
+FROM ${NODE_IMAGE} AS runtime-base
+WORKDIR /app
+
+RUN set -eux; \
+  export DEBIAN_FRONTEND=noninteractive; \
+  for f in /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources; do \
+    [ -f "$f" ] || continue; \
+    sed -i \
+      -e 's|https\?://deb.debian.org|http://mirrors.aliyun.com|g' \
+      -e 's|https\?://security.debian.org/debian-security|http://mirrors.aliyun.com/debian-security|g' \
+      -e 's|https\?://security.debian.org|http://mirrors.aliyun.com/debian-security|g' \
+      "$f"; \
+  done; \
+  if [ -d /etc/apt/sources.list.d ]; then \
+    for f in /etc/apt/sources.list.d/*.list; do \
+      [ -f "$f" ] || continue; \
+      sed -i \
+        -e 's|https\?://deb.debian.org|http://mirrors.aliyun.com|g' \
+        -e 's|https\?://security.debian.org/debian-security|http://mirrors.aliyun.com/debian-security|g' \
+        -e 's|https\?://security.debian.org|http://mirrors.aliyun.com/debian-security|g' \
+        "$f"; \
+    done; \
+  fi; \
+  apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::https::Timeout=120 update; \
+  apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::https::Timeout=120 install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    python3 \
+    python3-pip \
+    libvips \
+    libjemalloc2 \
+    default-jre-headless; \
+  rm -rf /var/lib/apt/lists/*; \
+  printf '%s\n' \
+    '#!/bin/sh' \
+    'set -e' \
+    'ARCH=$(dpkg --print-architecture)' \
+    'case "$ARCH" in' \
+    '  amd64) T=x86_64-linux-gnu ;;' \
+    '  arm64) T=aarch64-linux-gnu ;;' \
+    '  armhf) T=arm-linux-gnueabihf ;;' \
+    '  *) T= ;;' \
+    'esac' \
+    'if [ -n "$T" ] && [ -f "/usr/lib/$T/libjemalloc.so.2" ]; then' \
+    '  export LD_PRELOAD="/usr/lib/$T/libjemalloc.so.2"' \
+    'fi' \
+    'exec "$@"' \
+    > /usr/local/bin/docker-entrypoint.sh; \
+  chmod +x /usr/local/bin/docker-entrypoint.sh
+
+ENV SHARP_FORCE_GLOBAL_LIBVIPS=
+
+
+# -----------------------------------------------------------------------------
+# Final application image.
+# -----------------------------------------------------------------------------
+FROM runtime-base AS api-runtime
+WORKDIR /app
+
+COPY package*.json ./
+COPY --from=runtime-node-deps /app/node_modules ./node_modules
+COPY --from=agents-build /app/agents-because/dist ./agents-because/dist
+COPY --from=agents-build /app/agents-because/package.json ./agents-because/package.json
+COPY --from=agents-build /app/agents-because/husky-setup.js ./agents-because/husky-setup.js
+COPY api ./api
+COPY config ./config
+COPY --from=java-build /app/Because-2.0 ./Because-2.0
+COPY --from=java-build /app/Because-3.0 ./Because-3.0
+COPY --from=java-build /app/Because-jn ./Because-jn
+COPY --from=data-provider-build /app/packages/data-provider/dist ./packages/data-provider/dist
+COPY --from=data-schemas-build /app/packages/data-schemas/dist ./packages/data-schemas/dist
+COPY --from=api-package-build /app/packages/api/dist ./packages/api/dist
+COPY --from=client-build /app/client/dist ./client/dist
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+  pip3 install \
+    --no-cache-dir \
+    -i https://mirrors.aliyun.com/pypi/simple/ \
+    --trusted-host mirrors.aliyun.com \
+    --break-system-packages \
+    uv \
+    -r /app/api/benchmark/evaluation/requirements.txt
+
+RUN set -eux; \
+  chmod -R 755 /app/Because-2.0; \
+  find /app/Because-2.0 -type f -exec chmod 644 {} \;; \
+  chmod -R 755 /app/Because-3.0; \
+  find /app/Because-3.0 -type f -exec chmod 644 {} \;; \
+  chmod -R 755 /app/Because-jn; \
+  find /app/Because-jn -type f -exec chmod 644 {} \;
+
+# Fail the build if a required runtime was accidentally removed.
+RUN set -eux; \
+  node -e "require('@xenova/transformers'); require('onnxruntime-node'); require('sharp'); require('mongodb'); console.log('Node runtime checks passed')"; \
+  python3 -c "from func_timeout import func_timeout, FunctionTimedOut; import numpy, pymysql, psycopg2; print('Python runtime checks passed')"; \
+  uv --version; \
+  java -version; \
+  test -f /app/Because-2.0/drivers/gaussdb-jdbc/GaussJdbcServer.class; \
+  test -f /app/Because-3.0/drivers/gaussdb-jdbc/GaussJdbcServer.class; \
+  test -f /app/Because-jn/drivers/gaussdb-jdbc/GaussJdbcServer.class; \
+  test -f /app/client/dist/index.html
+
+ENV HOST=0.0.0.0
+EXPOSE 3080
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["node", "api/server/index.js"]

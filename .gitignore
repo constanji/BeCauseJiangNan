@@ -194,7 +194,7 @@ Because-2.0/数据表/机构关系.txt
 # Deployment unnecessary folders
 JiangNan/
 ModelProbe/
-Schema/
+/Schema/
 TokenProbe/
 esb-adapter/
 Bc服务器用文件/
